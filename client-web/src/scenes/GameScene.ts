@@ -27,6 +27,22 @@ const INPUT_SEND_HZ = 30;
 const OWN_BLEND = 0.1;
 const REMOTE_BLEND = 0.3;
 
+// ── zoom ──
+const ZOOM_MIN = 0.15;
+const ZOOM_MAX = 3;
+const ZOOM_WHEEL_STEP = 1.15;
+const ZOOM_KEY_STEP = 1.03;
+const ZOOM_SMOOTH = 0.15;
+
+// ── minimapa ──
+const MINIMAP_SIZE = 220;
+const MINIMAP_MARGIN = 12;
+/** alcance do minimapa: unidades do centro até a borda */
+const MINIMAP_RANGE = 15_000;
+const COLOR_MINIMAP_BG = 0x000000;
+const COLOR_MINIMAP_BORDER = 0x3d4b5c;
+const COLOR_MINIMAP_GRID = 0x22303f;
+
 interface RemoteView {
   gfx: Phaser.GameObjects.Graphics;
   /** posição de render suavizada (no espaço relativo à origem) */
@@ -63,7 +79,19 @@ export class GameScene extends Phaser.Scene {
   private asteroidGfx: Phaser.GameObjects.Graphics[] = [];
   private hud!: Phaser.GameObjects.Text;
 
-  private keys!: Record<"W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE", Phaser.Input.Keyboard.Key>;
+  /** câmera de UI (sem zoom/scroll) e camadas separadas mundo × interface */
+  private uiCam!: Phaser.Cameras.Scene2D.Camera;
+  private worldLayer!: Phaser.GameObjects.Container;
+  private uiLayer!: Phaser.GameObjects.Container;
+  private minimapGfx!: Phaser.GameObjects.Graphics;
+  /** cache das posições (espaço de render) dos asteroides 3×3 — para o minimapa */
+  private nearbyAsteroids: Array<{ rx: number; ry: number }> = [];
+  private zoomTarget = 1;
+
+  private keys!: Record<
+    "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS",
+    Phaser.Input.Keyboard.Key
+  >;
   private sendAccum = 0;
   private lastInput: ShipInput = { thrust: false, turn: 0, mine: false };
 
@@ -72,20 +100,40 @@ export class GameScene extends Phaser.Scene {
   }
 
   async create() {
-    this.keys = this.input.keyboard!.addKeys("W,A,S,D,UP,LEFT,RIGHT,SPACE") as GameScene["keys"];
+    this.keys = this.input.keyboard!.addKeys(
+      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS",
+    ) as GameScene["keys"];
 
-    this.beamGfx = this.add.graphics().setDepth(5);
-    this.ownGfx = this.makeShipGfx(COLOR_OWN).setDepth(10);
+    // camadas: a câmera principal (com zoom) só vê o mundo;
+    // a câmera de UI (fixa) só vê HUD e minimapa
+    this.worldLayer = this.add.container(0, 0);
+    this.uiLayer = this.add.container(0, 0);
+
+    this.beamGfx = this.add.graphics();
+    this.worldLayer.add(this.beamGfx);
+    this.ownGfx = this.makeShipGfx(COLOR_OWN);
     this.ownGfx.setVisible(false);
 
-    this.hud = this.add
-      .text(12, 10, "Conectando…", {
-        fontFamily: "monospace",
-        fontSize: "16px",
-        color: "#c8d6e5",
-      })
-      .setScrollFactor(0)
-      .setDepth(100);
+    this.hud = this.add.text(12, 10, "Conectando…", {
+      fontFamily: "monospace",
+      fontSize: "16px",
+      color: "#c8d6e5",
+    });
+    this.minimapGfx = this.add.graphics();
+    this.uiLayer.add([this.hud, this.minimapGfx]);
+
+    this.uiCam = this.cameras.add(0, 0, this.scale.width, this.scale.height);
+    this.uiCam.ignore(this.worldLayer);
+    this.cameras.main.ignore(this.uiLayer);
+
+    // zoom pela roda do mouse
+    this.input.on(
+      "wheel",
+      (_p: unknown, _over: unknown, _dx: number, dy: number) => {
+        const factor = dy > 0 ? 1 / ZOOM_WHEEL_STEP : ZOOM_WHEEL_STEP;
+        this.zoomTarget = Phaser.Math.Clamp(this.zoomTarget * factor, ZOOM_MIN, ZOOM_MAX);
+      },
+    );
 
     const endpoint = `ws://${location.hostname}:${DEFAULT_PORT}`;
     const client = new Client(endpoint);
@@ -144,6 +192,18 @@ export class GameScene extends Phaser.Scene {
   update(_time: number, deltaMs: number) {
     if (!this.ready || !this.localShip) return;
     const dt = Math.min(deltaMs / 1000, 0.1);
+
+    // zoom por teclas +/- e suavização em direção ao alvo
+    if (this.keys.PLUS.isDown) {
+      this.zoomTarget = Math.min(this.zoomTarget * ZOOM_KEY_STEP, ZOOM_MAX);
+    }
+    if (this.keys.MINUS.isDown) {
+      this.zoomTarget = Math.max(this.zoomTarget / ZOOM_KEY_STEP, ZOOM_MIN);
+    }
+    const cam = this.cameras.main;
+    cam.setZoom(Phaser.Math.Linear(cam.zoom, this.zoomTarget, ZOOM_SMOOTH));
+    // mantém a câmera de UI cobrindo a tela (modo RESIZE)
+    this.uiCam.setSize(this.scale.width, this.scale.height);
 
     // input → predição local (mesmo stepShip do servidor) → envio
     const input = this.readInput();
@@ -209,6 +269,7 @@ export class GameScene extends Phaser.Scene {
   private rebuildAsteroids() {
     for (const g of this.asteroidGfx) g.destroy();
     this.asteroidGfx = [];
+    this.nearbyAsteroids = [];
     // 3×3 setores ao redor da origem — muito além do alcance da tela
     for (let oy = -1; oy <= 1; oy++) {
       for (let ox = -1; ox <= 1; ox++) {
@@ -217,7 +278,10 @@ export class GameScene extends Phaser.Scene {
           const g = this.add.graphics({ x: pos.x, y: pos.y });
           g.lineStyle(1.5, COLOR_ASTEROID);
           g.strokePoints(asteroidVerts(a.shapeSeed, a.radius), true, true);
+          this.worldLayer.add(g);
+          this.worldLayer.sendToBack(g);
           this.asteroidGfx.push(g);
+          this.nearbyAsteroids.push({ rx: pos.x, ry: pos.y });
         }
       }
     }
@@ -227,6 +291,8 @@ export class GameScene extends Phaser.Scene {
     const g = this.add.graphics();
     g.lineStyle(1.5, color);
     g.strokePoints(SHIP_VERTS, true, true);
+    this.worldLayer.add(g);
+    if (this.ownGfx) this.worldLayer.bringToTop(this.ownGfx);
     return g;
   }
 
@@ -269,10 +335,67 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
+    this.drawMinimap(own);
+
     const ore = Math.floor(authoritative?.ore ?? this.localShip!.ore);
+    const zoom = this.cameras.main.zoom;
     this.hud.setText(
-      `Minério: ${ore}  ·  Jogadores: ${this.serverShips.size}  ·  Setor (${this.localShip!.sx}, ${this.localShip!.sy})\n` +
-        `W/↑ acelerar · A/D ou ←/→ girar · ESPAÇO minerar`,
+      `Minério: ${ore}  ·  Jogadores: ${this.serverShips.size}  ·  Setor (${this.localShip!.sx}, ${this.localShip!.sy})  ·  Zoom ${zoom.toFixed(2)}x\n` +
+        `W/↑ acelerar · A/D ou ←/→ girar · ESPAÇO minerar · roda/+/- zoom`,
     );
+  }
+
+  /** Minimapa no canto superior direito, centrado na nave própria. */
+  private drawMinimap(own: { x: number; y: number }) {
+    const size = MINIMAP_SIZE;
+    const x0 = this.scale.width - size - MINIMAP_MARGIN;
+    const y0 = MINIMAP_MARGIN;
+    const cx = x0 + size / 2;
+    const cy = y0 + size / 2;
+    const k = size / 2 / MINIMAP_RANGE; // unidades → pixels do minimapa
+    const half = size / 2;
+
+    const g = this.minimapGfx;
+    g.clear();
+    g.fillStyle(COLOR_MINIMAP_BG, 0.55);
+    g.fillRect(x0, y0, size, size);
+    g.lineStyle(1, COLOR_MINIMAP_BORDER, 1);
+    g.strokeRect(x0, y0, size, size);
+
+    // fronteiras de setor (a grade dos quadrantes)
+    g.lineStyle(1, COLOR_MINIMAP_GRID, 1);
+    for (let i = -1; i <= 2; i++) {
+      const dx = (i * SECTOR_SIZE - own.x) * k;
+      if (Math.abs(dx) < half) g.lineBetween(cx + dx, y0, cx + dx, y0 + size);
+      const dy = (i * SECTOR_SIZE - own.y) * k;
+      if (Math.abs(dy) < half) g.lineBetween(x0, cy + dy, x0 + size, cy + dy);
+    }
+
+    // asteroides próximos
+    g.fillStyle(COLOR_ASTEROID, 1);
+    for (const a of this.nearbyAsteroids) {
+      const dx = (a.rx - own.x) * k;
+      const dy = (a.ry - own.y) * k;
+      if (Math.abs(dx) < half - 2 && Math.abs(dy) < half - 2) {
+        g.fillCircle(cx + dx, cy + dy, 1.5);
+      }
+    }
+
+    // naves remotas
+    g.fillStyle(COLOR_REMOTE, 1);
+    for (const view of this.remotes.values()) {
+      const dx = (view.rx - own.x) * k;
+      const dy = (view.ry - own.y) * k;
+      if (Math.abs(dx) < half - 2 && Math.abs(dy) < half - 2) {
+        g.fillCircle(cx + dx, cy + dy, 2.5);
+      }
+    }
+
+    // nave própria: ponto central + traço de direção
+    g.fillStyle(COLOR_OWN, 1);
+    g.fillCircle(cx, cy, 3);
+    g.lineStyle(1, COLOR_OWN, 1);
+    const ang = this.localShip!.angle;
+    g.lineBetween(cx, cy, cx + Math.cos(ang) * 9, cy + Math.sin(ang) * 9);
   }
 }

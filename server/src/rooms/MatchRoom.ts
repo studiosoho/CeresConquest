@@ -40,8 +40,15 @@ export class MatchRoom extends Room<MatchState> {
 
   onJoin(client: Client) {
     const pos = this.spawns[this.spawnIndex++ % this.spawns.length];
-    this.sim.addShip(client.sessionId, pos);
-    this.state.ships.set(client.sessionId, new ShipSchema());
+    const ship = this.sim.addShip(client.sessionId, pos);
+    // espelha a posição de spawn JÁ no join — o primeiro estado que o
+    // cliente recebe precisa ser real, não os defaults do schema
+    const s = new ShipSchema();
+    s.sx = ship.sx;
+    s.sy = ship.sy;
+    s.x = ship.x;
+    s.y = ship.y;
+    this.state.ships.set(client.sessionId, s);
     console.log(`[room] ${client.sessionId} entrou — setor (${pos.sx}, ${pos.sy})`);
   }
 
