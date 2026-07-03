@@ -1,13 +1,18 @@
 import { Room, type Client } from "colyseus";
 import { MSG_INPUT, TICK_RATE, type ShipInput } from "@ceres/shared";
-import { SimWorld, findClearSpawn } from "@ceres/sim-core";
+import { SimWorld, findClearSpawn, type ShipState } from "@ceres/sim-core";
 import { MatchState, ShipSchema } from "../schema/State";
 import { neighboringSpawns, type SpawnStrategy } from "../spawn";
+import { computeBotInput, makeBotState, type BotState } from "../bots";
+
+/** Nº de jogadores-teste autônomos (bots) por padrão. */
+const DEFAULT_BOTS = 10;
 
 export interface MatchOptions {
   maxPlayers?: number;
   worldSeed?: number;
   spawnStrategy?: SpawnStrategy;
+  bots?: number;
 }
 
 /**
@@ -18,41 +23,46 @@ export class MatchRoom extends Room<MatchState> {
   private sim!: SimWorld;
   private spawns: ReturnType<typeof neighboringSpawns> = [];
   private spawnIndex = 0;
+  private bots = new Map<string, BotState>();
 
   onCreate(options: MatchOptions = {}) {
-    this.maxClients = options.maxPlayers ?? 10;
+    this.maxClients = options.maxPlayers ?? 12;
+    const botCount = options.bots ?? DEFAULT_BOTS;
     const seed = options.worldSeed ?? (Math.random() * 0xffffffff) >>> 0;
 
     this.sim = new SimWorld(seed);
-    // por ora só "neighboring"; outras estratégias entram aqui (plugáveis)
-    this.spawns = neighboringSpawns(seed, this.maxClients);
+    // por ora só "neighboring"; outras estratégias entram aqui (plugáveis).
+    // Espaço para humanos + bots, todos espalhados pela pista do cinturão.
+    this.spawns = neighboringSpawns(seed, this.maxClients + botCount);
 
     this.setState(new MatchState());
     this.state.worldSeed = seed;
+
+    // popula a partida com jogadores-teste autônomos
+    for (let i = 0; i < botCount; i++) {
+      const id = `bot-${i}`;
+      const ship = this.spawnShip(id, this.spawns[this.maxClients + i]);
+      this.state.ships.set(id, this.mirrorSpawn(ship));
+      this.bots.set(id, makeBotState());
+    }
 
     this.onMessage(MSG_INPUT, (client: Client, input: ShipInput) => {
       this.sim.setInput(client.sessionId, input);
     });
 
     this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
-    console.log(`[room] match criada — seed=${seed} maxPlayers=${this.maxClients}`);
+    console.log(
+      `[room] match criada — seed=${seed} maxPlayers=${this.maxClients} bots=${botCount}`,
+    );
   }
 
   onJoin(client: Client) {
     const base = this.spawns[this.spawnIndex++ % this.spawns.length];
-    // ajusta o ponto local para não spawnar dentro de um asteroide
-    const local = findClearSpawn(this.sim.seed, base.sx, base.sy);
-    const pos = { sx: base.sx, sy: base.sy, x: local.x, y: local.y };
-    const ship = this.sim.addShip(client.sessionId, pos);
+    const ship = this.spawnShip(client.sessionId, base);
     // espelha a posição de spawn JÁ no join — o primeiro estado que o
     // cliente recebe precisa ser real, não os defaults do schema
-    const s = new ShipSchema();
-    s.sx = ship.sx;
-    s.sy = ship.sy;
-    s.x = ship.x;
-    s.y = ship.y;
-    this.state.ships.set(client.sessionId, s);
-    console.log(`[room] ${client.sessionId} entrou — setor (${pos.sx}, ${pos.sy})`);
+    this.state.ships.set(client.sessionId, this.mirrorSpawn(ship));
+    console.log(`[room] ${client.sessionId} entrou — setor (${ship.sx}, ${ship.sy})`);
   }
 
   onLeave(client: Client) {
@@ -61,7 +71,27 @@ export class MatchRoom extends Room<MatchState> {
     console.log(`[room] ${client.sessionId} saiu`);
   }
 
+  /** Cria uma nave no sim num ponto livre dentro do setor de spawn dado. */
+  private spawnShip(id: string, base: { sx: number; sy: number }): ShipState {
+    const local = findClearSpawn(this.sim.seed, base.sx, base.sy);
+    return this.sim.addShip(id, { sx: base.sx, sy: base.sy, x: local.x, y: local.y });
+  }
+
+  private mirrorSpawn(ship: ShipState): ShipSchema {
+    const s = new ShipSchema();
+    s.sx = ship.sx;
+    s.sy = ship.sy;
+    s.x = ship.x;
+    s.y = ship.y;
+    return s;
+  }
+
   private tick(dt: number) {
+    // IA dos bots → input no mesmo pipeline dos humanos
+    for (const [id, bot] of this.bots) {
+      const ship = this.sim.ships.get(id);
+      if (ship) this.sim.setInput(id, computeBotInput(ship, this.sim, bot, dt));
+    }
     this.sim.tick(dt);
     // espelha sim-core → schema (delta-encoding fica por conta do Colyseus)
     for (const [id, ship] of this.sim.ships) {

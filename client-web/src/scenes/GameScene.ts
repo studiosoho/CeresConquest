@@ -23,9 +23,13 @@ const COLOR_REMOTE = 0x7f8ea3;
 const COLOR_ASTEROID = 0x5a6b7a;
 const COLOR_BEAM = 0x9fd4ff;
 
-/** Largura das linhas do wireframe (dobrada). */
-const LINE_WIDTH = 3;
-const BEAM_WIDTH = 2;
+/**
+ * Largura das linhas do wireframe, em PIXELS DE TELA (constante em qualquer
+ * zoom). As linhas são desenhadas em espaço de mundo, então a largura real é
+ * compensada pelo zoom — senão sumiriam quando afastado.
+ */
+const SCREEN_LINE_WIDTH = 4;
+const SCREEN_BEAM_WIDTH = 3;
 
 /** Zoom inicial: os asteroides agora são grandes; parte-se afastado para ver a escala. */
 const INITIAL_ZOOM = 0.3;
@@ -95,6 +99,8 @@ export class GameScene extends Phaser.Scene {
   /** cache das posições (espaço de render) dos asteroides 3×3 — para o minimapa */
   private nearbyAsteroids: Array<{ rx: number; ry: number }> = [];
   private zoomTarget = INITIAL_ZOOM;
+  /** zoom no qual as linhas foram desenhadas por último (para redesenhar) */
+  private lastStrokeZoom = 0;
 
   private keys!: Record<
     "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS",
@@ -214,6 +220,12 @@ export class GameScene extends Phaser.Scene {
     // mantém a câmera de UI cobrindo a tela (modo RESIZE)
     this.uiCam.setSize(this.scale.width, this.scale.height);
 
+    // largura de linha constante em tela → redesenha ao mudar o zoom
+    if (Math.abs(cam.zoom - this.lastStrokeZoom) > this.lastStrokeZoom * 0.08 + 1e-4) {
+      this.lastStrokeZoom = cam.zoom;
+      this.redrawStrokes();
+    }
+
     // input → predição local (mesmo stepShip + colisão do servidor) → envio
     const input = this.readInput();
     stepShip(this.localShip, input, dt);
@@ -286,7 +298,7 @@ export class GameScene extends Phaser.Scene {
         for (const a of sectorAsteroids(this.worldSeed, this.origin.sx + ox, this.origin.sy + oy)) {
           const pos = this.toRender(a);
           const g = this.add.graphics({ x: pos.x, y: pos.y });
-          g.lineStyle(LINE_WIDTH, COLOR_ASTEROID);
+          g.lineStyle(this.strokeW(), COLOR_ASTEROID);
           g.strokePoints(asteroidVerts(a.shapeSeed, a.radius), true, true);
           this.worldLayer.add(g);
           this.worldLayer.sendToBack(g);
@@ -299,11 +311,30 @@ export class GameScene extends Phaser.Scene {
 
   private makeShipGfx(color: number): Phaser.GameObjects.Graphics {
     const g = this.add.graphics();
-    g.lineStyle(LINE_WIDTH, color);
+    g.lineStyle(this.strokeW(), color);
     g.strokePoints(SHIP_VERTS, true, true);
     this.worldLayer.add(g);
     if (this.ownGfx) this.worldLayer.bringToTop(this.ownGfx);
     return g;
+  }
+
+  /** Largura de traço em unidades de mundo para dar SCREEN_LINE_WIDTH px na tela. */
+  private strokeW(): number {
+    return Phaser.Math.Clamp(SCREEN_LINE_WIDTH / this.cameras.main.zoom, 0.5, 80);
+  }
+
+  /** Redesenha naves e asteroides com a largura de traço do zoom atual. */
+  private redrawStrokes() {
+    const w = this.strokeW();
+    this.ownGfx.clear();
+    this.ownGfx.lineStyle(w, COLOR_OWN);
+    this.ownGfx.strokePoints(SHIP_VERTS, true, true);
+    for (const view of this.remotes.values()) {
+      view.gfx.clear();
+      view.gfx.lineStyle(w, COLOR_REMOTE);
+      view.gfx.strokePoints(SHIP_VERTS, true, true);
+    }
+    this.rebuildAsteroids();
   }
 
   private draw(_dt: number, authoritative: ServerShip | undefined) {
@@ -340,7 +371,8 @@ export class GameScene extends Phaser.Scene {
       const target = sim.nearestAsteroid(this.localShip!);
       if (target) {
         const t = this.toRender(target);
-        this.beamGfx.lineStyle(BEAM_WIDTH, COLOR_BEAM, 0.8);
+        const beamW = Phaser.Math.Clamp(SCREEN_BEAM_WIDTH / this.cameras.main.zoom, 0.5, 60);
+        this.beamGfx.lineStyle(beamW, COLOR_BEAM, 0.8);
         this.beamGfx.lineBetween(own.x, own.y, t.x, t.y);
       }
     }
