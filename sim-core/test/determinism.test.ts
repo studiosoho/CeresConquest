@@ -6,6 +6,7 @@ import {
   collideShip,
   clampToBoundary,
   findClearSpawn,
+  SimWorld,
 } from "../src";
 import {
   BELT_INNER_SECTORS,
@@ -123,5 +124,26 @@ describe("fronteira do mapa", () => {
     const before = { ...ship };
     clampToBoundary(ship, center, R);
     expect(ship).toEqual(before);
+  });
+});
+
+describe("estruturas", () => {
+  it("estação de mineração produz minério para o dono ao longo do tempo", () => {
+    const w = new SimWorld(999);
+    const owner = w.addShip("p1", { sx: beltSector, sy: 0, x: 5000, y: 5000 });
+    w.addStructure({
+      id: "st-0",
+      type: "miningStation",
+      owner: "p1",
+      sx: beltSector,
+      sy: 0,
+      x: 5000,
+      y: 5000,
+    });
+    const oreAntes = owner.ore;
+    for (let i = 0; i < 20; i++) w.tick(1 / 20); // 1s
+    // productionRate=10 → ~10 de minério em 1s (+ possível mineração passiva=0)
+    expect(owner.ore - oreAntes).toBeGreaterThan(9);
+    expect(owner.ore - oreAntes).toBeLessThan(11);
   });
 });

@@ -1,4 +1,4 @@
-import { SHIP_RADIUS, mulberry32 } from "@ceres/shared";
+import { SHIP_RADIUS, mulberry32, type StructureType } from "@ceres/shared";
 
 /**
  * Geometria wireframe (estilo Asteroids): assets são listas de vértices,
@@ -59,4 +59,27 @@ export function asteroidVerts(
 
   const k = radius / maxD; // normaliza para bounding = radius
   return raw.map((v) => ({ x: v.x * k, y: v.y * k }));
+}
+
+/** Silhueta geométrica de uma estrutura, reconhecível pelo contorno. */
+export function structureVerts(
+  type: StructureType,
+  radius: number,
+): Array<{ x: number; y: number }> {
+  if (type === "hq") {
+    // losango (quadrado a 45°) — o quartel-general
+    return [
+      { x: 0, y: -radius },
+      { x: radius, y: 0 },
+      { x: 0, y: radius },
+      { x: -radius, y: 0 },
+    ];
+  }
+  // estação de mineração: hexágono
+  const verts: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+    verts.push({ x: Math.cos(a) * radius, y: Math.sin(a) * radius });
+  }
+  return verts;
 }

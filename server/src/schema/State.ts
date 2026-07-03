@@ -17,6 +17,15 @@ export class ShipSchema extends Schema {
   @type("boolean") mining = false;
 }
 
+export class StructureSchema extends Schema {
+  @type("string") stype = "";
+  @type("string") owner = "";
+  @type("int32") sx = 0;
+  @type("int32") sy = 0;
+  @type("float32") x = 0;
+  @type("float32") y = 0;
+}
+
 export class MatchState extends Schema {
   @type("uint32") worldSeed = 0;
   // fronteira circular do mapa (arena): centro em setores + raio em unidades
@@ -24,4 +33,5 @@ export class MatchState extends Schema {
   @type("int32") mapCenterSy = 0;
   @type("float32") mapRadius = 0;
   @type({ map: ShipSchema }) ships = new MapSchema<ShipSchema>();
+  @type({ map: StructureSchema }) structures = new MapSchema<StructureSchema>();
 }

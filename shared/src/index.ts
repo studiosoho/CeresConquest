@@ -1,5 +1,6 @@
 export * from "./scale";
 export * from "./map";
+export * from "./structures";
 export * from "./constants";
 export * from "./coords";
 export * from "./rng";

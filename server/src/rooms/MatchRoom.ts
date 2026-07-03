@@ -1,15 +1,19 @@
 import { Room, type Client } from "colyseus";
 import {
   MSG_INPUT,
+  MSG_BUILD,
   TICK_RATE,
   SECTOR_SIZE,
   MAP_SIZES,
   DEFAULT_MAP_SIZE,
+  STRUCTURE_SPECS,
+  BUILD_ASTEROID_RANGE,
   type MapSize,
   type ShipInput,
+  type BuildCommand,
 } from "@ceres/shared";
 import { SimWorld, findClearSpawn, type ShipState } from "@ceres/sim-core";
-import { MatchState, ShipSchema } from "../schema/State";
+import { MatchState, ShipSchema, StructureSchema } from "../schema/State";
 import { mapSpawns, beltBasePoint, type SpawnStrategy } from "../spawn";
 import { computeBotInput, makeBotState, type BotState } from "../bots";
 
@@ -33,6 +37,7 @@ export class MatchRoom extends Room<MatchState> {
   private spawns: ReturnType<typeof mapSpawns> = [];
   private spawnIndex = 0;
   private bots = new Map<string, BotState>();
+  private structSeq = 0;
 
   onCreate(options: MatchOptions = {}) {
     this.maxClients = options.maxPlayers ?? 12;
@@ -69,6 +74,10 @@ export class MatchRoom extends Room<MatchState> {
       this.sim.setInput(client.sessionId, input);
     });
 
+    this.onMessage(MSG_BUILD, (client: Client, cmd: BuildCommand) => {
+      this.tryBuild(client.sessionId, cmd?.type);
+    });
+
     this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
     console.log(
       `[room] match criada — seed=${seed} mapa=${mapSize}(${radiusSectors}s) ` +
@@ -95,6 +104,30 @@ export class MatchRoom extends Room<MatchState> {
   private spawnShip(id: string, base: { sx: number; sy: number }): ShipState {
     const local = findClearSpawn(this.sim.seed, base.sx, base.sy);
     return this.sim.addShip(id, { sx: base.sx, sy: base.sy, x: local.x, y: local.y });
+  }
+
+  /** Valida e constrói uma estrutura na posição da nave do jogador. */
+  private tryBuild(sessionId: string, type?: BuildCommand["type"]): void {
+    const ship = this.sim.ships.get(sessionId);
+    if (!ship || !type) return;
+    const spec = STRUCTURE_SPECS[type];
+    if (!spec) return;
+    if (ship.ore < spec.cost) return;
+    if (spec.requiresAsteroid && !this.sim.nearestAsteroid(ship, BUILD_ASTEROID_RANGE)) return;
+
+    ship.ore -= spec.cost;
+    const id = `st-${this.structSeq++}`;
+    this.sim.addStructure({ id, type, owner: sessionId, sx: ship.sx, sy: ship.sy, x: ship.x, y: ship.y });
+
+    const ss = new StructureSchema();
+    ss.stype = type;
+    ss.owner = sessionId;
+    ss.sx = ship.sx;
+    ss.sy = ship.sy;
+    ss.x = ship.x;
+    ss.y = ship.y;
+    this.state.structures.set(id, ss);
+    console.log(`[room] ${sessionId} construiu ${type} — setor (${ship.sx}, ${ship.sy})`);
   }
 
   private mirrorSpawn(ship: ShipState): ShipSchema {

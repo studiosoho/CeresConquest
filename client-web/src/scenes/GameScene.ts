@@ -3,11 +3,15 @@ import { Client, type Room } from "colyseus.js";
 import {
   DEFAULT_PORT,
   MSG_INPUT,
+  MSG_BUILD,
   SECTOR_SIZE,
+  STRUCTURE_SPECS,
+  BUILD_ASTEROID_RANGE,
   relVec,
   mapSizeFromRadiusSectors,
   type MapSize,
   type ShipInput,
+  type StructureType,
   type WorldPos,
 } from "@ceres/shared";
 import {
@@ -19,13 +23,15 @@ import {
   sectorAsteroids,
   type ShipState,
 } from "@ceres/sim-core";
-import { SHIP_VERTS, asteroidVerts } from "../shapes";
+import { SHIP_VERTS, asteroidVerts, structureVerts } from "../shapes";
 
 const COLOR_OWN = 0xffffff;
 const COLOR_REMOTE = 0x7f8ea3;
 const COLOR_ASTEROID = 0x5a6b7a;
 const COLOR_BEAM = 0x9fd4ff;
 const COLOR_BOUNDARY = 0xcc5544;
+const COLOR_STRUCT_OWN = 0x5fd0a8;
+const COLOR_STRUCT_OTHER = 0xc8985a;
 
 const MAP_SIZE_LABEL: Record<MapSize | "custom", string> = {
   small: "pequeno",
@@ -84,6 +90,19 @@ interface ServerShip extends WorldPos {
   mining: boolean;
 }
 
+/** Snapshot plano de uma estrutura vinda do schema. */
+interface ServerStructure extends WorldPos {
+  stype: StructureType;
+  owner: string;
+}
+
+interface StructView {
+  gfx: Phaser.GameObjects.Graphics;
+  type: StructureType;
+  radius: number;
+  own: boolean;
+}
+
 export class GameScene extends Phaser.Scene {
   private room!: Room;
   private worldSeed = 0;
@@ -105,6 +124,8 @@ export class GameScene extends Phaser.Scene {
   private boundaryGfx!: Phaser.GameObjects.Graphics;
   private remotes = new Map<string, RemoteView>();
   private asteroidGfx: Phaser.GameObjects.Graphics[] = [];
+  private serverStructures = new Map<string, ServerStructure>();
+  private structViews = new Map<string, StructView>();
   private hud!: Phaser.GameObjects.Text;
 
   /** câmera de UI (sem zoom/scroll) e camadas separadas mundo × interface */
@@ -119,7 +140,7 @@ export class GameScene extends Phaser.Scene {
   private lastStrokeZoom = 0;
 
   private keys!: Record<
-    "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS",
+    | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS" | "ONE" | "TWO",
     Phaser.Input.Keyboard.Key
   >;
   private sendAccum = 0;
@@ -131,7 +152,7 @@ export class GameScene extends Phaser.Scene {
 
   async create() {
     this.keys = this.input.keyboard!.addKeys(
-      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS",
+      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO",
     ) as GameScene["keys"];
 
     // camadas: a câmera principal (com zoom) só vê o mundo;
@@ -211,6 +232,22 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
+    // estruturas (estáticas): upsert + remoção
+    const seenSt = new Set<string>();
+    state.structures.forEach((st: any, id: string) => {
+      seenSt.add(id);
+      this.serverStructures.set(id, {
+        stype: st.stype, owner: st.owner, sx: st.sx, sy: st.sy, x: st.x, y: st.y,
+      });
+    });
+    for (const id of [...this.serverStructures.keys()]) {
+      if (!seenSt.has(id)) {
+        this.serverStructures.delete(id);
+        this.structViews.get(id)?.gfx.destroy();
+        this.structViews.delete(id);
+      }
+    }
+
     // primeira visão da própria nave → inicializa predição e origem
     if (!this.ready) {
       const mine = this.serverShips.get(this.room.sessionId);
@@ -249,6 +286,14 @@ export class GameScene extends Phaser.Scene {
     if (Math.abs(cam.zoom - this.lastStrokeZoom) > this.lastStrokeZoom * 0.08 + 1e-4) {
       this.lastStrokeZoom = cam.zoom;
       this.redrawStrokes();
+    }
+
+    // construção (autoritativa no servidor; sem predição local)
+    if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) {
+      this.room.send(MSG_BUILD, { type: "miningStation" as StructureType });
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) {
+      this.room.send(MSG_BUILD, { type: "hq" as StructureType });
     }
 
     // input → predição local (mesmo stepShip + colisão do servidor) → envio
@@ -346,6 +391,14 @@ export class GameScene extends Phaser.Scene {
     return g;
   }
 
+  private makeStructGfx(type: StructureType, own: boolean): Phaser.GameObjects.Graphics {
+    const g = this.add.graphics();
+    g.lineStyle(this.strokeW(), own ? COLOR_STRUCT_OWN : COLOR_STRUCT_OTHER);
+    g.strokePoints(structureVerts(type, STRUCTURE_SPECS[type].radius), true, true);
+    this.worldLayer.add(g);
+    return g;
+  }
+
   /** Largura de traço em unidades de mundo para dar SCREEN_LINE_WIDTH px na tela. */
   private strokeW(): number {
     return Phaser.Math.Clamp(SCREEN_LINE_WIDTH / this.cameras.main.zoom, 0.5, 80);
@@ -361,6 +414,11 @@ export class GameScene extends Phaser.Scene {
       view.gfx.clear();
       view.gfx.lineStyle(w, COLOR_REMOTE);
       view.gfx.strokePoints(SHIP_VERTS, true, true);
+    }
+    for (const view of this.structViews.values()) {
+      view.gfx.clear();
+      view.gfx.lineStyle(w, view.own ? COLOR_STRUCT_OWN : COLOR_STRUCT_OTHER);
+      view.gfx.strokePoints(structureVerts(view.type, view.radius), true, true);
     }
     this.rebuildAsteroids();
   }
@@ -392,10 +450,28 @@ export class GameScene extends Phaser.Scene {
       view.gfx.setPosition(view.rx, view.ry).setRotation(view.angle);
     }
 
+    // estruturas (estáticas): cria o gráfico na primeira vez, reposiciona sempre
+    for (const [id, st] of this.serverStructures) {
+      let view = this.structViews.get(id);
+      if (!view) {
+        const own_ = st.owner === this.room.sessionId;
+        view = {
+          gfx: this.makeStructGfx(st.stype, own_),
+          type: st.stype,
+          radius: STRUCTURE_SPECS[st.stype].radius,
+          own: own_,
+        };
+        this.structViews.set(id, view);
+      }
+      const p = this.toRender(st);
+      view.gfx.setPosition(p.x, p.y);
+    }
+
+    const sim = new SimWorld(this.worldSeed);
+
     // feixe de mineração (nave própria)
     this.beamGfx.clear();
     if (this.lastInput.mine) {
-      const sim = new SimWorld(this.worldSeed);
       const target = sim.nearestAsteroid(this.localShip!);
       if (target) {
         const t = this.toRender(target);
@@ -419,9 +495,20 @@ export class GameScene extends Phaser.Scene {
     const ore = Math.floor(authoritative?.ore ?? this.localShip!.ore);
     const zoom = this.cameras.main.zoom;
     const mapName = MAP_SIZE_LABEL[mapSizeFromRadiusSectors(this.mapRadius / SECTOR_SIZE)];
+
+    // dicas de construção
+    const nearAst = !!sim.nearestAsteroid(this.localShip!, BUILD_ASTEROID_RANGE);
+    const st1 = STRUCTURE_SPECS.miningStation;
+    const st2 = STRUCTURE_SPECS.hq;
+    const canMine = ore >= st1.cost && nearAst;
+    const canHq = ore >= st2.cost;
+    const hint1 = `[1] ${st1.label} (${st1.cost})${nearAst ? "" : " — aproxime-se de um asteroide"}`;
+    const hint2 = `[2] ${st2.label} (${st2.cost})`;
+
     this.hud.setText(
-      `Minério: ${ore}  ·  Jogadores: ${this.serverShips.size}  ·  Mapa: ${mapName}  ·  Setor (${this.localShip!.sx}, ${this.localShip!.sy})  ·  Zoom ${zoom.toFixed(2)}x\n` +
-        `W/↑ acelerar · A/D ou ←/→ girar · ESPAÇO minerar · roda/+/- zoom`,
+      `Minério: ${ore}  ·  Jogadores: ${this.serverShips.size}  ·  Mapa: ${mapName}  ·  Estruturas: ${this.serverStructures.size}  ·  Zoom ${zoom.toFixed(2)}x\n` +
+        `W/↑ acelerar · A/D girar · ESPAÇO minerar · roda/+/- zoom\n` +
+        `${canMine ? "» " : "  "}${hint1}     ${canHq ? "» " : "  "}${hint2}`,
     );
   }
 

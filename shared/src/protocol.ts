@@ -11,3 +11,13 @@ export interface ShipInput {
 export const MSG_INPUT = "input";
 
 export const NEUTRAL_INPUT: ShipInput = { thrust: false, turn: 0, mine: false };
+
+// ── Construção ────────────────────────────────────────────────────────
+import type { StructureType } from "./structures";
+
+/** Pedido de construção enviado pelo cliente. */
+export interface BuildCommand {
+  type: StructureType;
+}
+
+export const MSG_BUILD = "build";
