@@ -8,6 +8,7 @@ import {
 } from "@ceres/shared";
 import { makeShip, stepShip, type ShipState } from "./ship";
 import { sectorAsteroids, type Asteroid } from "./procgen";
+import { collideShip } from "./collision";
 
 /**
  * Mundo de simulação: puro, sem rede, sem engine, sem I/O.
@@ -42,6 +43,7 @@ export class SimWorld {
     for (const [id, ship] of this.ships) {
       const input = this.inputs.get(id) ?? NEUTRAL_INPUT;
       stepShip(ship, input, dt);
+      collideShip(ship, this.seed);
       ship.mining = false;
       if (input.mine) {
         const target = this.nearestAsteroid(ship);

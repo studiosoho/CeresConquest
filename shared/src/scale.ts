@@ -33,7 +33,10 @@ export const ASTEROID_MAX_RADIUS = radiusOf("asteroidHuge"); // 2000
 export const ASTEROID_MAX_DIAMETER = 2 * ASTEROID_MAX_RADIUS; // 4000
 
 /**
- * Largura (espessura radial) do cinturão ≈ 10 diâmetros do maior asteroide.
- * O cinturão é uma "pista" fina em torno do Sol, não um disco preenchido.
+ * Espessura radial do cinturão, em diâmetros do maior asteroide.
+ * Ajuste aqui para uma pista mais larga (mais) ou mais estreita (menos).
  */
-export const BELT_WIDTH = 10 * ASTEROID_MAX_DIAMETER; // 40 000
+export const BELT_WIDTH_IN_DIAMETERS = 20;
+
+/** O cinturão é um anel em torno do Sol, não um disco preenchido. */
+export const BELT_WIDTH = BELT_WIDTH_IN_DIAMETERS * ASTEROID_MAX_DIAMETER; // 80 000 ≈ 8 setores

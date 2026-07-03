@@ -1,6 +1,6 @@
 import { Room, type Client } from "colyseus";
 import { MSG_INPUT, TICK_RATE, type ShipInput } from "@ceres/shared";
-import { SimWorld } from "@ceres/sim-core";
+import { SimWorld, findClearSpawn } from "@ceres/sim-core";
 import { MatchState, ShipSchema } from "../schema/State";
 import { neighboringSpawns, type SpawnStrategy } from "../spawn";
 
@@ -39,7 +39,10 @@ export class MatchRoom extends Room<MatchState> {
   }
 
   onJoin(client: Client) {
-    const pos = this.spawns[this.spawnIndex++ % this.spawns.length];
+    const base = this.spawns[this.spawnIndex++ % this.spawns.length];
+    // ajusta o ponto local para não spawnar dentro de um asteroide
+    const local = findClearSpawn(this.sim.seed, base.sx, base.sy);
+    const pos = { sx: base.sx, sy: base.sy, x: local.x, y: local.y };
     const ship = this.sim.addShip(client.sessionId, pos);
     // espelha a posição de spawn JÁ no join — o primeiro estado que o
     // cliente recebe precisa ser real, não os defaults do schema

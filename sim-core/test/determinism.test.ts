@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { sectorAsteroids, stepShip, makeShip } from "../src";
-import { BELT_INNER_SECTORS, BELT_OUTER_SECTORS } from "@ceres/shared";
+import { sectorAsteroids, stepShip, makeShip, collideShip, findClearSpawn } from "../src";
+import {
+  BELT_INNER_SECTORS,
+  BELT_OUTER_SECTORS,
+  SHIP_RADIUS,
+  dist,
+  type WorldPos,
+} from "@ceres/shared";
 
 // setor garantidamente dentro do anel do cinturão
 const beltSector = Math.round((BELT_INNER_SECTORS + BELT_OUTER_SECTORS) / 2);
@@ -44,5 +50,44 @@ describe("física da nave", () => {
     expect(ship.sx).toBe(beltSector + 1);
     expect(ship.x).toBeGreaterThanOrEqual(0);
     expect(ship.x).toBeLessThan(10_000);
+  });
+});
+
+describe("colisão nave × asteroide", () => {
+  const seed = 777;
+
+  it("empurra a nave para fora quando penetra um asteroide", () => {
+    const a = sectorAsteroids(seed, beltSector, 0)[0];
+    const ship = { sx: a.sx, sy: a.sy, x: a.x + 10, y: a.y, vx: 5, vy: 0 };
+    collideShip(ship, seed);
+    expect(dist(a, ship)).toBeGreaterThanOrEqual(a.radius + SHIP_RADIUS - 0.5);
+  });
+
+  it("empurra mesmo se a nave estiver exatamente no centro", () => {
+    const a = sectorAsteroids(seed, beltSector, 0)[0];
+    const ship = { sx: a.sx, sy: a.sy, x: a.x, y: a.y, vx: 0, vy: 0 };
+    collideShip(ship, seed);
+    expect(dist(a, ship)).toBeGreaterThanOrEqual(a.radius + SHIP_RADIUS - 0.5);
+  });
+
+  it("não afeta nave em espaço vazio (fora do cinturão)", () => {
+    const ship = { sx: 0, sy: 0, x: 5000, y: 5000, vx: 100, vy: 0 };
+    const before = { ...ship };
+    collideShip(ship, seed);
+    expect(ship).toEqual(before);
+  });
+
+  it("findClearSpawn devolve um ponto livre de asteroides", () => {
+    const sp = findClearSpawn(seed, beltSector, 0);
+    const point: WorldPos = { sx: beltSector, sy: 0, x: sp.x, y: sp.y };
+    let inside = false;
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        for (const a of sectorAsteroids(seed, beltSector + ox, 0 + oy)) {
+          if (dist(a, point) < a.radius + SHIP_RADIUS) inside = true;
+        }
+      }
+    }
+    expect(inside).toBe(false);
   });
 });

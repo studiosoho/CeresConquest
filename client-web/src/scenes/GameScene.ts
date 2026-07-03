@@ -12,6 +12,7 @@ import {
   SimWorld,
   makeShip,
   stepShip,
+  collideShip,
   sectorAsteroids,
   type ShipState,
 } from "@ceres/sim-core";
@@ -27,7 +28,7 @@ const LINE_WIDTH = 3;
 const BEAM_WIDTH = 2;
 
 /** Zoom inicial: os asteroides agora são grandes; parte-se afastado para ver a escala. */
-const INITIAL_ZOOM = 0.5;
+const INITIAL_ZOOM = 0.3;
 
 const INPUT_SEND_HZ = 30;
 /** fator de correção por frame em direção ao estado autoritativo */
@@ -35,7 +36,7 @@ const OWN_BLEND = 0.1;
 const REMOTE_BLEND = 0.3;
 
 // ── zoom ──
-const ZOOM_MIN = 0.15;
+const ZOOM_MIN = 0.08;
 const ZOOM_MAX = 3;
 const ZOOM_WHEEL_STEP = 1.15;
 const ZOOM_KEY_STEP = 1.03;
@@ -213,9 +214,10 @@ export class GameScene extends Phaser.Scene {
     // mantém a câmera de UI cobrindo a tela (modo RESIZE)
     this.uiCam.setSize(this.scale.width, this.scale.height);
 
-    // input → predição local (mesmo stepShip do servidor) → envio
+    // input → predição local (mesmo stepShip + colisão do servidor) → envio
     const input = this.readInput();
     stepShip(this.localShip, input, dt);
+    collideShip(this.localShip, this.worldSeed);
     this.sendAccum += dt;
     if (this.sendAccum >= 1 / INPUT_SEND_HZ) {
       this.sendAccum = 0;
