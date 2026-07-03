@@ -1,0 +1,21 @@
+{
+  "name": "@ceres/client-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ceres/shared": "*",
+    "@ceres/sim-core": "*",
+    "colyseus.js": "^0.15.0",
+    "phaser": "^3.87.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vite": "^6.0.0"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@ceres/server",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ceres/shared": "*",
+    "@ceres/sim-core": "*",
+    "@colyseus/schema": "^2.0.0",
+    "colyseus": "^0.15.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

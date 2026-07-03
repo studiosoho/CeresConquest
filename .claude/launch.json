@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "server",
+      "runtimeExecutable": "C:\\Users\\rodrigosouza\\workspace\\CeresConquest\\scripts\\dev-server.cmd",
+      "runtimeArgs": [],
+      "port": 2567
+    },
+    {
+      "name": "client",
+      "runtimeExecutable": "C:\\Users\\rodrigosouza\\workspace\\CeresConquest\\scripts\\dev-client.cmd",
+      "runtimeArgs": [],
+      "port": 5173
+    }
+  ]
+}

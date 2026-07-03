@@ -1,0 +1,13 @@
+/** Contrato de mensagens cliente ↔ servidor. Neutro de engine. */
+
+/** Intenção de pilotagem enviada pelo cliente a cada ~33ms. */
+export interface ShipInput {
+  thrust: boolean;
+  /** -1 = anti-horário, 0 = reto, 1 = horário */
+  turn: -1 | 0 | 1;
+  mine: boolean;
+}
+
+export const MSG_INPUT = "input";
+
+export const NEUTRAL_INPUT: ShipInput = { thrust: false, turn: 0, mine: false };

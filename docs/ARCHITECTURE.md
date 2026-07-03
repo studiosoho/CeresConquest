@@ -52,14 +52,19 @@ CeresConquest/
 Regras de dependência (estritas, verificáveis por lint):
 
 ```
-client-web ──► shared ◄── server ──► sim-core ──► shared
+server     ──► sim-core ──► shared
+client-web ──► sim-core ──► shared
 ```
 
 - `sim-core` e `shared` **nunca** importam de `server` ou `client-*`.
 - `sim-core` não importa nada de rede, engine ou filesystem. É uma função pura:
   `(estado, comandos, dt) → novo estado + eventos`. Testável isolada.
-- O cliente desktop (futuro `client-desktop/` em Godot) consome apenas o
-  protocolo definido em `shared/` — nenhuma outra dependência do monorepo.
+- O cliente **também** roda o `sim-core` (predição local da nave própria e
+  procgen determinística de asteroides) — o servidor permanece a autoridade;
+  o cliente apenas prediz e é corrigido.
+- O cliente desktop (futuro `client-desktop/` em Godot) consome o protocolo
+  definido em `shared/` e porta o subconjunto determinístico do `sim-core`
+  necessário para predição/procgen (kinemática da nave, RNG, procgen).
 
 ## 4. Netcode
 

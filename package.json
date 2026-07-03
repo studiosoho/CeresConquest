@@ -1,0 +1,18 @@
+{
+  "name": "ceresconquest",
+  "private": true,
+  "version": "0.1.0",
+  "description": "RTS espacial multiplayer no cinturão de asteroides — conquista de Ceres",
+  "workspaces": [
+    "shared",
+    "sim-core",
+    "server",
+    "client-web"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev -w server",
+    "dev:client": "npm run dev -w client-web",
+    "test": "npm run test -w sim-core",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}

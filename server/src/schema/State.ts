@@ -1,0 +1,23 @@
+import { Schema, MapSchema, type } from "@colyseus/schema";
+
+/**
+ * Estado sincronizado por rede. Espelho do sim-core — só o que os clientes
+ * precisam ver. Asteroides intactos NÃO entram aqui (procgen determinística
+ * no cliente, banda zero).
+ */
+export class ShipSchema extends Schema {
+  @type("int32") sx = 0;
+  @type("int32") sy = 0;
+  @type("float32") x = 0;
+  @type("float32") y = 0;
+  @type("float32") vx = 0;
+  @type("float32") vy = 0;
+  @type("float32") angle = 0;
+  @type("float32") ore = 0;
+  @type("boolean") mining = false;
+}
+
+export class MatchState extends Schema {
+  @type("uint32") worldSeed = 0;
+  @type({ map: ShipSchema }) ships = new MapSchema<ShipSchema>();
+}
