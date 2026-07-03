@@ -19,5 +19,9 @@ export class ShipSchema extends Schema {
 
 export class MatchState extends Schema {
   @type("uint32") worldSeed = 0;
+  // fronteira circular do mapa (arena): centro em setores + raio em unidades
+  @type("int32") mapCenterSx = 0;
+  @type("int32") mapCenterSy = 0;
+  @type("float32") mapRadius = 0;
   @type({ map: ShipSchema }) ships = new MapSchema<ShipSchema>();
 }

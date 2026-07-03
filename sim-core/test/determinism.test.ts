@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { sectorAsteroids, stepShip, makeShip, collideShip, findClearSpawn } from "../src";
+import {
+  sectorAsteroids,
+  stepShip,
+  makeShip,
+  collideShip,
+  clampToBoundary,
+  findClearSpawn,
+} from "../src";
 import {
   BELT_INNER_SECTORS,
   BELT_OUTER_SECTORS,
+  SECTOR_SIZE,
   SHIP_RADIUS,
   dist,
   type WorldPos,
@@ -89,5 +97,31 @@ describe("colisão nave × asteroide", () => {
       }
     }
     expect(inside).toBe(false);
+  });
+});
+
+describe("fronteira do mapa", () => {
+  const center: WorldPos = { sx: beltSector, sy: 0, x: 5000, y: 5000 };
+  const R = 5 * SECTOR_SIZE;
+
+  it("puxa a nave de volta quando ultrapassa o limite", () => {
+    const ship = { sx: beltSector + 10, sy: 0, x: 5000, y: 5000, vx: 400, vy: 0 };
+    clampToBoundary(ship, center, R);
+    expect(dist(center, ship)).toBeLessThanOrEqual(R + 0.5);
+  });
+
+  it("remove a velocidade para fora ao bater no limite", () => {
+    // nave além do limite, movendo-se para fora
+    const ship = { sx: beltSector, sy: 0, x: 5000 + R + 1000, y: 5000, vx: 400, vy: 0 };
+    clampToBoundary(ship, center, R);
+    expect(ship.vx).toBeLessThanOrEqual(0.001); // velocidade radial p/ fora zerada
+    expect(dist(center, ship)).toBeLessThanOrEqual(R + 0.5);
+  });
+
+  it("não afeta nave dentro do limite", () => {
+    const ship = { sx: beltSector, sy: 0, x: 6000, y: 5000, vx: 100, vy: 0 };
+    const before = { ...ship };
+    clampToBoundary(ship, center, R);
+    expect(ship).toEqual(before);
   });
 });

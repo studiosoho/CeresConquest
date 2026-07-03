@@ -5,6 +5,8 @@ import {
   MSG_INPUT,
   SECTOR_SIZE,
   relVec,
+  mapSizeFromRadiusSectors,
+  type MapSize,
   type ShipInput,
   type WorldPos,
 } from "@ceres/shared";
@@ -13,6 +15,7 @@ import {
   makeShip,
   stepShip,
   collideShip,
+  clampToBoundary,
   sectorAsteroids,
   type ShipState,
 } from "@ceres/sim-core";
@@ -22,6 +25,14 @@ const COLOR_OWN = 0xffffff;
 const COLOR_REMOTE = 0x7f8ea3;
 const COLOR_ASTEROID = 0x5a6b7a;
 const COLOR_BEAM = 0x9fd4ff;
+const COLOR_BOUNDARY = 0xcc5544;
+
+const MAP_SIZE_LABEL: Record<MapSize | "custom", string> = {
+  small: "pequeno",
+  medium: "médio",
+  large: "grande",
+  custom: "custom",
+};
 
 /**
  * Largura das linhas do wireframe, em PIXELS DE TELA (constante em qualquer
@@ -85,8 +96,13 @@ export class GameScene extends Phaser.Scene {
   /** origem flutuante: setor de referência do espaço de render */
   private origin = { sx: 0, sy: 0 };
 
+  /** fronteira do mapa (arena) recebida do servidor */
+  private mapCenter: WorldPos | null = null;
+  private mapRadius = 0;
+
   private ownGfx!: Phaser.GameObjects.Graphics;
   private beamGfx!: Phaser.GameObjects.Graphics;
+  private boundaryGfx!: Phaser.GameObjects.Graphics;
   private remotes = new Map<string, RemoteView>();
   private asteroidGfx: Phaser.GameObjects.Graphics[] = [];
   private hud!: Phaser.GameObjects.Text;
@@ -124,7 +140,9 @@ export class GameScene extends Phaser.Scene {
     this.uiLayer = this.add.container(0, 0);
 
     this.beamGfx = this.add.graphics();
+    this.boundaryGfx = this.add.graphics();
     this.worldLayer.add(this.beamGfx);
+    this.worldLayer.add(this.boundaryGfx);
     this.ownGfx = this.makeShipGfx(COLOR_OWN);
     this.ownGfx.setVisible(false);
 
@@ -168,6 +186,13 @@ export class GameScene extends Phaser.Scene {
 
   private syncFromServer(state: any) {
     this.worldSeed = state.worldSeed >>> 0;
+    this.mapRadius = state.mapRadius;
+    this.mapCenter = {
+      sx: state.mapCenterSx,
+      sy: state.mapCenterSy,
+      x: SECTOR_SIZE / 2,
+      y: SECTOR_SIZE / 2,
+    };
 
     const seen = new Set<string>();
     state.ships.forEach((s: any, id: string) => {
@@ -230,6 +255,9 @@ export class GameScene extends Phaser.Scene {
     const input = this.readInput();
     stepShip(this.localShip, input, dt);
     collideShip(this.localShip, this.worldSeed);
+    if (this.mapCenter && this.mapRadius > 0) {
+      clampToBoundary(this.localShip, this.mapCenter, this.mapRadius);
+    }
     this.sendAccum += dt;
     if (this.sendAccum >= 1 / INPUT_SEND_HZ) {
       this.sendAccum = 0;
@@ -377,12 +405,22 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
+    // fronteira do mapa (arena)
+    this.boundaryGfx.clear();
+    if (this.mapCenter && this.mapRadius > 0) {
+      const c = this.toRender(this.mapCenter);
+      const bw = Phaser.Math.Clamp(SCREEN_LINE_WIDTH / this.cameras.main.zoom, 0.5, 120);
+      this.boundaryGfx.lineStyle(bw, COLOR_BOUNDARY, 0.7);
+      this.boundaryGfx.strokeCircle(c.x, c.y, this.mapRadius);
+    }
+
     this.drawMinimap(own);
 
     const ore = Math.floor(authoritative?.ore ?? this.localShip!.ore);
     const zoom = this.cameras.main.zoom;
+    const mapName = MAP_SIZE_LABEL[mapSizeFromRadiusSectors(this.mapRadius / SECTOR_SIZE)];
     this.hud.setText(
-      `Minério: ${ore}  ·  Jogadores: ${this.serverShips.size}  ·  Setor (${this.localShip!.sx}, ${this.localShip!.sy})  ·  Zoom ${zoom.toFixed(2)}x\n` +
+      `Minério: ${ore}  ·  Jogadores: ${this.serverShips.size}  ·  Mapa: ${mapName}  ·  Setor (${this.localShip!.sx}, ${this.localShip!.sy})  ·  Zoom ${zoom.toFixed(2)}x\n` +
         `W/↑ acelerar · A/D ou ←/→ girar · ESPAÇO minerar · roda/+/- zoom`,
     );
   }

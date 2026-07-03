@@ -53,6 +53,30 @@ export function collideShip(ship: Body, seed: number): void {
   normalizePos(ship);
 }
 
+/**
+ * Fronteira do mapa: mantém a nave dentro de um raio a partir do centro da
+ * arena. Empurra de volta e remove a velocidade que aponta para fora.
+ * Pura e determinística — roda no servidor e na predição do cliente.
+ */
+export function clampToBoundary(ship: Body, center: WorldPos, radiusUnits: number): void {
+  const { dx, dy } = relVec(center, ship);
+  const d = Math.hypot(dx, dy);
+  if (d <= radiusUnits || d === 0) return;
+
+  const nx = dx / d;
+  const ny = dy / d;
+  const pen = d - radiusUnits;
+  ship.x -= nx * pen;
+  ship.y -= ny * pen;
+
+  const vn = ship.vx * nx + ship.vy * ny; // componente para fora
+  if (vn > 0) {
+    ship.vx -= vn * nx;
+    ship.vy -= vn * ny;
+  }
+  normalizePos(ship);
+}
+
 /** Folga (dist. à superfície do asteroide mais próximo) num ponto local do setor. */
 function clearanceAt(seed: number, sx: number, sy: number, x: number, y: number): number {
   const point: WorldPos = { sx, sy, x, y };

@@ -8,7 +8,7 @@ import {
 } from "@ceres/shared";
 import { makeShip, stepShip, type ShipState } from "./ship";
 import { sectorAsteroids, type Asteroid } from "./procgen";
-import { collideShip } from "./collision";
+import { collideShip, clampToBoundary } from "./collision";
 
 /**
  * Mundo de simulação: puro, sem rede, sem engine, sem I/O.
@@ -19,9 +19,17 @@ export class SimWorld {
   readonly seed: number;
   readonly ships = new Map<string, ShipState>();
   private readonly inputs = new Map<string, ShipInput>();
+  private boundaryCenter: WorldPos | null = null;
+  private boundaryRadius = 0;
 
   constructor(seed: number) {
     this.seed = seed;
+  }
+
+  /** Define a fronteira circular do mapa (centro + raio em unidades). */
+  setBoundary(center: WorldPos, radiusUnits: number): void {
+    this.boundaryCenter = { ...center };
+    this.boundaryRadius = radiusUnits;
   }
 
   addShip(id: string, pos: WorldPos): ShipState {
@@ -44,6 +52,7 @@ export class SimWorld {
       const input = this.inputs.get(id) ?? NEUTRAL_INPUT;
       stepShip(ship, input, dt);
       collideShip(ship, this.seed);
+      if (this.boundaryCenter) clampToBoundary(ship, this.boundaryCenter, this.boundaryRadius);
       ship.mining = false;
       if (input.mine) {
         const target = this.nearestAsteroid(ship);

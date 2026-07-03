@@ -1,8 +1,16 @@
 import { Room, type Client } from "colyseus";
-import { MSG_INPUT, TICK_RATE, type ShipInput } from "@ceres/shared";
+import {
+  MSG_INPUT,
+  TICK_RATE,
+  SECTOR_SIZE,
+  MAP_SIZES,
+  DEFAULT_MAP_SIZE,
+  type MapSize,
+  type ShipInput,
+} from "@ceres/shared";
 import { SimWorld, findClearSpawn, type ShipState } from "@ceres/sim-core";
 import { MatchState, ShipSchema } from "../schema/State";
-import { neighboringSpawns, type SpawnStrategy } from "../spawn";
+import { mapSpawns, beltBasePoint, type SpawnStrategy } from "../spawn";
 import { computeBotInput, makeBotState, type BotState } from "../bots";
 
 /** Nº de jogadores-teste autônomos (bots) por padrão. */
@@ -12,6 +20,7 @@ export interface MatchOptions {
   maxPlayers?: number;
   worldSeed?: number;
   spawnStrategy?: SpawnStrategy;
+  mapSize?: MapSize;
   bots?: number;
 }
 
@@ -21,22 +30,32 @@ export interface MatchOptions {
  */
 export class MatchRoom extends Room<MatchState> {
   private sim!: SimWorld;
-  private spawns: ReturnType<typeof neighboringSpawns> = [];
+  private spawns: ReturnType<typeof mapSpawns> = [];
   private spawnIndex = 0;
   private bots = new Map<string, BotState>();
 
   onCreate(options: MatchOptions = {}) {
     this.maxClients = options.maxPlayers ?? 12;
     const botCount = options.bots ?? DEFAULT_BOTS;
+    const mapSize = options.mapSize ?? DEFAULT_MAP_SIZE;
+    const radiusSectors = MAP_SIZES[mapSize].radiusSectors;
     const seed = options.worldSeed ?? (Math.random() * 0xffffffff) >>> 0;
 
     this.sim = new SimWorld(seed);
-    // por ora só "neighboring"; outras estratégias entram aqui (plugáveis).
-    // Espaço para humanos + bots, todos espalhados pela pista do cinturão.
-    this.spawns = neighboringSpawns(seed, this.maxClients + botCount);
+    // spawns em setores distintos do cinturão dentro da arena do mapa
+    this.spawns = mapSpawns(seed, radiusSectors, this.maxClients + botCount);
+
+    // fronteira circular: centro no ponto base do cinturão, raio pelo tamanho
+    const base = beltBasePoint(seed);
+    const center = { sx: base.sx, sy: base.sy, x: SECTOR_SIZE / 2, y: SECTOR_SIZE / 2 };
+    const radiusUnits = radiusSectors * SECTOR_SIZE;
+    this.sim.setBoundary(center, radiusUnits);
 
     this.setState(new MatchState());
     this.state.worldSeed = seed;
+    this.state.mapCenterSx = base.sx;
+    this.state.mapCenterSy = base.sy;
+    this.state.mapRadius = radiusUnits;
 
     // popula a partida com jogadores-teste autônomos
     for (let i = 0; i < botCount; i++) {
@@ -52,7 +71,8 @@ export class MatchRoom extends Room<MatchState> {
 
     this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
     console.log(
-      `[room] match criada — seed=${seed} maxPlayers=${this.maxClients} bots=${botCount}`,
+      `[room] match criada — seed=${seed} mapa=${mapSize}(${radiusSectors}s) ` +
+        `maxPlayers=${this.maxClients} bots=${botCount}`,
     );
   }
 
