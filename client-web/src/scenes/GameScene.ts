@@ -4,14 +4,17 @@ import {
   DEFAULT_PORT,
   MSG_INPUT,
   MSG_BUILD,
+  MSG_PRODUCE,
   SECTOR_SIZE,
   STRUCTURE_SPECS,
+  SHIP_PRODUCTION,
   BUILD_ASTEROID_RANGE,
   relVec,
   mapSizeFromRadiusSectors,
   type MapSize,
   type ShipInput,
   type StructureType,
+  type ShipKind,
   type WorldPos,
 } from "@ceres/shared";
 import {
@@ -23,7 +26,7 @@ import {
   sectorAsteroids,
   type ShipState,
 } from "@ceres/sim-core";
-import { SHIP_VERTS, asteroidVerts, structureVerts } from "../shapes";
+import { shipVerts, asteroidVerts, structureVerts } from "../shapes";
 
 const COLOR_OWN = 0xffffff;
 const COLOR_REMOTE = 0x7f8ea3;
@@ -32,6 +35,8 @@ const COLOR_BEAM = 0x9fd4ff;
 const COLOR_BOUNDARY = 0xcc5544;
 const COLOR_STRUCT_OWN = 0x5fd0a8;
 const COLOR_STRUCT_OTHER = 0xc8985a;
+/** naves da minha frota (produzidas, autônomas) */
+const COLOR_FLEET_OWN = 0x8fe36a;
 
 const MAP_SIZE_LABEL: Record<MapSize | "custom", string> = {
   small: "pequeno",
@@ -79,6 +84,8 @@ interface RemoteView {
   ry: number;
   angle: number;
   initialized: boolean;
+  kind: ShipKind;
+  color: number;
 }
 
 /** Snapshot plano de uma nave vindo do schema Colyseus. */
@@ -88,6 +95,8 @@ interface ServerShip extends WorldPos {
   angle: number;
   ore: number;
   mining: boolean;
+  owner: string;
+  kind: ShipKind;
 }
 
 /** Snapshot plano de uma estrutura vinda do schema. */
@@ -140,7 +149,8 @@ export class GameScene extends Phaser.Scene {
   private lastStrokeZoom = 0;
 
   private keys!: Record<
-    | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS" | "ONE" | "TWO",
+    | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS"
+    | "ONE" | "TWO" | "THREE" | "FOUR",
     Phaser.Input.Keyboard.Key
   >;
   private sendAccum = 0;
@@ -152,7 +162,7 @@ export class GameScene extends Phaser.Scene {
 
   async create() {
     this.keys = this.input.keyboard!.addKeys(
-      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO",
+      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO,THREE,FOUR",
     ) as GameScene["keys"];
 
     // camadas: a câmera principal (com zoom) só vê o mundo;
@@ -164,7 +174,7 @@ export class GameScene extends Phaser.Scene {
     this.boundaryGfx = this.add.graphics();
     this.worldLayer.add(this.beamGfx);
     this.worldLayer.add(this.boundaryGfx);
-    this.ownGfx = this.makeShipGfx(COLOR_OWN);
+    this.ownGfx = this.makeShipGfx(COLOR_OWN, "starter");
     this.ownGfx.setVisible(false);
 
     this.hud = this.add.text(12, 10, "Conectando…", {
@@ -222,6 +232,7 @@ export class GameScene extends Phaser.Scene {
         sx: s.sx, sy: s.sy, x: s.x, y: s.y,
         vx: s.vx, vy: s.vy, angle: s.angle,
         ore: s.ore, mining: s.mining,
+        owner: s.owner, kind: s.kind,
       });
     });
     for (const id of [...this.serverShips.keys()]) {
@@ -288,12 +299,18 @@ export class GameScene extends Phaser.Scene {
       this.redrawStrokes();
     }
 
-    // construção (autoritativa no servidor; sem predição local)
+    // construção e produção (autoritativas no servidor; sem predição local)
     if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) {
       this.room.send(MSG_BUILD, { type: "miningStation" as StructureType });
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) {
       this.room.send(MSG_BUILD, { type: "hq" as StructureType });
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) {
+      this.room.send(MSG_PRODUCE, { kind: "scout" });
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.FOUR)) {
+      this.room.send(MSG_PRODUCE, { kind: "attack" });
     }
 
     // input → predição local (mesmo stepShip + colisão do servidor) → envio
@@ -382,13 +399,20 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private makeShipGfx(color: number): Phaser.GameObjects.Graphics {
+  private makeShipGfx(color: number, kind: ShipKind): Phaser.GameObjects.Graphics {
     const g = this.add.graphics();
     g.lineStyle(this.strokeW(), color);
-    g.strokePoints(SHIP_VERTS, true, true);
+    g.strokePoints(shipVerts(kind), true, true);
     this.worldLayer.add(g);
     if (this.ownGfx) this.worldLayer.bringToTop(this.ownGfx);
     return g;
+  }
+
+  /** Cor de uma nave conforme o dono: própria pilotada, minha frota, ou alheia. */
+  private shipColor(server: ServerShip, id: string): number {
+    if (id === this.room.sessionId) return COLOR_OWN;
+    if (server.owner === this.room.sessionId) return COLOR_FLEET_OWN;
+    return COLOR_REMOTE;
   }
 
   private makeStructGfx(type: StructureType, own: boolean): Phaser.GameObjects.Graphics {
@@ -409,11 +433,11 @@ export class GameScene extends Phaser.Scene {
     const w = this.strokeW();
     this.ownGfx.clear();
     this.ownGfx.lineStyle(w, COLOR_OWN);
-    this.ownGfx.strokePoints(SHIP_VERTS, true, true);
+    this.ownGfx.strokePoints(shipVerts("starter"), true, true);
     for (const view of this.remotes.values()) {
       view.gfx.clear();
-      view.gfx.lineStyle(w, COLOR_REMOTE);
-      view.gfx.strokePoints(SHIP_VERTS, true, true);
+      view.gfx.lineStyle(w, view.color);
+      view.gfx.strokePoints(shipVerts(view.kind), true, true);
     }
     for (const view of this.structViews.values()) {
       view.gfx.clear();
@@ -433,7 +457,12 @@ export class GameScene extends Phaser.Scene {
       if (id === this.room.sessionId) continue;
       let view = this.remotes.get(id);
       if (!view) {
-        view = { gfx: this.makeShipGfx(COLOR_REMOTE).setDepth(9), rx: 0, ry: 0, angle: 0, initialized: false };
+        const color = this.shipColor(server, id);
+        view = {
+          gfx: this.makeShipGfx(color, server.kind).setDepth(9),
+          rx: 0, ry: 0, angle: 0, initialized: false,
+          kind: server.kind, color,
+        };
         this.remotes.set(id, view);
       }
       const target = this.toRender(server);
@@ -496,19 +525,33 @@ export class GameScene extends Phaser.Scene {
     const zoom = this.cameras.main.zoom;
     const mapName = MAP_SIZE_LABEL[mapSizeFromRadiusSectors(this.mapRadius / SECTOR_SIZE)];
 
-    // dicas de construção
+    // frota própria (naves com meu owner) e QG
+    let fleet = 0;
+    let hasHq = false;
+    for (const [id, s] of this.serverShips) {
+      if (s.owner === this.room.sessionId && id !== this.room.sessionId) fleet++;
+    }
+    for (const st of this.serverStructures.values()) {
+      if (st.owner === this.room.sessionId && st.stype === "hq") hasHq = true;
+    }
+
+    // dicas de construção e produção
     const nearAst = !!sim.nearestAsteroid(this.localShip!, BUILD_ASTEROID_RANGE);
     const st1 = STRUCTURE_SPECS.miningStation;
     const st2 = STRUCTURE_SPECS.hq;
-    const canMine = ore >= st1.cost && nearAst;
-    const canHq = ore >= st2.cost;
-    const hint1 = `[1] ${st1.label} (${st1.cost})${nearAst ? "" : " — aproxime-se de um asteroide"}`;
+    const p3 = SHIP_PRODUCTION.scout;
+    const p4 = SHIP_PRODUCTION.attack;
+    const mark = (ok: boolean) => (ok ? "» " : "  ");
+    const hint1 = `[1] ${st1.label} (${st1.cost})${nearAst ? "" : " — perto de asteroide"}`;
     const hint2 = `[2] ${st2.label} (${st2.cost})`;
+    const hint3 = `[3] ${p3.label} (${p3.cost})${hasHq ? "" : " — precisa de QG"}`;
+    const hint4 = `[4] ${p4.label} (${p4.cost})${hasHq ? "" : " — precisa de QG"}`;
 
     this.hud.setText(
-      `Minério: ${ore}  ·  Jogadores: ${this.serverShips.size}  ·  Mapa: ${mapName}  ·  Estruturas: ${this.serverStructures.size}  ·  Zoom ${zoom.toFixed(2)}x\n` +
+      `Minério: ${ore}  ·  Naves: ${this.serverShips.size}  ·  Frota: ${fleet}  ·  Mapa: ${mapName}  ·  Estruturas: ${this.serverStructures.size}  ·  Zoom ${zoom.toFixed(2)}x\n` +
         `W/↑ acelerar · A/D girar · ESPAÇO minerar · roda/+/- zoom\n` +
-        `${canMine ? "» " : "  "}${hint1}     ${canHq ? "» " : "  "}${hint2}`,
+        `${mark(ore >= st1.cost && nearAst)}${hint1}    ${mark(ore >= st2.cost)}${hint2}\n` +
+        `${mark(ore >= p3.cost && hasHq)}${hint3}    ${mark(ore >= p4.cost && hasHq)}${hint4}`,
     );
   }
 

@@ -2,15 +2,18 @@ import { Room, type Client } from "colyseus";
 import {
   MSG_INPUT,
   MSG_BUILD,
+  MSG_PRODUCE,
   TICK_RATE,
   SECTOR_SIZE,
   MAP_SIZES,
   DEFAULT_MAP_SIZE,
   STRUCTURE_SPECS,
+  SHIP_PRODUCTION,
   BUILD_ASTEROID_RANGE,
   type MapSize,
   type ShipInput,
   type BuildCommand,
+  type ProduceCommand,
 } from "@ceres/shared";
 import { SimWorld, findClearSpawn, type ShipState } from "@ceres/sim-core";
 import { MatchState, ShipSchema, StructureSchema } from "../schema/State";
@@ -38,6 +41,7 @@ export class MatchRoom extends Room<MatchState> {
   private spawnIndex = 0;
   private bots = new Map<string, BotState>();
   private structSeq = 0;
+  private shipSeq = 0;
 
   onCreate(options: MatchOptions = {}) {
     this.maxClients = options.maxPlayers ?? 12;
@@ -62,10 +66,10 @@ export class MatchRoom extends Room<MatchState> {
     this.state.mapCenterSy = base.sy;
     this.state.mapRadius = radiusUnits;
 
-    // popula a partida com jogadores-teste autônomos
+    // popula a partida com jogadores-teste autônomos (scouts neutros)
     for (let i = 0; i < botCount; i++) {
       const id = `bot-${i}`;
-      const ship = this.spawnShip(id, this.spawns[this.maxClients + i]);
+      const ship = this.spawnShip(id, this.spawns[this.maxClients + i], "", "scout");
       this.state.ships.set(id, this.mirrorSpawn(ship));
       this.bots.set(id, makeBotState());
     }
@@ -78,6 +82,10 @@ export class MatchRoom extends Room<MatchState> {
       this.tryBuild(client.sessionId, cmd?.type);
     });
 
+    this.onMessage(MSG_PRODUCE, (client: Client, cmd: ProduceCommand) => {
+      this.tryProduce(client.sessionId, cmd?.kind);
+    });
+
     this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
     console.log(
       `[room] match criada — seed=${seed} mapa=${mapSize}(${radiusSectors}s) ` +
@@ -87,7 +95,7 @@ export class MatchRoom extends Room<MatchState> {
 
   onJoin(client: Client) {
     const base = this.spawns[this.spawnIndex++ % this.spawns.length];
-    const ship = this.spawnShip(client.sessionId, base);
+    const ship = this.spawnShip(client.sessionId, base, client.sessionId, "starter");
     // espelha a posição de spawn JÁ no join — o primeiro estado que o
     // cliente recebe precisa ser real, não os defaults do schema
     this.state.ships.set(client.sessionId, this.mirrorSpawn(ship));
@@ -95,15 +103,26 @@ export class MatchRoom extends Room<MatchState> {
   }
 
   onLeave(client: Client) {
-    this.sim.removeShip(client.sessionId);
-    this.state.ships.delete(client.sessionId);
+    // remove a frota inteira do jogador (nave inicial + naves produzidas)
+    for (const [id, ship] of [...this.sim.ships]) {
+      if (id === client.sessionId || ship.owner === client.sessionId) {
+        this.sim.removeShip(id);
+        this.bots.delete(id);
+        this.state.ships.delete(id);
+      }
+    }
     console.log(`[room] ${client.sessionId} saiu`);
   }
 
   /** Cria uma nave no sim num ponto livre dentro do setor de spawn dado. */
-  private spawnShip(id: string, base: { sx: number; sy: number }): ShipState {
+  private spawnShip(
+    id: string,
+    base: { sx: number; sy: number },
+    owner = "",
+    kind: ShipState["kind"] = "starter",
+  ): ShipState {
     const local = findClearSpawn(this.sim.seed, base.sx, base.sy);
-    return this.sim.addShip(id, { sx: base.sx, sy: base.sy, x: local.x, y: local.y });
+    return this.sim.addShip(id, { sx: base.sx, sy: base.sy, x: local.x, y: local.y }, owner, kind);
   }
 
   /** Valida e constrói uma estrutura na posição da nave do jogador. */
@@ -130,12 +149,39 @@ export class MatchRoom extends Room<MatchState> {
     console.log(`[room] ${sessionId} construiu ${type} — setor (${ship.sx}, ${ship.sy})`);
   }
 
+  /** Fabrica uma nave no QG do jogador — autônoma (scout em ronda). */
+  private tryProduce(sessionId: string, kind?: ProduceCommand["kind"]): void {
+    const pilot = this.sim.ships.get(sessionId);
+    if (!pilot || !kind) return;
+    const spec = SHIP_PRODUCTION[kind];
+    if (!spec || pilot.ore < spec.cost) return;
+
+    // precisa de um QG próprio para fabricar
+    let hq: { sx: number; sy: number } | null = null;
+    for (const st of this.sim.structures.values()) {
+      if (st.owner === sessionId && st.type === "hq") {
+        hq = st;
+        break;
+      }
+    }
+    if (!hq) return;
+
+    pilot.ore -= spec.cost;
+    const id = `sh-${this.shipSeq++}`;
+    const ship = this.spawnShip(id, hq, sessionId, kind);
+    this.bots.set(id, makeBotState()); // pilotagem autônoma por enquanto
+    this.state.ships.set(id, this.mirrorSpawn(ship));
+    console.log(`[room] ${sessionId} fabricou ${kind} no QG — setor (${ship.sx}, ${ship.sy})`);
+  }
+
   private mirrorSpawn(ship: ShipState): ShipSchema {
     const s = new ShipSchema();
     s.sx = ship.sx;
     s.sy = ship.sy;
     s.x = ship.x;
     s.y = ship.y;
+    s.owner = ship.owner;
+    s.kind = ship.kind;
     return s;
   }
 

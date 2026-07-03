@@ -1,4 +1,4 @@
-import { SHIP_RADIUS, mulberry32, type StructureType } from "@ceres/shared";
+import { SHIP_RADIUS, mulberry32, type StructureType, type ShipKind } from "@ceres/shared";
 
 /**
  * Geometria wireframe (estilo Asteroids): assets são listas de vértices,
@@ -6,14 +6,30 @@ import { SHIP_RADIUS, mulberry32, type StructureType } from "@ceres/shared";
  * definição servirá ao renderer 3D do desktop.
  */
 
-/** Nave: triângulo com entalhe traseiro, apontando para +x, escalado por SHIP_RADIUS. */
 const R = SHIP_RADIUS;
+
+/** Nave inicial/scout: triângulo com entalhe traseiro, apontando para +x. */
 export const SHIP_VERTS: Array<{ x: number; y: number }> = [
   { x: R, y: 0 },
   { x: -R * 0.66, y: R * 0.55 },
   { x: -R * 0.33, y: 0 },
   { x: -R * 0.66, y: -R * 0.55 },
 ];
+
+/** Nave de ataque: silhueta mais larga e agressiva (asas). */
+const ATTACK_VERTS: Array<{ x: number; y: number }> = [
+  { x: R * 1.15, y: 0 },
+  { x: -R * 0.3, y: R * 0.4 },
+  { x: -R * 0.7, y: R * 0.85 },
+  { x: -R * 0.45, y: 0 },
+  { x: -R * 0.7, y: -R * 0.85 },
+  { x: -R * 0.3, y: -R * 0.4 },
+];
+
+/** Vértices da nave conforme a classe. */
+export function shipVerts(kind: ShipKind): Array<{ x: number; y: number }> {
+  return kind === "attack" ? ATTACK_VERTS : SHIP_VERTS;
+}
 
 /**
  * Silhueta de asteroide em formato "batata", determinística pela shapeSeed:

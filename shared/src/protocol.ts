@@ -21,3 +21,13 @@ export interface BuildCommand {
 }
 
 export const MSG_BUILD = "build";
+
+// ── Produção de naves ─────────────────────────────────────────────────
+import type { ProducibleKind } from "./ships";
+
+/** Pedido de fabricação de nave no QG. */
+export interface ProduceCommand {
+  kind: ProducibleKind;
+}
+
+export const MSG_PRODUCE = "produce";

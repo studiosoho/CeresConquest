@@ -35,8 +35,8 @@ export class SimWorld {
     this.boundaryRadius = radiusUnits;
   }
 
-  addShip(id: string, pos: WorldPos): ShipState {
-    const ship = makeShip(pos);
+  addShip(id: string, pos: WorldPos, owner = "", kind: ShipState["kind"] = "starter"): ShipState {
+    const ship = makeShip(pos, owner, kind);
     this.ships.set(id, ship);
     return ship;
   }

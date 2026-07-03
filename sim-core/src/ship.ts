@@ -5,6 +5,7 @@ import {
   SHIP_DRAG,
   normalizePos,
   type ShipInput,
+  type ShipKind,
   type WorldPos,
 } from "@ceres/shared";
 
@@ -15,10 +16,25 @@ export interface ShipState extends WorldPos {
   angle: number;
   ore: number;
   mining: boolean;
+  /** sessionId do dono ("" = neutra) */
+  owner: string;
+  kind: ShipKind;
 }
 
-export function makeShip(pos: WorldPos): ShipState {
-  return { ...pos, vx: 0, vy: 0, angle: 0, ore: 0, mining: false };
+export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "starter"): ShipState {
+  return {
+    sx: pos.sx,
+    sy: pos.sy,
+    x: pos.x,
+    y: pos.y,
+    vx: 0,
+    vy: 0,
+    angle: 0,
+    ore: 0,
+    mining: false,
+    owner,
+    kind,
+  };
 }
 
 /**
