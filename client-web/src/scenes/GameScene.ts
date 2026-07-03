@@ -22,6 +22,13 @@ const COLOR_REMOTE = 0x7f8ea3;
 const COLOR_ASTEROID = 0x5a6b7a;
 const COLOR_BEAM = 0x9fd4ff;
 
+/** Largura das linhas do wireframe (dobrada). */
+const LINE_WIDTH = 3;
+const BEAM_WIDTH = 2;
+
+/** Zoom inicial: os asteroides agora são grandes; parte-se afastado para ver a escala. */
+const INITIAL_ZOOM = 0.5;
+
 const INPUT_SEND_HZ = 30;
 /** fator de correção por frame em direção ao estado autoritativo */
 const OWN_BLEND = 0.1;
@@ -86,7 +93,7 @@ export class GameScene extends Phaser.Scene {
   private minimapGfx!: Phaser.GameObjects.Graphics;
   /** cache das posições (espaço de render) dos asteroides 3×3 — para o minimapa */
   private nearbyAsteroids: Array<{ rx: number; ry: number }> = [];
-  private zoomTarget = 1;
+  private zoomTarget = INITIAL_ZOOM;
 
   private keys!: Record<
     "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS",
@@ -125,6 +132,7 @@ export class GameScene extends Phaser.Scene {
     this.uiCam = this.cameras.add(0, 0, this.scale.width, this.scale.height);
     this.uiCam.ignore(this.worldLayer);
     this.cameras.main.ignore(this.uiLayer);
+    this.cameras.main.setZoom(INITIAL_ZOOM);
 
     // zoom pela roda do mouse
     this.input.on(
@@ -276,7 +284,7 @@ export class GameScene extends Phaser.Scene {
         for (const a of sectorAsteroids(this.worldSeed, this.origin.sx + ox, this.origin.sy + oy)) {
           const pos = this.toRender(a);
           const g = this.add.graphics({ x: pos.x, y: pos.y });
-          g.lineStyle(1.5, COLOR_ASTEROID);
+          g.lineStyle(LINE_WIDTH, COLOR_ASTEROID);
           g.strokePoints(asteroidVerts(a.shapeSeed, a.radius), true, true);
           this.worldLayer.add(g);
           this.worldLayer.sendToBack(g);
@@ -289,7 +297,7 @@ export class GameScene extends Phaser.Scene {
 
   private makeShipGfx(color: number): Phaser.GameObjects.Graphics {
     const g = this.add.graphics();
-    g.lineStyle(1.5, color);
+    g.lineStyle(LINE_WIDTH, color);
     g.strokePoints(SHIP_VERTS, true, true);
     this.worldLayer.add(g);
     if (this.ownGfx) this.worldLayer.bringToTop(this.ownGfx);
@@ -330,7 +338,7 @@ export class GameScene extends Phaser.Scene {
       const target = sim.nearestAsteroid(this.localShip!);
       if (target) {
         const t = this.toRender(target);
-        this.beamGfx.lineStyle(1, COLOR_BEAM, 0.8);
+        this.beamGfx.lineStyle(BEAM_WIDTH, COLOR_BEAM, 0.8);
         this.beamGfx.lineBetween(own.x, own.y, t.x, t.y);
       }
     }

@@ -1,4 +1,11 @@
-import { SECTOR_SIZE, sectorInBelt, hash3, mulberry32 } from "@ceres/shared";
+import {
+  SECTOR_SIZE,
+  sectorInBelt,
+  hash3,
+  mulberry32,
+  ASTEROID_MIN_RADIUS,
+  ASTEROID_MAX_RADIUS,
+} from "@ceres/shared";
 
 /**
  * Asteroide gerado proceduralmente. NUNCA é armazenado nem sincronizado:
@@ -17,10 +24,10 @@ export interface Asteroid {
   shapeSeed: number;
 }
 
-const MIN_RADIUS = 40;
-const MAX_RADIUS = 130;
-const MIN_COUNT = 5;
-const MAX_COUNT = 14;
+const MIN_COUNT = 3;
+const MAX_COUNT = 8;
+/** expoente da distribuição de tamanhos: >1 → muitos pequenos, poucos gigantes */
+const SIZE_SKEW = 3;
 
 /**
  * Conteúdo determinístico de um setor: mesmo (worldSeed, sx, sy) → mesmos
@@ -35,10 +42,15 @@ export function sectorAsteroids(worldSeed: number, sx: number, sy: number): Aste
 
   const asteroids: Asteroid[] = [];
   for (let i = 0; i < count; i++) {
-    const radius = MIN_RADIUS + rng() * (MAX_RADIUS - MIN_RADIUS);
-    // margem para o asteroide não vazar a borda do setor
-    const x = radius + rng() * (SECTOR_SIZE - 2 * radius);
-    const y = radius + rng() * (SECTOR_SIZE - 2 * radius);
+    // distribuição enviesada para o pequeno: raio = min·(max/min)^(t^skew)
+    const t = rng();
+    const radius =
+      ASTEROID_MIN_RADIUS *
+      Math.pow(ASTEROID_MAX_RADIUS / ASTEROID_MIN_RADIUS, Math.pow(t, SIZE_SKEW));
+    // margem para o centro não colar na borda do setor
+    const margin = Math.min(radius, SECTOR_SIZE * 0.45);
+    const x = margin + rng() * (SECTOR_SIZE - 2 * margin);
+    const y = margin + rng() * (SECTOR_SIZE - 2 * margin);
     asteroids.push({
       id: `${sx}:${sy}:${i}`,
       sx,

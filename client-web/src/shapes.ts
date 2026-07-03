@@ -1,31 +1,62 @@
-import { mulberry32 } from "@ceres/shared";
+import { SHIP_RADIUS, mulberry32 } from "@ceres/shared";
 
 /**
  * Geometria wireframe (estilo Asteroids): assets são listas de vértices,
- * derivadas de sementes — nunca imagens. A mesma definição servirá ao
- * renderer 3D do desktop.
+ * derivadas de sementes e da escala de tamanhos — nunca imagens. A mesma
+ * definição servirá ao renderer 3D do desktop.
  */
 
-/** Nave: triângulo com entalhe traseiro, apontando para +x. */
+/** Nave: triângulo com entalhe traseiro, apontando para +x, escalado por SHIP_RADIUS. */
+const R = SHIP_RADIUS;
 export const SHIP_VERTS: Array<{ x: number; y: number }> = [
-  { x: 18, y: 0 },
-  { x: -12, y: 10 },
-  { x: -6, y: 0 },
-  { x: -12, y: -10 },
+  { x: R, y: 0 },
+  { x: -R * 0.66, y: R * 0.55 },
+  { x: -R * 0.33, y: 0 },
+  { x: -R * 0.66, y: -R * 0.55 },
 ];
 
-/** Silhueta lascada de asteroide, determinística pela shapeSeed. */
+/**
+ * Silhueta de asteroide em formato "batata", determinística pela shapeSeed:
+ * alongamento (aspect) + duas protuberâncias de baixa frequência + pequeno
+ * ruído por vértice. Normalizada para que o raio máximo seja exatamente
+ * `radius` — mantém coerência com a colisão/mineração do sim-core.
+ */
 export function asteroidVerts(
   shapeSeed: number,
   radius: number,
 ): Array<{ x: number; y: number }> {
   const rng = mulberry32(shapeSeed);
-  const n = 8 + Math.floor(rng() * 5); // 8–12 vértices
-  const verts: Array<{ x: number; y: number }> = [];
+  const n = 10 + Math.floor(rng() * 7); // 10–16 vértices
+
+  // alongamento tipo batata, distribuído entre os dois eixos
+  const aspect = 1 + rng() * 1.0; // 1.0 – 2.0
+  const sx = Math.sqrt(aspect);
+  const sy = 1 / sx;
+  const rot = rng() * Math.PI * 2;
+
+  // duas ondas de baixa frequência dão a lombada irregular da batata
+  const a1 = 0.12 + rng() * 0.18;
+  const p1 = rng() * Math.PI * 2;
+  const k1 = 2 + Math.floor(rng() * 2); // 2–3
+  const a2 = 0.04 + rng() * 0.1;
+  const p2 = rng() * Math.PI * 2;
+  const k2 = 4 + Math.floor(rng() * 3); // 4–6
+
+  const raw: Array<{ x: number; y: number }> = [];
+  let maxD = 0;
   for (let i = 0; i < n; i++) {
-    const theta = (i / n) * Math.PI * 2;
-    const r = radius * (0.7 + rng() * 0.45);
-    verts.push({ x: Math.cos(theta) * r, y: Math.sin(theta) * r });
+    const t = (i / n) * Math.PI * 2;
+    const rr =
+      1 + a1 * Math.sin(k1 * t + p1) + a2 * Math.sin(k2 * t + p2) + (rng() - 0.5) * 0.08;
+    const px = Math.cos(t) * rr * sx;
+    const py = Math.sin(t) * rr * sy;
+    const cx = px * Math.cos(rot) - py * Math.sin(rot);
+    const cy = px * Math.sin(rot) + py * Math.cos(rot);
+    const d = Math.hypot(cx, cy);
+    if (d > maxD) maxD = d;
+    raw.push({ x: cx, y: cy });
   }
-  return verts;
+
+  const k = radius / maxD; // normaliza para bounding = radius
+  return raw.map((v) => ({ x: v.x * k, y: v.y * k }));
 }
