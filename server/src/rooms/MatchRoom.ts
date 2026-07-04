@@ -25,6 +25,7 @@ import {
   type ShipInput,
   type BuildCommand,
   type ProduceCommand,
+  type TaxiCommand,
 } from "@ceres/shared";
 import { SimWorld, findClearSpawn, type ShipState } from "@ceres/sim-core";
 import { MatchState, ShipSchema, StructureSchema, PlayerSchema } from "../schema/State";
@@ -118,8 +119,8 @@ export class MatchRoom extends Room<MatchState> {
       this.tryAutoMine(client.sessionId);
     });
 
-    this.onMessage(MSG_TAXI, (client: Client) => {
-      this.tryTaxi(client.sessionId);
+    this.onMessage(MSG_TAXI, (client: Client, cmd: TaxiCommand) => {
+      this.tryTaxi(client.sessionId, cmd?.shipId);
     });
 
     this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
@@ -244,26 +245,38 @@ export class MatchRoom extends Room<MatchState> {
    * Requisita um táxi: despacha uma nave guardada no hangar próprio mais
    * próximo para a estrutura onde o jogador está ancorado, se houver vaga lá.
    */
-  private tryTaxi(sessionId: string): void {
+  private tryTaxi(sessionId: string, shipId?: string): void {
     const active = this.activeShipOf(sessionId);
     if (!active || !active.anchored) return;
     const dest = this.nearestOwnStructure(sessionId, active, DOCK_RANGE);
     if (!dest) return;
 
-    // nave guardada em OUTRO hangar próprio, cujo hangar é o mais perto do destino
     let best: { id: string; ship: ShipState; src: (typeof dest) } | null = null;
-    let bestDist = Infinity;
-    for (const [id, s] of this.sim.ships) {
-      if (s.owner !== sessionId || !s.stored || s.hqId === dest.id) continue;
-      const src = this.sim.structures.get(s.hqId);
-      if (!src) continue;
-      const d = dist(src, dest);
-      if (d < bestDist) {
-        bestDist = d;
-        best = { id, ship: s, src };
+
+    // nave escolhida pelo jogador (qual nave de qual QG)
+    if (shipId) {
+      const s = this.sim.ships.get(shipId);
+      const src = s ? this.sim.structures.get(s.hqId) : undefined;
+      if (s && src && s.owner === sessionId && s.stored && s.hqId !== dest.id) {
+        best = { id: shipId, ship: s, src };
       }
     }
-    if (!best) return; // nenhuma nave em outro hangar
+
+    // fallback: nave do hangar próprio mais perto do destino
+    if (!best) {
+      let bestDist = Infinity;
+      for (const [id, s] of this.sim.ships) {
+        if (s.owner !== sessionId || !s.stored || s.hqId === dest.id) continue;
+        const src = this.sim.structures.get(s.hqId);
+        if (!src) continue;
+        const d = dist(src, dest);
+        if (d < bestDist) {
+          bestDist = d;
+          best = { id, ship: s, src };
+        }
+      }
+    }
+    if (!best) return; // nenhuma nave disponível
     if (!this.hangarHasFreeSlot(sessionId, dest, best.ship.kind)) return; // destino sem vaga
 
     // despacha: sai do hangar de origem e voa até o destino
@@ -314,15 +327,17 @@ export class MatchRoom extends Room<MatchState> {
     return true;
   }
 
-  /** Tira uma nave do hangar e a posiciona ancorada na estrutura. */
-  private deployFromHangar(ship: ShipState, struct: { id: string; sx: number; sy: number }): void {
-    const local = findClearSpawn(this.sim.seed, struct.sx, struct.sy);
+  /** Tira uma nave do hangar e a posiciona ancorada NA posição da estrutura. */
+  private deployFromHangar(
+    ship: ShipState,
+    struct: { id: string; sx: number; sy: number; x: number; y: number },
+  ): void {
     ship.stored = false;
     ship.anchored = true;
     ship.sx = struct.sx;
     ship.sy = struct.sy;
-    ship.x = local.x;
-    ship.y = local.y;
+    ship.x = struct.x;
+    ship.y = struct.y;
     ship.vx = 0;
     ship.vy = 0;
   }
@@ -385,15 +400,19 @@ export class MatchRoom extends Room<MatchState> {
     console.log(`[room] ${sessionId} construiu ${type} na borda de asteroide — setor (${pos.sx}, ${pos.sy})`);
   }
 
-  /** Fabrica uma nave no hangar do QG ancorado, respeitando a capacidade. */
+  /**
+   * Fabrica uma nave no hangar do QG mais próximo, respeitando a capacidade.
+   * Basta estar ancorado em QUALQUER estrutura própria (ex.: numa estação de
+   * mineração, a nave é construída no QG mais próximo dela).
+   */
   private tryProduce(sessionId: string, kind?: ProduceCommand["kind"]): void {
     const pilot = this.activeShipOf(sessionId);
     if (!pilot || !kind) return;
     const spec = SHIP_PRODUCTION[kind];
     if (!spec || this.sim.getOre(sessionId) < spec.cost) return;
-    if (!pilot.anchored) return; // precisa estar ancorado no QG
+    if (!pilot.anchored) return; // precisa estar ancorado numa estrutura
 
-    const hq = this.nearestOwnStructure(sessionId, pilot, DOCK_RANGE, "hq");
+    const hq = this.nearestOwnStructure(sessionId, pilot, Infinity, "hq");
     if (!hq) return;
 
     // hangar deste QG: no máximo HANGAR_CAP naves de cada tipo
