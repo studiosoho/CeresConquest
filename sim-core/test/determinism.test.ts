@@ -139,6 +139,7 @@ describe("estruturas", () => {
       sy: 0,
       x: 5000,
       y: 5000,
+      angle: 0,
     });
     const oreAntes = owner.ore;
     for (let i = 0; i < 20; i++) w.tick(1 / 20); // 1s

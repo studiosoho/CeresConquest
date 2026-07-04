@@ -1,10 +1,12 @@
-// Classes de nave e custos de produção no QG. A nave inicial ("starter") é a
-// pilotada pelo jogador; scout e nave de ataque são fabricadas no QG.
+// Classes de nave e produção no QG.
+// - builder: a nave que o jogador pilota e usa para construir estruturas.
+// - mining:  fabricada no QG; minera autonomamente (no protótipo).
+// - attack:  fabricada no QG; autônoma (no protótipo).
 
-export type ShipKind = "starter" | "scout" | "attack";
+export type ShipKind = "builder" | "mining" | "attack";
 
-/** Classes que podem ser fabricadas no QG. */
-export type ProducibleKind = "scout" | "attack";
+/** Classes fabricáveis no QG. */
+export type ProducibleKind = "mining" | "attack";
 
 export interface ShipProductionSpec {
   label: string;
@@ -13,6 +15,12 @@ export interface ShipProductionSpec {
 }
 
 export const SHIP_PRODUCTION: Record<ProducibleKind, ShipProductionSpec> = {
-  scout: { label: "Scout", cost: 80 },
+  mining: { label: "Nave de mineração", cost: 80 },
   attack: { label: "Nave de ataque", cost: 150 },
 };
+
+/** Capacidade do hangar do QG por tipo de nave. */
+export const HANGAR_CAP = 2;
+
+/** Distância máxima até o próprio QG para ancorar. */
+export const DOCK_RANGE = 500;

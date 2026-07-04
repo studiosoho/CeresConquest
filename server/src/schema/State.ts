@@ -15,8 +15,9 @@ export class ShipSchema extends Schema {
   @type("float32") angle = 0;
   @type("float32") ore = 0;
   @type("boolean") mining = false;
+  @type("boolean") anchored = false;
   @type("string") owner = "";
-  @type("string") kind = "starter";
+  @type("string") kind = "builder";
 }
 
 export class StructureSchema extends Schema {
@@ -26,6 +27,7 @@ export class StructureSchema extends Schema {
   @type("int32") sy = 0;
   @type("float32") x = 0;
   @type("float32") y = 0;
+  @type("float32") angle = 0;
 }
 
 export class MatchState extends Schema {

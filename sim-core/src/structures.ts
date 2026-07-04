@@ -9,4 +9,6 @@ export interface Structure extends WorldPos {
   type: StructureType;
   /** sessionId do dono */
   owner: string;
+  /** orientação (rad), apontando para fora da borda do asteroide */
+  angle: number;
 }

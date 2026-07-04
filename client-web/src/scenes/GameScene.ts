@@ -5,9 +5,11 @@ import {
   MSG_INPUT,
   MSG_BUILD,
   MSG_PRODUCE,
+  MSG_ANCHOR,
   SECTOR_SIZE,
   STRUCTURE_SPECS,
   SHIP_PRODUCTION,
+  HANGAR_CAP,
   BUILD_ASTEROID_RANGE,
   relVec,
   mapSizeFromRadiusSectors,
@@ -26,7 +28,7 @@ import {
   sectorAsteroids,
   type ShipState,
 } from "@ceres/sim-core";
-import { shipVerts, asteroidVerts, structureVerts } from "../shapes";
+import { shipVerts, asteroidVerts, structureVerts, asteroidSpin } from "../shapes";
 
 const COLOR_OWN = 0xffffff;
 const COLOR_REMOTE = 0x7f8ea3;
@@ -73,6 +75,8 @@ const MINIMAP_SIZE = 220;
 const MINIMAP_MARGIN = 12;
 /** alcance do minimapa: unidades do centro até a borda */
 const MINIMAP_RANGE = 15_000;
+/** rotação máxima dos asteroides (rad/s) — leve. */
+const MAX_ASTEROID_SPIN = 0.12;
 const COLOR_MINIMAP_BG = 0x000000;
 const COLOR_MINIMAP_BORDER = 0x3d4b5c;
 const COLOR_MINIMAP_GRID = 0x22303f;
@@ -97,12 +101,14 @@ interface ServerShip extends WorldPos {
   mining: boolean;
   owner: string;
   kind: ShipKind;
+  anchored: boolean;
 }
 
 /** Snapshot plano de uma estrutura vinda do schema. */
 interface ServerStructure extends WorldPos {
   stype: StructureType;
   owner: string;
+  angle: number;
 }
 
 interface StructView {
@@ -132,7 +138,7 @@ export class GameScene extends Phaser.Scene {
   private beamGfx!: Phaser.GameObjects.Graphics;
   private boundaryGfx!: Phaser.GameObjects.Graphics;
   private remotes = new Map<string, RemoteView>();
-  private asteroidGfx: Phaser.GameObjects.Graphics[] = [];
+  private asteroidGfx: Array<{ gfx: Phaser.GameObjects.Graphics; spin: number }> = [];
   private serverStructures = new Map<string, ServerStructure>();
   private structViews = new Map<string, StructView>();
   private hud!: Phaser.GameObjects.Text;
@@ -150,7 +156,7 @@ export class GameScene extends Phaser.Scene {
 
   private keys!: Record<
     | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS"
-    | "ONE" | "TWO" | "THREE" | "FOUR",
+    | "ONE" | "TWO" | "THREE" | "FOUR" | "F",
     Phaser.Input.Keyboard.Key
   >;
   private sendAccum = 0;
@@ -162,7 +168,7 @@ export class GameScene extends Phaser.Scene {
 
   async create() {
     this.keys = this.input.keyboard!.addKeys(
-      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO,THREE,FOUR",
+      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO,THREE,FOUR,F",
     ) as GameScene["keys"];
 
     // camadas: a câmera principal (com zoom) só vê o mundo;
@@ -174,7 +180,7 @@ export class GameScene extends Phaser.Scene {
     this.boundaryGfx = this.add.graphics();
     this.worldLayer.add(this.beamGfx);
     this.worldLayer.add(this.boundaryGfx);
-    this.ownGfx = this.makeShipGfx(COLOR_OWN, "starter");
+    this.ownGfx = this.makeShipGfx(COLOR_OWN, "builder");
     this.ownGfx.setVisible(false);
 
     this.hud = this.add.text(12, 10, "Conectando…", {
@@ -232,7 +238,7 @@ export class GameScene extends Phaser.Scene {
         sx: s.sx, sy: s.sy, x: s.x, y: s.y,
         vx: s.vx, vy: s.vy, angle: s.angle,
         ore: s.ore, mining: s.mining,
-        owner: s.owner, kind: s.kind,
+        owner: s.owner, kind: s.kind, anchored: s.anchored,
       });
     });
     for (const id of [...this.serverShips.keys()]) {
@@ -248,7 +254,7 @@ export class GameScene extends Phaser.Scene {
     state.structures.forEach((st: any, id: string) => {
       seenSt.add(id);
       this.serverStructures.set(id, {
-        stype: st.stype, owner: st.owner, sx: st.sx, sy: st.sy, x: st.x, y: st.y,
+        stype: st.stype, owner: st.owner, sx: st.sx, sy: st.sy, x: st.x, y: st.y, angle: st.angle,
       });
     });
     for (const id of [...this.serverStructures.keys()]) {
@@ -299,7 +305,7 @@ export class GameScene extends Phaser.Scene {
       this.redrawStrokes();
     }
 
-    // construção e produção (autoritativas no servidor; sem predição local)
+    // construção, produção e ancoragem (autoritativas no servidor)
     if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) {
       this.room.send(MSG_BUILD, { type: "miningStation" as StructureType });
     }
@@ -307,18 +313,28 @@ export class GameScene extends Phaser.Scene {
       this.room.send(MSG_BUILD, { type: "hq" as StructureType });
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) {
-      this.room.send(MSG_PRODUCE, { kind: "scout" });
+      this.room.send(MSG_PRODUCE, { kind: "mining" });
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.FOUR)) {
       this.room.send(MSG_PRODUCE, { kind: "attack" });
     }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F)) {
+      this.room.send(MSG_ANCHOR);
+    }
+
+    const anchored = this.serverShips.get(this.room.sessionId)?.anchored ?? false;
 
     // input → predição local (mesmo stepShip + colisão do servidor) → envio
-    const input = this.readInput();
-    stepShip(this.localShip, input, dt);
-    collideShip(this.localShip, this.worldSeed);
-    if (this.mapCenter && this.mapRadius > 0) {
-      clampToBoundary(this.localShip, this.mapCenter, this.mapRadius);
+    const input = anchored ? { thrust: false, turn: 0 as const, mine: false } : this.readInput();
+    if (anchored) {
+      this.localShip.vx = 0;
+      this.localShip.vy = 0;
+    } else {
+      stepShip(this.localShip, input, dt);
+      collideShip(this.localShip, this.worldSeed);
+      if (this.mapCenter && this.mapRadius > 0) {
+        clampToBoundary(this.localShip, this.mapCenter, this.mapRadius);
+      }
     }
     this.sendAccum += dt;
     if (this.sendAccum >= 1 / INPUT_SEND_HZ) {
@@ -379,7 +395,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private rebuildAsteroids() {
-    for (const g of this.asteroidGfx) g.destroy();
+    for (const a of this.asteroidGfx) a.gfx.destroy();
     this.asteroidGfx = [];
     this.nearbyAsteroids = [];
     // 3×3 setores ao redor da origem — muito além do alcance da tela
@@ -392,7 +408,7 @@ export class GameScene extends Phaser.Scene {
           g.strokePoints(asteroidVerts(a.shapeSeed, a.radius), true, true);
           this.worldLayer.add(g);
           this.worldLayer.sendToBack(g);
-          this.asteroidGfx.push(g);
+          this.asteroidGfx.push({ gfx: g, spin: asteroidSpin(a.shapeSeed) * MAX_ASTEROID_SPIN });
           this.nearbyAsteroids.push({ rx: pos.x, ry: pos.y });
         }
       }
@@ -433,7 +449,7 @@ export class GameScene extends Phaser.Scene {
     const w = this.strokeW();
     this.ownGfx.clear();
     this.ownGfx.lineStyle(w, COLOR_OWN);
-    this.ownGfx.strokePoints(shipVerts("starter"), true, true);
+    this.ownGfx.strokePoints(shipVerts("builder"), true, true);
     for (const view of this.remotes.values()) {
       view.gfx.clear();
       view.gfx.lineStyle(w, view.color);
@@ -451,6 +467,10 @@ export class GameScene extends Phaser.Scene {
     const own = this.toRender(this.localShip!);
     this.ownGfx.setPosition(own.x, own.y).setRotation(this.localShip!.angle);
     this.cameras.main.centerOn(own.x, own.y);
+
+    // rotação leve dos asteroides (visual, determinística por semente)
+    const tt = this.time.now / 1000;
+    for (const a of this.asteroidGfx) a.gfx.setRotation(a.spin * tt);
 
     // naves remotas: interpolação em direção ao snapshot do servidor
     for (const [id, server] of this.serverShips) {
@@ -493,7 +513,7 @@ export class GameScene extends Phaser.Scene {
         this.structViews.set(id, view);
       }
       const p = this.toRender(st);
-      view.gfx.setPosition(p.x, p.y);
+      view.gfx.setPosition(p.x, p.y).setRotation(st.angle);
     }
 
     const sim = new SimWorld(this.worldSeed);
@@ -525,33 +545,43 @@ export class GameScene extends Phaser.Scene {
     const zoom = this.cameras.main.zoom;
     const mapName = MAP_SIZE_LABEL[mapSizeFromRadiusSectors(this.mapRadius / SECTOR_SIZE)];
 
-    // frota própria (naves com meu owner) e QG
+    // frota própria por tipo + QG
     let fleet = 0;
+    let nMining = 0;
+    let nAttack = 0;
     let hasHq = false;
     for (const [id, s] of this.serverShips) {
-      if (s.owner === this.room.sessionId && id !== this.room.sessionId) fleet++;
+      if (s.owner === this.room.sessionId && id !== this.room.sessionId) {
+        fleet++;
+        if (s.kind === "mining") nMining++;
+        else if (s.kind === "attack") nAttack++;
+      }
     }
     for (const st of this.serverStructures.values()) {
       if (st.owner === this.room.sessionId && st.stype === "hq") hasHq = true;
     }
+    const anchored = authoritative?.anchored ?? false;
 
     // dicas de construção e produção
     const nearAst = !!sim.nearestAsteroid(this.localShip!, BUILD_ASTEROID_RANGE);
     const st1 = STRUCTURE_SPECS.miningStation;
     const st2 = STRUCTURE_SPECS.hq;
-    const p3 = SHIP_PRODUCTION.scout;
+    const p3 = SHIP_PRODUCTION.mining;
     const p4 = SHIP_PRODUCTION.attack;
     const mark = (ok: boolean) => (ok ? "» " : "  ");
+    const need = (n: number) => (!hasHq ? " — QG" : !anchored ? " — ancore [F]" : `  ${n}/${HANGAR_CAP}`);
     const hint1 = `[1] ${st1.label} (${st1.cost})${nearAst ? "" : " — perto de asteroide"}`;
     const hint2 = `[2] ${st2.label} (${st2.cost})`;
-    const hint3 = `[3] ${p3.label} (${p3.cost})${hasHq ? "" : " — precisa de QG"}`;
-    const hint4 = `[4] ${p4.label} (${p4.cost})${hasHq ? "" : " — precisa de QG"}`;
+    const hint3 = `[3] ${p3.label} (${p3.cost})${need(nMining)}`;
+    const hint4 = `[4] ${p4.label} (${p4.cost})${need(nAttack)}`;
+    const canProd = (n: number) => hasHq && anchored && n < HANGAR_CAP;
+    const anchorTag = anchored ? "  ⚓ ANCORADO" : "";
 
     this.hud.setText(
-      `Minério: ${ore}  ·  Naves: ${this.serverShips.size}  ·  Frota: ${fleet}  ·  Mapa: ${mapName}  ·  Estruturas: ${this.serverStructures.size}  ·  Zoom ${zoom.toFixed(2)}x\n` +
-        `W/↑ acelerar · A/D girar · ESPAÇO minerar · roda/+/- zoom\n` +
-        `${mark(ore >= st1.cost && nearAst)}${hint1}    ${mark(ore >= st2.cost)}${hint2}\n` +
-        `${mark(ore >= p3.cost && hasHq)}${hint3}    ${mark(ore >= p4.cost && hasHq)}${hint4}`,
+      `Minério: ${ore}  ·  Frota: ${fleet}  ·  Mapa: ${mapName}  ·  Estruturas: ${this.serverStructures.size}  ·  Zoom ${zoom.toFixed(2)}x${anchorTag}\n` +
+        `W/↑ acelerar · A/D girar · ESPAÇO minerar · [F] ancorar no QG · roda/+/- zoom\n` +
+        `${mark(ore >= st1.cost && nearAst)}${hint1}    ${mark(ore >= st2.cost && nearAst)}${hint2}\n` +
+        `${mark(canProd(nMining) && ore >= p3.cost)}${hint3}    ${mark(canProd(nAttack) && ore >= p4.cost)}${hint4}`,
     );
   }
 

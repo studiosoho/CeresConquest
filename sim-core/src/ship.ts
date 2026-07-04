@@ -19,9 +19,11 @@ export interface ShipState extends WorldPos {
   /** sessionId do dono ("" = neutra) */
   owner: string;
   kind: ShipKind;
+  /** ancorada no QG (congelada, pode produzir) */
+  anchored: boolean;
 }
 
-export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "starter"): ShipState {
+export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"): ShipState {
   return {
     sx: pos.sx,
     sy: pos.sy,
@@ -34,6 +36,7 @@ export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "starter"):
     mining: false,
     owner,
     kind,
+    anchored: false,
   };
 }
 

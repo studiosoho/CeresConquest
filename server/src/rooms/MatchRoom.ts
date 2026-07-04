@@ -3,13 +3,19 @@ import {
   MSG_INPUT,
   MSG_BUILD,
   MSG_PRODUCE,
+  MSG_ANCHOR,
   TICK_RATE,
   SECTOR_SIZE,
   MAP_SIZES,
   DEFAULT_MAP_SIZE,
   STRUCTURE_SPECS,
   SHIP_PRODUCTION,
+  HANGAR_CAP,
+  DOCK_RANGE,
   BUILD_ASTEROID_RANGE,
+  relVec,
+  dist,
+  normalizePos,
   type MapSize,
   type ShipInput,
   type BuildCommand,
@@ -66,10 +72,10 @@ export class MatchRoom extends Room<MatchState> {
     this.state.mapCenterSy = base.sy;
     this.state.mapRadius = radiusUnits;
 
-    // popula a partida com jogadores-teste autônomos (scouts neutros)
+    // popula a partida com jogadores-teste autônomos (mineradoras neutras)
     for (let i = 0; i < botCount; i++) {
       const id = `bot-${i}`;
-      const ship = this.spawnShip(id, this.spawns[this.maxClients + i], "", "scout");
+      const ship = this.spawnShip(id, this.spawns[this.maxClients + i], "", "mining");
       this.state.ships.set(id, this.mirrorSpawn(ship));
       this.bots.set(id, makeBotState());
     }
@@ -86,6 +92,10 @@ export class MatchRoom extends Room<MatchState> {
       this.tryProduce(client.sessionId, cmd?.kind);
     });
 
+    this.onMessage(MSG_ANCHOR, (client: Client) => {
+      this.tryToggleAnchor(client.sessionId);
+    });
+
     this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
     console.log(
       `[room] match criada — seed=${seed} mapa=${mapSize}(${radiusSectors}s) ` +
@@ -95,7 +105,7 @@ export class MatchRoom extends Room<MatchState> {
 
   onJoin(client: Client) {
     const base = this.spawns[this.spawnIndex++ % this.spawns.length];
-    const ship = this.spawnShip(client.sessionId, base, client.sessionId, "starter");
+    const ship = this.spawnShip(client.sessionId, base, client.sessionId, "builder");
     // espelha a posição de spawn JÁ no join — o primeiro estado que o
     // cliente recebe precisa ser real, não os defaults do schema
     this.state.ships.set(client.sessionId, this.mirrorSpawn(ship));
@@ -119,52 +129,85 @@ export class MatchRoom extends Room<MatchState> {
     id: string,
     base: { sx: number; sy: number },
     owner = "",
-    kind: ShipState["kind"] = "starter",
+    kind: ShipState["kind"] = "builder",
   ): ShipState {
     const local = findClearSpawn(this.sim.seed, base.sx, base.sy);
     return this.sim.addShip(id, { sx: base.sx, sy: base.sy, x: local.x, y: local.y }, owner, kind);
   }
 
-  /** Valida e constrói uma estrutura na posição da nave do jogador. */
+  /** Alterna a ancoragem: só ancora se estiver perto do próprio QG. */
+  private tryToggleAnchor(sessionId: string): void {
+    const ship = this.sim.ships.get(sessionId);
+    if (!ship) return;
+    if (ship.anchored) {
+      ship.anchored = false;
+      return;
+    }
+    if (this.nearestOwnHq(sessionId, ship, DOCK_RANGE)) ship.anchored = true;
+  }
+
+  /** QG do jogador dentro de `range` da nave (ou null). */
+  private nearestOwnHq(sessionId: string, from: ShipState, range: number) {
+    for (const st of this.sim.structures.values()) {
+      if (st.owner === sessionId && st.type === "hq" && dist(from, st) <= range) return st;
+    }
+    return null;
+  }
+
+  /** Valida e constrói uma estrutura, encostada na borda do asteroide mais próximo. */
   private tryBuild(sessionId: string, type?: BuildCommand["type"]): void {
     const ship = this.sim.ships.get(sessionId);
     if (!ship || !type) return;
     const spec = STRUCTURE_SPECS[type];
-    if (!spec) return;
-    if (ship.ore < spec.cost) return;
-    if (spec.requiresAsteroid && !this.sim.nearestAsteroid(ship, BUILD_ASTEROID_RANGE)) return;
+    if (!spec || ship.ore < spec.cost) return;
+
+    // ambos (QG e estação) fixam-se na borda de um asteroide próximo
+    const ast = this.sim.nearestAsteroid(ship, BUILD_ASTEROID_RANGE);
+    if (!ast) return;
+
+    // ponto na borda, no lado voltado para a nave, com a estrutura orientada para fora
+    const { dx, dy } = relVec(ast, ship);
+    const d = Math.hypot(dx, dy) || 1;
+    const nx = dx / d;
+    const ny = dy / d;
+    const off = ast.radius + spec.radius * 0.5;
+    const pos = { sx: ast.sx, sy: ast.sy, x: ast.x + nx * off, y: ast.y + ny * off };
+    normalizePos(pos);
+    const angle = Math.atan2(ny, nx);
 
     ship.ore -= spec.cost;
     const id = `st-${this.structSeq++}`;
-    this.sim.addStructure({ id, type, owner: sessionId, sx: ship.sx, sy: ship.sy, x: ship.x, y: ship.y });
+    this.sim.addStructure({ id, type, owner: sessionId, sx: pos.sx, sy: pos.sy, x: pos.x, y: pos.y, angle });
 
     const ss = new StructureSchema();
     ss.stype = type;
     ss.owner = sessionId;
-    ss.sx = ship.sx;
-    ss.sy = ship.sy;
-    ss.x = ship.x;
-    ss.y = ship.y;
+    ss.sx = pos.sx;
+    ss.sy = pos.sy;
+    ss.x = pos.x;
+    ss.y = pos.y;
+    ss.angle = angle;
     this.state.structures.set(id, ss);
-    console.log(`[room] ${sessionId} construiu ${type} — setor (${ship.sx}, ${ship.sy})`);
+    console.log(`[room] ${sessionId} construiu ${type} na borda de asteroide — setor (${pos.sx}, ${pos.sy})`);
   }
 
-  /** Fabrica uma nave no QG do jogador — autônoma (scout em ronda). */
+  /** Fabrica uma nave — só com a nave ancorada no QG e respeitando o hangar. */
   private tryProduce(sessionId: string, kind?: ProduceCommand["kind"]): void {
     const pilot = this.sim.ships.get(sessionId);
     if (!pilot || !kind) return;
     const spec = SHIP_PRODUCTION[kind];
     if (!spec || pilot.ore < spec.cost) return;
+    if (!pilot.anchored) return; // precisa estar ancorado no QG
 
-    // precisa de um QG próprio para fabricar
-    let hq: { sx: number; sy: number } | null = null;
-    for (const st of this.sim.structures.values()) {
-      if (st.owner === sessionId && st.type === "hq") {
-        hq = st;
-        break;
-      }
-    }
+    const hq = this.nearestOwnHq(sessionId, pilot, DOCK_RANGE);
     if (!hq) return;
+
+    // hangar: no máximo HANGAR_CAP naves de cada tipo por jogador
+    let count = 0;
+    for (const s of this.sim.ships.values()) {
+      if (s.owner === sessionId && s.kind === kind) count++;
+    }
+    if (count >= HANGAR_CAP) return;
 
     pilot.ore -= spec.cost;
     const id = `sh-${this.shipSeq++}`;
@@ -182,6 +225,7 @@ export class MatchRoom extends Room<MatchState> {
     s.y = ship.y;
     s.owner = ship.owner;
     s.kind = ship.kind;
+    s.anchored = ship.anchored;
     return s;
   }
 
@@ -205,6 +249,7 @@ export class MatchRoom extends Room<MatchState> {
       s.angle = ship.angle;
       s.ore = ship.ore;
       s.mining = ship.mining;
+      s.anchored = ship.anchored;
     }
   }
 }

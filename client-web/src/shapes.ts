@@ -26,9 +26,25 @@ const ATTACK_VERTS: Array<{ x: number; y: number }> = [
   { x: -R * 0.3, y: -R * 0.4 },
 ];
 
+/** Nave de mineração: silhueta atarracada de carga. */
+const MINING_VERTS: Array<{ x: number; y: number }> = [
+  { x: R * 0.8, y: 0 },
+  { x: R * 0.2, y: R * 0.6 },
+  { x: -R * 0.7, y: R * 0.5 },
+  { x: -R * 0.7, y: -R * 0.5 },
+  { x: R * 0.2, y: -R * 0.6 },
+];
+
 /** Vértices da nave conforme a classe. */
 export function shipVerts(kind: ShipKind): Array<{ x: number; y: number }> {
-  return kind === "attack" ? ATTACK_VERTS : SHIP_VERTS;
+  if (kind === "attack") return ATTACK_VERTS;
+  if (kind === "mining") return MINING_VERTS;
+  return SHIP_VERTS; // builder
+}
+
+/** Velocidade angular normalizada [-1,1] da rotação leve de um asteroide. */
+export function asteroidSpin(shapeSeed: number): number {
+  return mulberry32((shapeSeed ^ 0x51ed2c) >>> 0)() * 2 - 1;
 }
 
 /**

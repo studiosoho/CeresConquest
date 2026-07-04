@@ -30,7 +30,7 @@ export const STRUCTURE_SPECS: Record<StructureType, StructureSpec> = {
     label: "Quartel-general",
     cost: 300,
     radius: SHIP_RADIUS * 6,
-    requiresAsteroid: false,
+    requiresAsteroid: true,
     productionRate: 0,
   },
 };

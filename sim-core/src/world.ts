@@ -35,7 +35,7 @@ export class SimWorld {
     this.boundaryRadius = radiusUnits;
   }
 
-  addShip(id: string, pos: WorldPos, owner = "", kind: ShipState["kind"] = "starter"): ShipState {
+  addShip(id: string, pos: WorldPos, owner = "", kind: ShipState["kind"] = "builder"): ShipState {
     const ship = makeShip(pos, owner, kind);
     this.ships.set(id, ship);
     return ship;
@@ -56,6 +56,13 @@ export class SimWorld {
 
   tick(dt: number): void {
     for (const [id, ship] of this.ships) {
+      // ancorada: congelada no QG (não se move, não minera)
+      if (ship.anchored) {
+        ship.vx = 0;
+        ship.vy = 0;
+        ship.mining = false;
+        continue;
+      }
       const input = this.inputs.get(id) ?? NEUTRAL_INPUT;
       stepShip(ship, input, dt);
       collideShip(ship, this.seed);

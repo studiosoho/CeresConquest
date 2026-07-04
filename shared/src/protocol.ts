@@ -31,3 +31,6 @@ export interface ProduceCommand {
 }
 
 export const MSG_PRODUCE = "produce";
+
+/** Alterna ancoragem no QG (sem payload). */
+export const MSG_ANCHOR = "anchor";
