@@ -28,6 +28,8 @@ export interface ShipState extends WorldPos {
   autoMining: boolean;
   /** estação à qual a mineradora está atrelada ("" = nenhuma) */
   stationId: string;
+  /** táxi: estrutura de destino em trânsito ("" = não está indo a lugar nenhum) */
+  taxiTo: string;
 }
 
 export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"): ShipState {
@@ -47,6 +49,7 @@ export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"):
     stored: false,
     autoMining: false,
     stationId: "",
+    taxiTo: "",
   };
 }
 

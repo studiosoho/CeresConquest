@@ -8,6 +8,7 @@ import {
   MSG_ANCHOR,
   MSG_SWAP,
   MSG_AUTOMINE,
+  MSG_TAXI,
   SECTOR_SIZE,
   STRUCTURE_SPECS,
   SHIP_PRODUCTION,
@@ -166,7 +167,7 @@ export class GameScene extends Phaser.Scene {
 
   private keys!: Record<
     | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS"
-    | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "F" | "C" | "G",
+    | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "F" | "C" | "G" | "T",
     Phaser.Input.Keyboard.Key
   >;
   private sendAccum = 0;
@@ -178,7 +179,7 @@ export class GameScene extends Phaser.Scene {
 
   async create() {
     this.keys = this.input.keyboard!.addKeys(
-      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO,THREE,FOUR,FIVE,F,C,G",
+      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO,THREE,FOUR,FIVE,F,C,G,T",
     ) as GameScene["keys"];
 
     // camadas: a câmera principal (com zoom) só vê o mundo;
@@ -343,6 +344,9 @@ export class GameScene extends Phaser.Scene {
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.G)) {
       this.room.send(MSG_AUTOMINE);
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.T)) {
+      this.room.send(MSG_TAXI);
     }
 
     const anchored = mineServer.anchored;
@@ -604,13 +608,21 @@ export class GameScene extends Phaser.Scene {
     }
     let hasHq = false;
     let nearOwnStation = false;
-    for (const st of this.serverStructures.values()) {
+    let dockedStructId = "";
+    for (const [id, st] of this.serverStructures) {
       if (st.owner !== this.room.sessionId) continue;
       if (st.stype === "hq") hasHq = true;
-      if (st.stype === "miningStation" && dist(this.localShip!, st) <= DOCK_RANGE) nearOwnStation = true;
+      const near = dist(this.localShip!, st) <= DOCK_RANGE;
+      if (st.stype === "miningStation" && near) nearOwnStation = true;
+      if (near) dockedStructId = id;
     }
     const anchored = authoritative?.anchored ?? this.localShip!.anchored;
     const hangarTotal = hangarMining + hangarAttack;
+    // táxi: há nave guardada num OUTRO hangar meu?
+    let shipInOtherHangar = false;
+    for (const s of this.serverShips.values()) {
+      if (s.owner === this.room.sessionId && s.stored && s.hqId !== dockedStructId) shipInOtherHangar = true;
+    }
 
     // dicas de construção e produção
     const nearAst = !!sim.nearestAsteroid(this.localShip!, BUILD_ASTEROID_RANGE);
@@ -632,10 +644,12 @@ export class GameScene extends Phaser.Scene {
     // [G] auto-mineração: pilotando mineradora ancorada na própria estação
     const canAuto = activeKind === "mining" && anchored && nearOwnStation;
     const autoHint = canAuto ? "  » [G] auto-minerar na estação" : "";
+    // [T] táxi: ancorado, com nave guardada em outro hangar
+    const taxiHint = anchored && shipInOtherHangar ? "  » [T] chamar táxi" : "";
 
     this.hud.setText(
-      `Minério: ${ore}  ·  Pilotando: ${kindLabel[activeKind]}  ·  Mapa: ${mapName}  ·  Zoom ${zoom.toFixed(2)}x${anchorTag}${swapHint}${autoHint}\n` +
-        `W/↑ acelerar · A/D girar · ESPAÇO minerar · [F] ancorar · [C] trocar · [G] auto-minerar · roda/+/- zoom\n` +
+      `Minério: ${ore}  ·  Pilotando: ${kindLabel[activeKind]}  ·  Mapa: ${mapName}  ·  Zoom ${zoom.toFixed(2)}x${anchorTag}${swapHint}${autoHint}${taxiHint}\n` +
+        `W/↑ acelerar · A/D girar · ESPAÇO minerar · [F] ancorar · [C] trocar · [G] auto-minerar · [T] táxi · roda/+/- zoom\n` +
         `${mark(ore >= st1.cost && nearAst)}${hint1}    ${mark(ore >= st2.cost && nearAst)}${hint2}\n` +
         `${mark(canProd(nMining) && ore >= p3.cost)}${hint3}   ${mark(canProd(nAttack) && ore >= p4.cost)}${hint4}   ${mark(canProd(0) && ore >= p5.cost)}${hint5}`,
     );

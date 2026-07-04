@@ -40,3 +40,6 @@ export const MSG_SWAP = "swap";
 
 /** Configura a mineradora ancorada na estação para minerar sozinha (sem payload). */
 export const MSG_AUTOMINE = "automine";
+
+/** Requisita um táxi: uma nave do hangar mais próximo vem à estrutura ancorada. */
+export const MSG_TAXI = "taxi";

@@ -6,6 +6,7 @@ import {
   MSG_ANCHOR,
   MSG_SWAP,
   MSG_AUTOMINE,
+  MSG_TAXI,
   TICK_RATE,
   SECTOR_SIZE,
   MAP_SIZES,
@@ -14,6 +15,7 @@ import {
   SHIP_PRODUCTION,
   HANGAR_CAP,
   STATION_MINING_CAP,
+  STATION_HANGAR_CAP,
   DOCK_RANGE,
   BUILD_ASTEROID_RANGE,
   relVec,
@@ -27,7 +29,13 @@ import {
 import { SimWorld, findClearSpawn, type ShipState } from "@ceres/sim-core";
 import { MatchState, ShipSchema, StructureSchema, PlayerSchema } from "../schema/State";
 import { mapSpawns, beltBasePoint, type SpawnStrategy } from "../spawn";
-import { computeBotInput, computeMinerInput, makeBotState, type BotState } from "../bots";
+import {
+  computeBotInput,
+  computeMinerInput,
+  computeTaxiInput,
+  makeBotState,
+  type BotState,
+} from "../bots";
 
 /** Nº de jogadores-teste autônomos (bots) por padrão. */
 const DEFAULT_BOTS = 10;
@@ -108,6 +116,10 @@ export class MatchRoom extends Room<MatchState> {
 
     this.onMessage(MSG_AUTOMINE, (client: Client) => {
       this.tryAutoMine(client.sessionId);
+    });
+
+    this.onMessage(MSG_TAXI, (client: Client) => {
+      this.tryTaxi(client.sessionId);
     });
 
     this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
@@ -228,6 +240,62 @@ export class MatchRoom extends Room<MatchState> {
     console.log(`[room] ${sessionId} configurou auto-mineração em ${station.id}`);
   }
 
+  /**
+   * Requisita um táxi: despacha uma nave guardada no hangar próprio mais
+   * próximo para a estrutura onde o jogador está ancorado, se houver vaga lá.
+   */
+  private tryTaxi(sessionId: string): void {
+    const active = this.activeShipOf(sessionId);
+    if (!active || !active.anchored) return;
+    const dest = this.nearestOwnStructure(sessionId, active, DOCK_RANGE);
+    if (!dest) return;
+
+    // nave guardada em OUTRO hangar próprio, cujo hangar é o mais perto do destino
+    let best: { id: string; ship: ShipState; src: (typeof dest) } | null = null;
+    let bestDist = Infinity;
+    for (const [id, s] of this.sim.ships) {
+      if (s.owner !== sessionId || !s.stored || s.hqId === dest.id) continue;
+      const src = this.sim.structures.get(s.hqId);
+      if (!src) continue;
+      const d = dist(src, dest);
+      if (d < bestDist) {
+        bestDist = d;
+        best = { id, ship: s, src };
+      }
+    }
+    if (!best) return; // nenhuma nave em outro hangar
+    if (!this.hangarHasFreeSlot(sessionId, dest, best.ship.kind)) return; // destino sem vaga
+
+    // despacha: sai do hangar de origem e voa até o destino
+    const local = findClearSpawn(this.sim.seed, best.src.sx, best.src.sy);
+    best.ship.stored = false;
+    best.ship.anchored = false;
+    best.ship.taxiTo = dest.id;
+    best.ship.sx = best.src.sx;
+    best.ship.sy = best.src.sy;
+    best.ship.x = local.x;
+    best.ship.y = local.y;
+    best.ship.vx = 0;
+    best.ship.vy = 0;
+    console.log(`[room] ${sessionId} táxi: ${best.ship.kind} de ${best.src.id} → ${dest.id}`);
+  }
+
+  /** Há vaga no hangar da estrutura para uma nave deste tipo (conta em trânsito)? */
+  private hangarHasFreeSlot(
+    sessionId: string,
+    struct: { id: string; type: "hq" | "miningStation" },
+    kind: ShipState["kind"],
+  ): boolean {
+    let count = 0;
+    for (const s of this.sim.ships.values()) {
+      if (s.owner !== sessionId) continue;
+      const heading = (s.stored && s.hqId === struct.id) || s.taxiTo === struct.id;
+      if (!heading) continue;
+      if (struct.type === "hq" ? s.kind === kind : true) count++;
+    }
+    return count < (struct.type === "hq" ? HANGAR_CAP : STATION_HANGAR_CAP);
+  }
+
   /** Passa o controle do jogador para outra nave própria (prefere um builder). */
   private transferControl(sessionId: string, excludeId: string): boolean {
     let target: [string, ShipState] | null = null;
@@ -259,19 +327,25 @@ export class MatchRoom extends Room<MatchState> {
     ship.vy = 0;
   }
 
-  /** Estrutura própria (opcionalmente de um tipo) dentro de `range` da nave. */
+  /** Estrutura própria MAIS PRÓXIMA (opcionalmente de um tipo) dentro de `range`. */
   private nearestOwnStructure(
     sessionId: string,
     from: ShipState,
     range: number,
     type?: "hq" | "miningStation",
   ) {
+    let best: ReturnType<typeof this.sim.structures.get> = undefined;
+    let bestD = range;
     for (const st of this.sim.structures.values()) {
       if (st.owner !== sessionId) continue;
       if (type && st.type !== type) continue;
-      if (dist(from, st) <= range) return st;
+      const d = dist(from, st);
+      if (d <= bestD) {
+        bestD = d;
+        best = st;
+      }
     }
-    return null;
+    return best ?? null;
   }
 
   /** Valida e constrói uma estrutura, encostada na borda do asteroide mais próximo. */
@@ -365,6 +439,27 @@ export class MatchRoom extends Room<MatchState> {
       if (!ship.autoMining) continue;
       const station = this.sim.structures.get(ship.stationId);
       if (station) this.sim.setInput(id, computeMinerInput(ship, this.sim, station));
+    }
+    // IA do táxi → voa até o destino; ao chegar, guarda no hangar de lá
+    for (const [id, ship] of this.sim.ships) {
+      if (!ship.taxiTo) continue;
+      const dest = this.sim.structures.get(ship.taxiTo);
+      if (!dest) {
+        ship.taxiTo = "";
+        continue;
+      }
+      if (dist(ship, dest) <= DOCK_RANGE) {
+        ship.stored = true;
+        ship.hqId = ship.taxiTo;
+        ship.taxiTo = "";
+        ship.anchored = false;
+        ship.vx = 0;
+        ship.vy = 0;
+        this.sim.setInput(id, { thrust: false, turn: 0, mine: false });
+        console.log(`[room] táxi chegou: ${ship.kind} guardado em ${ship.hqId}`);
+      } else {
+        this.sim.setInput(id, computeTaxiInput(ship, dest));
+      }
     }
     this.sim.tick(dt);
     // espelha sim-core → schema
