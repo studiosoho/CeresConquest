@@ -5,6 +5,7 @@ import {
   MSG_PRODUCE,
   MSG_ANCHOR,
   MSG_SWAP,
+  MSG_AUTOMINE,
   TICK_RATE,
   SECTOR_SIZE,
   MAP_SIZES,
@@ -12,6 +13,7 @@ import {
   STRUCTURE_SPECS,
   SHIP_PRODUCTION,
   HANGAR_CAP,
+  STATION_MINING_CAP,
   DOCK_RANGE,
   BUILD_ASTEROID_RANGE,
   relVec,
@@ -25,7 +27,7 @@ import {
 import { SimWorld, findClearSpawn, type ShipState } from "@ceres/sim-core";
 import { MatchState, ShipSchema, StructureSchema, PlayerSchema } from "../schema/State";
 import { mapSpawns, beltBasePoint, type SpawnStrategy } from "../spawn";
-import { computeBotInput, makeBotState, type BotState } from "../bots";
+import { computeBotInput, computeMinerInput, makeBotState, type BotState } from "../bots";
 
 /** Nº de jogadores-teste autônomos (bots) por padrão. */
 const DEFAULT_BOTS = 10;
@@ -104,6 +106,10 @@ export class MatchRoom extends Room<MatchState> {
       this.trySwap(client.sessionId);
     });
 
+    this.onMessage(MSG_AUTOMINE, (client: Client) => {
+      this.tryAutoMine(client.sessionId);
+    });
+
     this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
     console.log(
       `[room] match criada — seed=${seed} mapa=${mapSize}(${radiusSectors}s) ` +
@@ -157,7 +163,7 @@ export class MatchRoom extends Room<MatchState> {
     return this.sim.addShip(id, { sx: base.sx, sy: base.sy, x: local.x, y: local.y }, owner, kind);
   }
 
-  /** Alterna a ancoragem da nave ativa: só ancora se estiver perto do próprio QG. */
+  /** Alterna a ancoragem da nave ativa: ancora se estiver perto de uma estrutura própria. */
   private tryToggleAnchor(sessionId: string): void {
     const ship = this.activeShipOf(sessionId);
     if (!ship) return;
@@ -165,20 +171,20 @@ export class MatchRoom extends Room<MatchState> {
       ship.anchored = false;
       return;
     }
-    if (this.nearestOwnHq(sessionId, ship, DOCK_RANGE)) ship.anchored = true;
+    if (this.nearestOwnStructure(sessionId, ship, DOCK_RANGE)) ship.anchored = true;
   }
 
-  /** Troca a nave ativa por uma do hangar do QG ancorado. */
+  /** Troca a nave ativa por uma do hangar da estrutura ancorada. */
   private trySwap(sessionId: string): void {
     const active = this.activeShipOf(sessionId);
     if (!active || !active.anchored) return;
-    const hq = this.nearestOwnHq(sessionId, active, DOCK_RANGE);
-    if (!hq) return;
+    const struct = this.nearestOwnStructure(sessionId, active, DOCK_RANGE);
+    if (!struct) return;
 
-    // naves guardadas no hangar deste QG
+    // naves guardadas no hangar desta estrutura
     let pick: [string, ShipState] | null = null;
     for (const [id, s] of this.sim.ships) {
-      if (s.owner === sessionId && s.hqId === hq.id && s.stored) {
+      if (s.owner === sessionId && s.hqId === struct.id && s.stored) {
         pick = [id, s];
         break;
       }
@@ -188,28 +194,82 @@ export class MatchRoom extends Room<MatchState> {
     // guarda a nave ativa neste hangar
     active.stored = true;
     active.anchored = false;
-    active.hqId = hq.id;
+    active.hqId = struct.id;
     this.sim.setInput(this.activeShip.get(sessionId)!, { thrust: false, turn: 0, mine: false });
 
-    // tira a nave escolhida do hangar, ancorada no QG
+    // tira a nave escolhida do hangar, ancorada na estrutura
     const [nid, next] = pick;
-    next.stored = false;
-    next.anchored = true;
-    const local = findClearSpawn(this.sim.seed, hq.sx, hq.sy);
-    next.sx = hq.sx;
-    next.sy = hq.sy;
-    next.x = local.x;
-    next.y = local.y;
-    next.vx = 0;
-    next.vy = 0;
+    this.deployFromHangar(next, struct);
     this.activeShip.set(sessionId, nid);
     console.log(`[room] ${sessionId} trocou de nave → ${next.kind} (${nid})`);
   }
 
-  /** QG do jogador dentro de `range` da nave (ou null). */
-  private nearestOwnHq(sessionId: string, from: ShipState, range: number) {
+  /** Configura a mineradora ancorada numa estação para minerar sozinha. */
+  private tryAutoMine(sessionId: string): void {
+    const active = this.activeShipOf(sessionId);
+    if (!active || active.kind !== "mining" || !active.anchored) return;
+    const station = this.nearestOwnStructure(sessionId, active, DOCK_RANGE, "miningStation");
+    if (!station) return;
+
+    // capacidade: no máximo STATION_MINING_CAP mineradoras por estação
+    let count = 0;
+    for (const s of this.sim.ships.values()) {
+      if (s.autoMining && s.stationId === station.id) count++;
+    }
+    if (count >= STATION_MINING_CAP) return;
+
+    // transfere o controle para outra nave ANTES de largar a mineradora
+    const activeId = this.activeShip.get(sessionId)!;
+    if (!this.transferControl(sessionId, activeId)) return; // não pode ficar sem nave
+
+    active.autoMining = true;
+    active.stationId = station.id;
+    active.anchored = false;
+    console.log(`[room] ${sessionId} configurou auto-mineração em ${station.id}`);
+  }
+
+  /** Passa o controle do jogador para outra nave própria (prefere um builder). */
+  private transferControl(sessionId: string, excludeId: string): boolean {
+    let target: [string, ShipState] | null = null;
+    for (const [id, s] of this.sim.ships) {
+      if (id === excludeId || s.owner !== sessionId || s.autoMining) continue;
+      if (!target || (s.kind === "builder" && target[1].kind !== "builder")) target = [id, s];
+    }
+    if (!target) return false;
+    const [tid, ts] = target;
+    if (ts.stored) {
+      const struct = ts.hqId ? this.sim.structures.get(ts.hqId) : undefined;
+      if (struct) this.deployFromHangar(ts, struct);
+      else ts.stored = false;
+    }
+    this.activeShip.set(sessionId, tid);
+    return true;
+  }
+
+  /** Tira uma nave do hangar e a posiciona ancorada na estrutura. */
+  private deployFromHangar(ship: ShipState, struct: { id: string; sx: number; sy: number }): void {
+    const local = findClearSpawn(this.sim.seed, struct.sx, struct.sy);
+    ship.stored = false;
+    ship.anchored = true;
+    ship.sx = struct.sx;
+    ship.sy = struct.sy;
+    ship.x = local.x;
+    ship.y = local.y;
+    ship.vx = 0;
+    ship.vy = 0;
+  }
+
+  /** Estrutura própria (opcionalmente de um tipo) dentro de `range` da nave. */
+  private nearestOwnStructure(
+    sessionId: string,
+    from: ShipState,
+    range: number,
+    type?: "hq" | "miningStation",
+  ) {
     for (const st of this.sim.structures.values()) {
-      if (st.owner === sessionId && st.type === "hq" && dist(from, st) <= range) return st;
+      if (st.owner !== sessionId) continue;
+      if (type && st.type !== type) continue;
+      if (dist(from, st) <= range) return st;
     }
     return null;
   }
@@ -259,7 +319,7 @@ export class MatchRoom extends Room<MatchState> {
     if (!spec || this.sim.getOre(sessionId) < spec.cost) return;
     if (!pilot.anchored) return; // precisa estar ancorado no QG
 
-    const hq = this.nearestOwnHq(sessionId, pilot, DOCK_RANGE);
+    const hq = this.nearestOwnStructure(sessionId, pilot, DOCK_RANGE, "hq");
     if (!hq) return;
 
     // hangar deste QG: no máximo HANGAR_CAP naves de cada tipo
@@ -289,14 +349,22 @@ export class MatchRoom extends Room<MatchState> {
     s.anchored = ship.anchored;
     s.stored = ship.stored;
     s.hqId = ship.hqId;
+    s.autoMining = ship.autoMining;
+    s.stationId = ship.stationId;
     return s;
   }
 
   private tick(dt: number) {
-    // IA dos bots neutros → input (naves da frota ficam paradas no hangar)
+    // IA dos bots neutros
     for (const [id, bot] of this.bots) {
       const ship = this.sim.ships.get(id);
       if (ship) this.sim.setInput(id, computeBotInput(ship, this.sim, bot, dt));
+    }
+    // IA das auto-mineradoras → rumam à estação e mineram
+    for (const [id, ship] of this.sim.ships) {
+      if (!ship.autoMining) continue;
+      const station = this.sim.structures.get(ship.stationId);
+      if (station) this.sim.setInput(id, computeMinerInput(ship, this.sim, station));
     }
     this.sim.tick(dt);
     // espelha sim-core → schema
@@ -314,6 +382,8 @@ export class MatchRoom extends Room<MatchState> {
       s.anchored = ship.anchored;
       s.stored = ship.stored;
       s.hqId = ship.hqId;
+      s.autoMining = ship.autoMining;
+      s.stationId = ship.stationId;
     }
     // minério e nave ativa por jogador
     for (const [sid, p] of this.state.players) {

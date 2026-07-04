@@ -1,4 +1,4 @@
-import { relVec, MINING_RANGE, type ShipInput } from "@ceres/shared";
+import { relVec, MINING_RANGE, type ShipInput, type WorldPos } from "@ceres/shared";
 import type { SimWorld, ShipState } from "@ceres/sim-core";
 
 /**
@@ -46,4 +46,19 @@ export function computeBotInput(
   const da = Math.atan2(Math.sin(desired - ship.angle), Math.cos(desired - ship.angle));
   const turn: ShipInput["turn"] = da > TURN_DEADZONE ? 1 : da < -TURN_DEADZONE ? -1 : 0;
   return { thrust: true, turn, mine };
+}
+
+/**
+ * IA da mineradora auto-mineradora: navega até a estação e minera o asteroide
+ * dela. Se já há asteroide ao alcance, minera parada; senão, ruma à estação.
+ */
+export function computeMinerInput(ship: ShipState, world: SimWorld, station: WorldPos): ShipInput {
+  if (world.nearestAsteroid(ship)) {
+    return { thrust: false, turn: 0, mine: true };
+  }
+  const { dx, dy } = relVec(ship, station);
+  const desired = Math.atan2(dy, dx);
+  const da = Math.atan2(Math.sin(desired - ship.angle), Math.cos(desired - ship.angle));
+  const turn: ShipInput["turn"] = da > TURN_DEADZONE ? 1 : da < -TURN_DEADZONE ? -1 : 0;
+  return { thrust: Math.abs(da) < 1.2, turn, mine: false };
 }

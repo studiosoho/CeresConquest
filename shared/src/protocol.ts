@@ -35,5 +35,8 @@ export const MSG_PRODUCE = "produce";
 /** Alterna ancoragem no QG (sem payload). */
 export const MSG_ANCHOR = "anchor";
 
-/** Troca a nave ativa por outra do hangar do QG ancorado (sem payload). */
+/** Troca a nave ativa por outra do hangar da estrutura ancorada (sem payload). */
 export const MSG_SWAP = "swap";
+
+/** Configura a mineradora ancorada na estação para minerar sozinha (sem payload). */
+export const MSG_AUTOMINE = "automine";

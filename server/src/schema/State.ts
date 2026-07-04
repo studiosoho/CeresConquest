@@ -16,9 +16,11 @@ export class ShipSchema extends Schema {
   @type("boolean") mining = false;
   @type("boolean") anchored = false;
   @type("boolean") stored = false;
+  @type("boolean") autoMining = false;
   @type("string") owner = "";
   @type("string") kind = "builder";
   @type("string") hqId = "";
+  @type("string") stationId = "";
 }
 
 export class PlayerSchema extends Schema {

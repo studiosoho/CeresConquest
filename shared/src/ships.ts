@@ -6,7 +6,7 @@
 export type ShipKind = "builder" | "mining" | "attack";
 
 /** Classes fabricáveis no QG. */
-export type ProducibleKind = "mining" | "attack";
+export type ProducibleKind = "builder" | "mining" | "attack";
 
 export interface ShipProductionSpec {
   label: string;
@@ -15,12 +15,16 @@ export interface ShipProductionSpec {
 }
 
 export const SHIP_PRODUCTION: Record<ProducibleKind, ShipProductionSpec> = {
+  builder: { label: "Builder", cost: 100 },
   mining: { label: "Nave de mineração", cost: 80 },
   attack: { label: "Nave de ataque", cost: 150 },
 };
 
-/** Capacidade do hangar do QG por tipo de nave. */
+/** Capacidade do hangar do QG por tipo de nave (2 de cada → 6 no total). */
 export const HANGAR_CAP = 2;
 
-/** Distância máxima até o próprio QG para ancorar. */
+/** Máximo de mineradoras auto-minerando por estação de mineração. */
+export const STATION_MINING_CAP = 2;
+
+/** Distância máxima até a própria estrutura para ancorar. */
 export const DOCK_RANGE = 500;

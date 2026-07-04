@@ -20,10 +20,14 @@ export interface ShipState extends WorldPos {
   kind: ShipKind;
   /** ancorada no QG (congelada, pode produzir/trocar) */
   anchored: boolean;
-  /** QG de origem (hangar). "" = sem QG (ex.: builder inicial) */
+  /** estrutura de origem (hangar). "" = sem hangar (ex.: builder inicial) */
   hqId: string;
   /** guardada no hangar (fora do mundo: não simula nem renderiza) */
   stored: boolean;
+  /** mineradora configurada para minerar sozinha numa estação */
+  autoMining: boolean;
+  /** estação à qual a mineradora está atrelada ("" = nenhuma) */
+  stationId: string;
 }
 
 export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"): ShipState {
@@ -41,6 +45,8 @@ export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"):
     anchored: false,
     hqId: "",
     stored: false,
+    autoMining: false,
+    stationId: "",
   };
 }
 

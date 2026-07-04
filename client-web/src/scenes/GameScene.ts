@@ -7,12 +7,15 @@ import {
   MSG_PRODUCE,
   MSG_ANCHOR,
   MSG_SWAP,
+  MSG_AUTOMINE,
   SECTOR_SIZE,
   STRUCTURE_SPECS,
   SHIP_PRODUCTION,
   HANGAR_CAP,
   BUILD_ASTEROID_RANGE,
+  DOCK_RANGE,
   relVec,
+  dist,
   mapSizeFromRadiusSectors,
   type MapSize,
   type ShipInput,
@@ -163,7 +166,7 @@ export class GameScene extends Phaser.Scene {
 
   private keys!: Record<
     | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS"
-    | "ONE" | "TWO" | "THREE" | "FOUR" | "F" | "C",
+    | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "F" | "C" | "G",
     Phaser.Input.Keyboard.Key
   >;
   private sendAccum = 0;
@@ -175,7 +178,7 @@ export class GameScene extends Phaser.Scene {
 
   async create() {
     this.keys = this.input.keyboard!.addKeys(
-      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO,THREE,FOUR,F,C",
+      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO,THREE,FOUR,FIVE,F,C,G",
     ) as GameScene["keys"];
 
     // camadas: a câmera principal (com zoom) só vê o mundo;
@@ -329,11 +332,17 @@ export class GameScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.FOUR)) {
       this.room.send(MSG_PRODUCE, { kind: "attack" });
     }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.FIVE)) {
+      this.room.send(MSG_PRODUCE, { kind: "builder" });
+    }
     if (Phaser.Input.Keyboard.JustDown(this.keys.F)) {
       this.room.send(MSG_ANCHOR);
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
       this.room.send(MSG_SWAP);
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.G)) {
+      this.room.send(MSG_AUTOMINE);
     }
 
     const anchored = mineServer.anchored;
@@ -584,7 +593,6 @@ export class GameScene extends Phaser.Scene {
     let nAttack = 0;
     let hangarMining = 0;
     let hangarAttack = 0;
-    let hasHq = false;
     for (const [id, s] of this.serverShips) {
       if (s.owner !== this.room.sessionId || id === this.myShipId) continue;
       if (s.kind === "mining") nMining++;
@@ -594,8 +602,12 @@ export class GameScene extends Phaser.Scene {
         else if (s.kind === "attack") hangarAttack++;
       }
     }
+    let hasHq = false;
+    let nearOwnStation = false;
     for (const st of this.serverStructures.values()) {
-      if (st.owner === this.room.sessionId && st.stype === "hq") hasHq = true;
+      if (st.owner !== this.room.sessionId) continue;
+      if (st.stype === "hq") hasHq = true;
+      if (st.stype === "miningStation" && dist(this.localShip!, st) <= DOCK_RANGE) nearOwnStation = true;
     }
     const anchored = authoritative?.anchored ?? this.localShip!.anchored;
     const hangarTotal = hangarMining + hangarAttack;
@@ -606,21 +618,26 @@ export class GameScene extends Phaser.Scene {
     const st2 = STRUCTURE_SPECS.hq;
     const p3 = SHIP_PRODUCTION.mining;
     const p4 = SHIP_PRODUCTION.attack;
+    const p5 = SHIP_PRODUCTION.builder;
     const mark = (ok: boolean) => (ok ? "» " : "  ");
     const need = (n: number) => (!hasHq ? " — QG" : !anchored ? " — ancore [F]" : `  ${n}/${HANGAR_CAP}`);
     const hint1 = `[1] ${st1.label} (${st1.cost})${nearAst ? "" : " — perto de asteroide"}`;
     const hint2 = `[2] ${st2.label} (${st2.cost})`;
     const hint3 = `[3] ${p3.label} (${p3.cost})${need(nMining)}`;
     const hint4 = `[4] ${p4.label} (${p4.cost})${need(nAttack)}`;
+    const hint5 = `[5] ${p5.label} (${p5.cost})`;
     const canProd = (n: number) => hasHq && anchored && n < HANGAR_CAP;
     const anchorTag = anchored ? "  ⚓ ANCORADO" : "";
-    const swapHint = anchored && hangarTotal > 0 ? `  » [C] trocar nave (hangar: ${hangarTotal})` : "";
+    const swapHint = anchored && hangarTotal > 0 ? `  » [C] trocar (hangar: ${hangarTotal})` : "";
+    // [G] auto-mineração: pilotando mineradora ancorada na própria estação
+    const canAuto = activeKind === "mining" && anchored && nearOwnStation;
+    const autoHint = canAuto ? "  » [G] auto-minerar na estação" : "";
 
     this.hud.setText(
-      `Minério: ${ore}  ·  Pilotando: ${kindLabel[activeKind]}  ·  Mapa: ${mapName}  ·  Zoom ${zoom.toFixed(2)}x${anchorTag}${swapHint}\n` +
-        `W/↑ acelerar · A/D girar · ESPAÇO minerar · [F] ancorar · [C] trocar no hangar · roda/+/- zoom\n` +
+      `Minério: ${ore}  ·  Pilotando: ${kindLabel[activeKind]}  ·  Mapa: ${mapName}  ·  Zoom ${zoom.toFixed(2)}x${anchorTag}${swapHint}${autoHint}\n` +
+        `W/↑ acelerar · A/D girar · ESPAÇO minerar · [F] ancorar · [C] trocar · [G] auto-minerar · roda/+/- zoom\n` +
         `${mark(ore >= st1.cost && nearAst)}${hint1}    ${mark(ore >= st2.cost && nearAst)}${hint2}\n` +
-        `${mark(canProd(nMining) && ore >= p3.cost)}${hint3}    ${mark(canProd(nAttack) && ore >= p4.cost)}${hint4}`,
+        `${mark(canProd(nMining) && ore >= p3.cost)}${hint3}   ${mark(canProd(nAttack) && ore >= p4.cost)}${hint4}   ${mark(canProd(0) && ore >= p5.cost)}${hint5}`,
     );
   }
 
