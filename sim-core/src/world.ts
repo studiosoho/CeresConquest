@@ -21,12 +21,30 @@ export class SimWorld {
   readonly seed: number;
   readonly ships = new Map<string, ShipState>();
   readonly structures = new Map<string, Structure>();
+  /** minério por jogador (sessionId → quantidade) */
+  readonly playerOre = new Map<string, number>();
   private readonly inputs = new Map<string, ShipInput>();
   private boundaryCenter: WorldPos | null = null;
   private boundaryRadius = 0;
 
   constructor(seed: number) {
     this.seed = seed;
+  }
+
+  getOre(owner: string): number {
+    return this.playerOre.get(owner) ?? 0;
+  }
+
+  addOre(owner: string, amount: number): void {
+    if (!owner) return;
+    this.playerOre.set(owner, this.getOre(owner) + amount);
+  }
+
+  /** Gasta minério se houver saldo; devolve true se debitou. */
+  spendOre(owner: string, amount: number): boolean {
+    if (this.getOre(owner) < amount) return false;
+    this.playerOre.set(owner, this.getOre(owner) - amount);
+    return true;
   }
 
   /** Define a fronteira circular do mapa (centro + raio em unidades). */
@@ -56,6 +74,11 @@ export class SimWorld {
 
   tick(dt: number): void {
     for (const [id, ship] of this.ships) {
+      // guardada no hangar: fora do mundo, não simula
+      if (ship.stored) {
+        ship.mining = false;
+        continue;
+      }
       // ancorada: congelada no QG (não se move, não minera)
       if (ship.anchored) {
         ship.vx = 0;
@@ -71,7 +94,7 @@ export class SimWorld {
       if (input.mine) {
         const target = this.nearestAsteroid(ship);
         if (target) {
-          ship.ore += MINING_RATE * dt;
+          this.addOre(ship.owner, MINING_RATE * dt);
           ship.mining = true;
         }
       }
@@ -80,9 +103,7 @@ export class SimWorld {
     // estruturas autônomas produzem minério para o dono
     for (const st of this.structures.values()) {
       const rate = STRUCTURE_SPECS[st.type].productionRate;
-      if (rate <= 0) continue;
-      const owner = this.ships.get(st.owner);
-      if (owner) owner.ore += rate * dt;
+      if (rate > 0) this.addOre(st.owner, rate * dt);
     }
   }
 

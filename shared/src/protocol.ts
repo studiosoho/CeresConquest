@@ -34,3 +34,6 @@ export const MSG_PRODUCE = "produce";
 
 /** Alterna ancoragem no QG (sem payload). */
 export const MSG_ANCHOR = "anchor";
+
+/** Troca a nave ativa por outra do hangar do QG ancorado (sem payload). */
+export const MSG_SWAP = "swap";

@@ -14,13 +14,16 @@ export interface ShipState extends WorldPos {
   vx: number;
   vy: number;
   angle: number;
-  ore: number;
   mining: boolean;
   /** sessionId do dono ("" = neutra) */
   owner: string;
   kind: ShipKind;
-  /** ancorada no QG (congelada, pode produzir) */
+  /** ancorada no QG (congelada, pode produzir/trocar) */
   anchored: boolean;
+  /** QG de origem (hangar). "" = sem QG (ex.: builder inicial) */
+  hqId: string;
+  /** guardada no hangar (fora do mundo: não simula nem renderiza) */
+  stored: boolean;
 }
 
 export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"): ShipState {
@@ -32,11 +35,12 @@ export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"):
     vx: 0,
     vy: 0,
     angle: 0,
-    ore: 0,
     mining: false,
     owner,
     kind,
     anchored: false,
+    hqId: "",
+    stored: false,
   };
 }
 

@@ -4,6 +4,7 @@ import {
   MSG_BUILD,
   MSG_PRODUCE,
   MSG_ANCHOR,
+  MSG_SWAP,
   TICK_RATE,
   SECTOR_SIZE,
   MAP_SIZES,
@@ -22,7 +23,7 @@ import {
   type ProduceCommand,
 } from "@ceres/shared";
 import { SimWorld, findClearSpawn, type ShipState } from "@ceres/sim-core";
-import { MatchState, ShipSchema, StructureSchema } from "../schema/State";
+import { MatchState, ShipSchema, StructureSchema, PlayerSchema } from "../schema/State";
 import { mapSpawns, beltBasePoint, type SpawnStrategy } from "../spawn";
 import { computeBotInput, makeBotState, type BotState } from "../bots";
 
@@ -48,6 +49,8 @@ export class MatchRoom extends Room<MatchState> {
   private bots = new Map<string, BotState>();
   private structSeq = 0;
   private shipSeq = 0;
+  /** nave que cada jogador pilota (sessionId → shipId) */
+  private activeShip = new Map<string, string>();
 
   onCreate(options: MatchOptions = {}) {
     this.maxClients = options.maxPlayers ?? 12;
@@ -81,7 +84,8 @@ export class MatchRoom extends Room<MatchState> {
     }
 
     this.onMessage(MSG_INPUT, (client: Client, input: ShipInput) => {
-      this.sim.setInput(client.sessionId, input);
+      const active = this.activeShip.get(client.sessionId);
+      if (active) this.sim.setInput(active, input);
     });
 
     this.onMessage(MSG_BUILD, (client: Client, cmd: BuildCommand) => {
@@ -96,6 +100,10 @@ export class MatchRoom extends Room<MatchState> {
       this.tryToggleAnchor(client.sessionId);
     });
 
+    this.onMessage(MSG_SWAP, (client: Client) => {
+      this.trySwap(client.sessionId);
+    });
+
     this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
     console.log(
       `[room] match criada — seed=${seed} mapa=${mapSize}(${radiusSectors}s) ` +
@@ -105,23 +113,37 @@ export class MatchRoom extends Room<MatchState> {
 
   onJoin(client: Client) {
     const base = this.spawns[this.spawnIndex++ % this.spawns.length];
-    const ship = this.spawnShip(client.sessionId, base, client.sessionId, "builder");
+    const id = `p${this.shipSeq++}`;
+    const ship = this.spawnShip(id, base, client.sessionId, "builder");
+    this.activeShip.set(client.sessionId, id);
     // espelha a posição de spawn JÁ no join — o primeiro estado que o
     // cliente recebe precisa ser real, não os defaults do schema
-    this.state.ships.set(client.sessionId, this.mirrorSpawn(ship));
-    console.log(`[room] ${client.sessionId} entrou — setor (${ship.sx}, ${ship.sy})`);
+    this.state.ships.set(id, this.mirrorSpawn(ship));
+    const p = new PlayerSchema();
+    p.activeShip = id;
+    this.state.players.set(client.sessionId, p);
+    this.sim.playerOre.set(client.sessionId, 0);
+    console.log(`[room] ${client.sessionId} entrou — nave ${id} setor (${ship.sx}, ${ship.sy})`);
   }
 
   onLeave(client: Client) {
-    // remove a frota inteira do jogador (nave inicial + naves produzidas)
+    // remove a frota inteira do jogador (nave ativa + hangar + produzidas)
     for (const [id, ship] of [...this.sim.ships]) {
-      if (id === client.sessionId || ship.owner === client.sessionId) {
+      if (ship.owner === client.sessionId) {
         this.sim.removeShip(id);
         this.bots.delete(id);
         this.state.ships.delete(id);
       }
     }
+    this.activeShip.delete(client.sessionId);
+    this.state.players.delete(client.sessionId);
+    this.sim.playerOre.delete(client.sessionId);
     console.log(`[room] ${client.sessionId} saiu`);
+  }
+
+  private activeShipOf(sessionId: string): ShipState | undefined {
+    const id = this.activeShip.get(sessionId);
+    return id ? this.sim.ships.get(id) : undefined;
   }
 
   /** Cria uma nave no sim num ponto livre dentro do setor de spawn dado. */
@@ -135,15 +157,53 @@ export class MatchRoom extends Room<MatchState> {
     return this.sim.addShip(id, { sx: base.sx, sy: base.sy, x: local.x, y: local.y }, owner, kind);
   }
 
-  /** Alterna a ancoragem: só ancora se estiver perto do próprio QG. */
+  /** Alterna a ancoragem da nave ativa: só ancora se estiver perto do próprio QG. */
   private tryToggleAnchor(sessionId: string): void {
-    const ship = this.sim.ships.get(sessionId);
+    const ship = this.activeShipOf(sessionId);
     if (!ship) return;
     if (ship.anchored) {
       ship.anchored = false;
       return;
     }
     if (this.nearestOwnHq(sessionId, ship, DOCK_RANGE)) ship.anchored = true;
+  }
+
+  /** Troca a nave ativa por uma do hangar do QG ancorado. */
+  private trySwap(sessionId: string): void {
+    const active = this.activeShipOf(sessionId);
+    if (!active || !active.anchored) return;
+    const hq = this.nearestOwnHq(sessionId, active, DOCK_RANGE);
+    if (!hq) return;
+
+    // naves guardadas no hangar deste QG
+    let pick: [string, ShipState] | null = null;
+    for (const [id, s] of this.sim.ships) {
+      if (s.owner === sessionId && s.hqId === hq.id && s.stored) {
+        pick = [id, s];
+        break;
+      }
+    }
+    if (!pick) return; // hangar vazio
+
+    // guarda a nave ativa neste hangar
+    active.stored = true;
+    active.anchored = false;
+    active.hqId = hq.id;
+    this.sim.setInput(this.activeShip.get(sessionId)!, { thrust: false, turn: 0, mine: false });
+
+    // tira a nave escolhida do hangar, ancorada no QG
+    const [nid, next] = pick;
+    next.stored = false;
+    next.anchored = true;
+    const local = findClearSpawn(this.sim.seed, hq.sx, hq.sy);
+    next.sx = hq.sx;
+    next.sy = hq.sy;
+    next.x = local.x;
+    next.y = local.y;
+    next.vx = 0;
+    next.vy = 0;
+    this.activeShip.set(sessionId, nid);
+    console.log(`[room] ${sessionId} trocou de nave → ${next.kind} (${nid})`);
   }
 
   /** QG do jogador dentro de `range` da nave (ou null). */
@@ -156,10 +216,10 @@ export class MatchRoom extends Room<MatchState> {
 
   /** Valida e constrói uma estrutura, encostada na borda do asteroide mais próximo. */
   private tryBuild(sessionId: string, type?: BuildCommand["type"]): void {
-    const ship = this.sim.ships.get(sessionId);
+    const ship = this.activeShipOf(sessionId);
     if (!ship || !type) return;
     const spec = STRUCTURE_SPECS[type];
-    if (!spec || ship.ore < spec.cost) return;
+    if (!spec || this.sim.getOre(sessionId) < spec.cost) return;
 
     // ambos (QG e estação) fixam-se na borda de um asteroide próximo
     const ast = this.sim.nearestAsteroid(ship, BUILD_ASTEROID_RANGE);
@@ -175,7 +235,7 @@ export class MatchRoom extends Room<MatchState> {
     normalizePos(pos);
     const angle = Math.atan2(ny, nx);
 
-    ship.ore -= spec.cost;
+    this.sim.spendOre(sessionId, spec.cost);
     const id = `st-${this.structSeq++}`;
     this.sim.addStructure({ id, type, owner: sessionId, sx: pos.sx, sy: pos.sy, x: pos.x, y: pos.y, angle });
 
@@ -191,30 +251,31 @@ export class MatchRoom extends Room<MatchState> {
     console.log(`[room] ${sessionId} construiu ${type} na borda de asteroide — setor (${pos.sx}, ${pos.sy})`);
   }
 
-  /** Fabrica uma nave — só com a nave ancorada no QG e respeitando o hangar. */
+  /** Fabrica uma nave no hangar do QG ancorado, respeitando a capacidade. */
   private tryProduce(sessionId: string, kind?: ProduceCommand["kind"]): void {
-    const pilot = this.sim.ships.get(sessionId);
+    const pilot = this.activeShipOf(sessionId);
     if (!pilot || !kind) return;
     const spec = SHIP_PRODUCTION[kind];
-    if (!spec || pilot.ore < spec.cost) return;
+    if (!spec || this.sim.getOre(sessionId) < spec.cost) return;
     if (!pilot.anchored) return; // precisa estar ancorado no QG
 
     const hq = this.nearestOwnHq(sessionId, pilot, DOCK_RANGE);
     if (!hq) return;
 
-    // hangar: no máximo HANGAR_CAP naves de cada tipo por jogador
+    // hangar deste QG: no máximo HANGAR_CAP naves de cada tipo
     let count = 0;
     for (const s of this.sim.ships.values()) {
-      if (s.owner === sessionId && s.kind === kind) count++;
+      if (s.owner === sessionId && s.hqId === hq.id && s.kind === kind) count++;
     }
     if (count >= HANGAR_CAP) return;
 
-    pilot.ore -= spec.cost;
+    this.sim.spendOre(sessionId, spec.cost);
     const id = `sh-${this.shipSeq++}`;
     const ship = this.spawnShip(id, hq, sessionId, kind);
-    this.bots.set(id, makeBotState()); // pilotagem autônoma por enquanto
+    ship.hqId = hq.id;
+    ship.stored = true; // fica guardada no hangar (3b: mineradora busca estação)
     this.state.ships.set(id, this.mirrorSpawn(ship));
-    console.log(`[room] ${sessionId} fabricou ${kind} no QG — setor (${ship.sx}, ${ship.sy})`);
+    console.log(`[room] ${sessionId} fabricou ${kind} no hangar do QG ${hq.id}`);
   }
 
   private mirrorSpawn(ship: ShipState): ShipSchema {
@@ -226,17 +287,19 @@ export class MatchRoom extends Room<MatchState> {
     s.owner = ship.owner;
     s.kind = ship.kind;
     s.anchored = ship.anchored;
+    s.stored = ship.stored;
+    s.hqId = ship.hqId;
     return s;
   }
 
   private tick(dt: number) {
-    // IA dos bots → input no mesmo pipeline dos humanos
+    // IA dos bots neutros → input (naves da frota ficam paradas no hangar)
     for (const [id, bot] of this.bots) {
       const ship = this.sim.ships.get(id);
       if (ship) this.sim.setInput(id, computeBotInput(ship, this.sim, bot, dt));
     }
     this.sim.tick(dt);
-    // espelha sim-core → schema (delta-encoding fica por conta do Colyseus)
+    // espelha sim-core → schema
     for (const [id, ship] of this.sim.ships) {
       const s = this.state.ships.get(id);
       if (!s) continue;
@@ -247,9 +310,15 @@ export class MatchRoom extends Room<MatchState> {
       s.vx = ship.vx;
       s.vy = ship.vy;
       s.angle = ship.angle;
-      s.ore = ship.ore;
       s.mining = ship.mining;
       s.anchored = ship.anchored;
+      s.stored = ship.stored;
+      s.hqId = ship.hqId;
+    }
+    // minério e nave ativa por jogador
+    for (const [sid, p] of this.state.players) {
+      p.ore = this.sim.getOre(sid);
+      p.activeShip = this.activeShip.get(sid) ?? "";
     }
   }
 }

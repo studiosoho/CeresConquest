@@ -6,6 +6,7 @@ import {
   MSG_BUILD,
   MSG_PRODUCE,
   MSG_ANCHOR,
+  MSG_SWAP,
   SECTOR_SIZE,
   STRUCTURE_SPECS,
   SHIP_PRODUCTION,
@@ -97,11 +98,12 @@ interface ServerShip extends WorldPos {
   vx: number;
   vy: number;
   angle: number;
-  ore: number;
   mining: boolean;
   owner: string;
   kind: ShipKind;
   anchored: boolean;
+  stored: boolean;
+  hqId: string;
 }
 
 /** Snapshot plano de uma estrutura vinda do schema. */
@@ -121,10 +123,15 @@ interface StructView {
 export class GameScene extends Phaser.Scene {
   private room!: Room;
   private worldSeed = 0;
-  private ready = false;
+  /** true quando a nave ativa foi inicializada (usado por ferramentas externas) */
+  ready = false;
 
-  /** nave própria, predita localmente com o mesmo sim-core do servidor */
+  /** nave própria (ativa), predita localmente com o mesmo sim-core do servidor */
   private localShip: ShipState | null = null;
+  /** id da nave ativa segundo o servidor, e a que a predição representa */
+  private myShipId = "";
+  private localShipId = "";
+  private myOre = 0;
   private serverShips = new Map<string, ServerShip>();
 
   /** origem flutuante: setor de referência do espaço de render */
@@ -156,7 +163,7 @@ export class GameScene extends Phaser.Scene {
 
   private keys!: Record<
     | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS"
-    | "ONE" | "TWO" | "THREE" | "FOUR" | "F",
+    | "ONE" | "TWO" | "THREE" | "FOUR" | "F" | "C",
     Phaser.Input.Keyboard.Key
   >;
   private sendAccum = 0;
@@ -168,7 +175,7 @@ export class GameScene extends Phaser.Scene {
 
   async create() {
     this.keys = this.input.keyboard!.addKeys(
-      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO,THREE,FOUR,F",
+      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO,THREE,FOUR,F,C",
     ) as GameScene["keys"];
 
     // camadas: a câmera principal (com zoom) só vê o mundo;
@@ -237,8 +244,9 @@ export class GameScene extends Phaser.Scene {
       this.serverShips.set(id, {
         sx: s.sx, sy: s.sy, x: s.x, y: s.y,
         vx: s.vx, vy: s.vy, angle: s.angle,
-        ore: s.ore, mining: s.mining,
+        mining: s.mining,
         owner: s.owner, kind: s.kind, anchored: s.anchored,
+        stored: s.stored, hqId: s.hqId,
       });
     });
     for (const id of [...this.serverShips.keys()]) {
@@ -247,6 +255,13 @@ export class GameScene extends Phaser.Scene {
         this.remotes.get(id)?.gfx.destroy();
         this.remotes.delete(id);
       }
+    }
+
+    // meu jogador: minério e nave ativa
+    const me = state.players?.get(this.room.sessionId);
+    if (me) {
+      this.myShipId = me.activeShip;
+      this.myOre = me.ore;
     }
 
     // estruturas (estáticas): upsert + remoção
@@ -265,16 +280,8 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // primeira visão da própria nave → inicializa predição e origem
-    if (!this.ready) {
-      const mine = this.serverShips.get(this.room.sessionId);
-      if (!mine) return;
-      this.localShip = makeShip(mine);
-      this.localShip.angle = mine.angle;
-      this.setOrigin(mine.sx, mine.sy);
-      this.ownGfx.setVisible(true);
-      this.ready = true;
-    }
+    // a (re)inicialização da predição acontece em update(), conforme a nave
+    // ativa (myShipId) aparecer ou mudar (troca no hangar)
   }
 
   private sendInput(input: ShipInput) {
@@ -284,7 +291,11 @@ export class GameScene extends Phaser.Scene {
   // ── loop ────────────────────────────────────────────────────────────
 
   update(_time: number, deltaMs: number) {
-    if (!this.ready || !this.localShip) return;
+    // (re)inicializa a predição quando a nave ativa aparece ou muda (troca)
+    const mineServer = this.myShipId ? this.serverShips.get(this.myShipId) : undefined;
+    if (!mineServer) return;
+    if (this.localShipId !== this.myShipId) this.initActiveShip(mineServer);
+    if (!this.localShip) return;
     const dt = Math.min(deltaMs / 1000, 0.1);
 
     // zoom por teclas +/- e suavização em direção ao alvo
@@ -321,8 +332,11 @@ export class GameScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.F)) {
       this.room.send(MSG_ANCHOR);
     }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
+      this.room.send(MSG_SWAP);
+    }
 
-    const anchored = this.serverShips.get(this.room.sessionId)?.anchored ?? false;
+    const anchored = mineServer.anchored;
 
     // input → predição local (mesmo stepShip + colisão do servidor) → envio
     const input = anchored ? { thrust: false, turn: 0 as const, mine: false } : this.readInput();
@@ -344,7 +358,7 @@ export class GameScene extends Phaser.Scene {
     this.lastInput = input;
 
     // correção suave em direção ao estado autoritativo
-    const authoritative = this.serverShips.get(this.room.sessionId);
+    const authoritative = this.serverShips.get(this.myShipId);
     if (authoritative) this.blendTowards(this.localShip, authoritative);
 
     // origem flutuante acompanha o setor da nave própria
@@ -372,7 +386,6 @@ export class GameScene extends Phaser.Scene {
     local.vx += (server.vx - local.vx) * OWN_BLEND;
     local.vy += (server.vy - local.vy) * OWN_BLEND;
     local.angle += Phaser.Math.Angle.Wrap(server.angle - local.angle) * OWN_BLEND;
-    local.ore = server.ore;
     // renormaliza a posição local (o blend pode sair do setor)
     stepShip(local, { thrust: false, turn: 0, mine: false }, 0);
   }
@@ -392,6 +405,21 @@ export class GameScene extends Phaser.Scene {
     this.rebuildAsteroids();
     // força re-inicialização das posições suavizadas dos remotos
     for (const view of this.remotes.values()) view.initialized = false;
+  }
+
+  /** (Re)inicializa a predição para a nave ativa (spawn ou troca no hangar). */
+  private initActiveShip(server: ServerShip) {
+    this.localShip = makeShip(server, server.owner, server.kind);
+    this.localShip.angle = server.angle;
+    this.localShip.anchored = server.anchored;
+    this.localShipId = this.myShipId;
+    this.setOrigin(server.sx, server.sy);
+    // redesenha a nave própria com a silhueta da classe ativa
+    this.ownGfx.clear();
+    this.ownGfx.lineStyle(this.strokeW(), COLOR_OWN);
+    this.ownGfx.strokePoints(shipVerts(server.kind), true, true);
+    this.ownGfx.setVisible(true);
+    this.ready = true;
   }
 
   private rebuildAsteroids() {
@@ -426,7 +454,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Cor de uma nave conforme o dono: própria pilotada, minha frota, ou alheia. */
   private shipColor(server: ServerShip, id: string): number {
-    if (id === this.room.sessionId) return COLOR_OWN;
+    if (id === this.myShipId) return COLOR_OWN;
     if (server.owner === this.room.sessionId) return COLOR_FLEET_OWN;
     return COLOR_REMOTE;
   }
@@ -474,7 +502,11 @@ export class GameScene extends Phaser.Scene {
 
     // naves remotas: interpolação em direção ao snapshot do servidor
     for (const [id, server] of this.serverShips) {
-      if (id === this.room.sessionId) continue;
+      // pula a nave ativa (é a própria) e as guardadas no hangar
+      if (id === this.myShipId || server.stored) {
+        this.remotes.get(id)?.gfx.setVisible(false);
+        continue;
+      }
       let view = this.remotes.get(id);
       if (!view) {
         const color = this.shipColor(server, id);
@@ -496,7 +528,7 @@ export class GameScene extends Phaser.Scene {
         view.ry += (target.y - view.ry) * REMOTE_BLEND;
         view.angle += Phaser.Math.Angle.Wrap(server.angle - view.angle) * REMOTE_BLEND;
       }
-      view.gfx.setPosition(view.rx, view.ry).setRotation(view.angle);
+      view.gfx.setPosition(view.rx, view.ry).setRotation(view.angle).setVisible(true);
     }
 
     // estruturas (estáticas): cria o gráfico na primeira vez, reposiciona sempre
@@ -541,26 +573,32 @@ export class GameScene extends Phaser.Scene {
 
     this.drawMinimap(own);
 
-    const ore = Math.floor(authoritative?.ore ?? this.localShip!.ore);
+    const ore = Math.floor(this.myOre);
     const zoom = this.cameras.main.zoom;
     const mapName = MAP_SIZE_LABEL[mapSizeFromRadiusSectors(this.mapRadius / SECTOR_SIZE)];
+    const activeKind = this.serverShips.get(this.myShipId)?.kind ?? "builder";
+    const kindLabel: Record<ShipKind, string> = { builder: "builder", mining: "mineração", attack: "ataque" };
 
-    // frota própria por tipo + QG
-    let fleet = 0;
+    // frota própria por tipo + hangar do QG ancorado + QG
     let nMining = 0;
     let nAttack = 0;
+    let hangarMining = 0;
+    let hangarAttack = 0;
     let hasHq = false;
     for (const [id, s] of this.serverShips) {
-      if (s.owner === this.room.sessionId && id !== this.room.sessionId) {
-        fleet++;
-        if (s.kind === "mining") nMining++;
-        else if (s.kind === "attack") nAttack++;
+      if (s.owner !== this.room.sessionId || id === this.myShipId) continue;
+      if (s.kind === "mining") nMining++;
+      else if (s.kind === "attack") nAttack++;
+      if (s.stored) {
+        if (s.kind === "mining") hangarMining++;
+        else if (s.kind === "attack") hangarAttack++;
       }
     }
     for (const st of this.serverStructures.values()) {
       if (st.owner === this.room.sessionId && st.stype === "hq") hasHq = true;
     }
-    const anchored = authoritative?.anchored ?? false;
+    const anchored = authoritative?.anchored ?? this.localShip!.anchored;
+    const hangarTotal = hangarMining + hangarAttack;
 
     // dicas de construção e produção
     const nearAst = !!sim.nearestAsteroid(this.localShip!, BUILD_ASTEROID_RANGE);
@@ -576,10 +614,11 @@ export class GameScene extends Phaser.Scene {
     const hint4 = `[4] ${p4.label} (${p4.cost})${need(nAttack)}`;
     const canProd = (n: number) => hasHq && anchored && n < HANGAR_CAP;
     const anchorTag = anchored ? "  ⚓ ANCORADO" : "";
+    const swapHint = anchored && hangarTotal > 0 ? `  » [C] trocar nave (hangar: ${hangarTotal})` : "";
 
     this.hud.setText(
-      `Minério: ${ore}  ·  Frota: ${fleet}  ·  Mapa: ${mapName}  ·  Estruturas: ${this.serverStructures.size}  ·  Zoom ${zoom.toFixed(2)}x${anchorTag}\n` +
-        `W/↑ acelerar · A/D girar · ESPAÇO minerar · [F] ancorar no QG · roda/+/- zoom\n` +
+      `Minério: ${ore}  ·  Pilotando: ${kindLabel[activeKind]}  ·  Mapa: ${mapName}  ·  Zoom ${zoom.toFixed(2)}x${anchorTag}${swapHint}\n` +
+        `W/↑ acelerar · A/D girar · ESPAÇO minerar · [F] ancorar · [C] trocar no hangar · roda/+/- zoom\n` +
         `${mark(ore >= st1.cost && nearAst)}${hint1}    ${mark(ore >= st2.cost && nearAst)}${hint2}\n` +
         `${mark(canProd(nMining) && ore >= p3.cost)}${hint3}    ${mark(canProd(nAttack) && ore >= p4.cost)}${hint4}`,
     );

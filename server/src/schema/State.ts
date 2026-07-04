@@ -13,11 +13,18 @@ export class ShipSchema extends Schema {
   @type("float32") vx = 0;
   @type("float32") vy = 0;
   @type("float32") angle = 0;
-  @type("float32") ore = 0;
   @type("boolean") mining = false;
   @type("boolean") anchored = false;
+  @type("boolean") stored = false;
   @type("string") owner = "";
   @type("string") kind = "builder";
+  @type("string") hqId = "";
+}
+
+export class PlayerSchema extends Schema {
+  @type("float32") ore = 0;
+  /** id da nave que o jogador pilota */
+  @type("string") activeShip = "";
 }
 
 export class StructureSchema extends Schema {
@@ -38,4 +45,5 @@ export class MatchState extends Schema {
   @type("float32") mapRadius = 0;
   @type({ map: ShipSchema }) ships = new MapSchema<ShipSchema>();
   @type({ map: StructureSchema }) structures = new MapSchema<StructureSchema>();
+  @type({ map: PlayerSchema }) players = new MapSchema<PlayerSchema>();
 }
