@@ -18,6 +18,10 @@ export const SHIP_MAX_SPEED = 400; // unidades/s
 export const SHIP_TURN_RATE = 3.5; // rad/s
 export const SHIP_DRAG = 0.35; // coeficiente de arrasto exponencial
 
+// rampa de aceleração: o empuxo sobe suavemente de RAMP_MIN até 100%
+export const THRUST_RAMP_TIME = 0.8; // s até empuxo pleno
+export const THRUST_RAMP_MIN = 0.4; // fração inicial do empuxo
+
 // ── Mineração ─────────────────────────────────────────────────────────
 export const MINING_RANGE = 250; // distância máxima até a borda do asteroide
 export const MINING_RATE = 25; // minério/s

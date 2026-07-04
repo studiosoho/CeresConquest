@@ -3,6 +3,8 @@ import {
   SHIP_MAX_SPEED,
   SHIP_TURN_RATE,
   SHIP_DRAG,
+  THRUST_RAMP_TIME,
+  THRUST_RAMP_MIN,
   normalizePos,
   type ShipInput,
   type ShipKind,
@@ -30,6 +32,8 @@ export interface ShipState extends WorldPos {
   stationId: string;
   /** táxi: estrutura de destino em trânsito ("" = não está indo a lugar nenhum) */
   taxiTo: string;
+  /** rampa de empuxo 0..1 — sobe suavemente enquanto acelera (leve aceleração) */
+  thrustRamp: number;
 }
 
 export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"): ShipState {
@@ -50,28 +54,37 @@ export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"):
     autoMining: false,
     stationId: "",
     taxiTo: "",
+    thrustRamp: 0,
   };
 }
 
 /**
  * Integra um passo de física da nave. Determinística e pura de efeitos —
  * usada pelo servidor (autoritativo) e pelo cliente (predição local).
+ *
+ * `speedMult` escala empuxo e velocidade máxima (táxi = 2×).
  */
-export function stepShip(s: ShipState, input: ShipInput, dt: number): void {
+export function stepShip(s: ShipState, input: ShipInput, dt: number, speedMult = 1): void {
   s.angle += input.turn * SHIP_TURN_RATE * dt;
 
+  // leve aceleração: o empuxo sobe de RAMP_MIN a 100% ao segurar acelerar
   if (input.thrust) {
-    s.vx += Math.cos(s.angle) * SHIP_THRUST * dt;
-    s.vy += Math.sin(s.angle) * SHIP_THRUST * dt;
+    s.thrustRamp = Math.min(1, s.thrustRamp + dt / THRUST_RAMP_TIME);
+    const power = THRUST_RAMP_MIN + (1 - THRUST_RAMP_MIN) * s.thrustRamp;
+    s.vx += Math.cos(s.angle) * SHIP_THRUST * speedMult * power * dt;
+    s.vy += Math.sin(s.angle) * SHIP_THRUST * speedMult * power * dt;
+  } else {
+    s.thrustRamp = Math.max(0, s.thrustRamp - dt * 3);
   }
 
   const drag = Math.exp(-SHIP_DRAG * dt);
   s.vx *= drag;
   s.vy *= drag;
 
+  const maxSpeed = SHIP_MAX_SPEED * speedMult;
   const speed = Math.hypot(s.vx, s.vy);
-  if (speed > SHIP_MAX_SPEED) {
-    const k = SHIP_MAX_SPEED / speed;
+  if (speed > maxSpeed) {
+    const k = maxSpeed / speed;
     s.vx *= k;
     s.vy *= k;
   }

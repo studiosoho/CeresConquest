@@ -3,6 +3,7 @@ import {
   MINING_RATE,
   NEUTRAL_INPUT,
   STRUCTURE_SPECS,
+  TAXI_SPEED_MULT,
   relVec,
   type ShipInput,
   type WorldPos,
@@ -97,8 +98,10 @@ export class SimWorld {
         continue;
       }
       const input = this.inputs.get(id) ?? NEUTRAL_INPUT;
-      stepShip(ship, input, dt);
-      collideShip(ship, this.seed, passthrough);
+      // em taxiamento: dobro da velocidade e sem colisão (caminho reto)
+      const isTaxi = !!ship.taxiTo;
+      stepShip(ship, input, dt, isTaxi ? TAXI_SPEED_MULT : 1);
+      if (!isTaxi) collideShip(ship, this.seed, passthrough);
       if (this.boundaryCenter) clampToBoundary(ship, this.boundaryCenter, this.boundaryRadius);
       ship.mining = false;
       if (input.mine) {

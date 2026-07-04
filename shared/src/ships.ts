@@ -31,3 +31,6 @@ export const STATION_HANGAR_CAP = 2;
 
 /** Distância máxima até a própria estrutura para ancorar. */
 export const DOCK_RANGE = 500;
+
+/** Naves em taxiamento voam no dobro da velocidade (e sem colisão). */
+export const TAXI_SPEED_MULT = 2;

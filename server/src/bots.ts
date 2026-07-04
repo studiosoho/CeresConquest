@@ -48,15 +48,9 @@ export function computeBotInput(
   return { thrust: true, turn, mine };
 }
 
-/** IA do táxi: navega até um ponto por fora da estrutura de destino (borda). */
-export function computeTaxiInput(ship: ShipState, dest: WorldPos & { angle: number }): ShipInput {
-  const approach: WorldPos = {
-    sx: dest.sx,
-    sy: dest.sy,
-    x: dest.x + Math.cos(dest.angle) * 250,
-    y: dest.y + Math.sin(dest.angle) * 250,
-  };
-  const { dx, dy } = relVec(ship, approach);
+/** IA do táxi: menor caminho — linha reta até o destino (voa sem colisão). */
+export function computeTaxiInput(ship: ShipState, dest: WorldPos): ShipInput {
+  const { dx, dy } = relVec(ship, dest);
   const desired = Math.atan2(dy, dx);
   const da = Math.atan2(Math.sin(desired - ship.angle), Math.cos(desired - ship.angle));
   const turn: ShipInput["turn"] = da > TURN_DEADZONE ? 1 : da < -TURN_DEADZONE ? -1 : 0;

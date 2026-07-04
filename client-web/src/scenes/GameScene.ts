@@ -10,6 +10,8 @@ import {
   MSG_AUTOMINE,
   MSG_TAXI,
   SECTOR_SIZE,
+  SHIP_RADIUS,
+  SHIP_MAX_SPEED,
   STRUCTURE_SPECS,
   SHIP_PRODUCTION,
   BUILD_ASTEROID_RANGE,
@@ -43,6 +45,11 @@ const COLOR_STRUCT_OWN = 0x5fd0a8;
 const COLOR_STRUCT_OTHER = 0xc8985a;
 /** naves da minha frota (produzidas, autônomas) */
 const COLOR_FLEET_OWN = 0x8fe36a;
+/** vagas de hangar desenhadas junto às bases */
+const COLOR_HANGAR = 0x3d4f63;
+/** jatos de propulsão pixelados (azul → roxo) */
+const COLOR_JET_BLUE = 0x5b8cff;
+const COLOR_JET_PURPLE = 0x9a5bff;
 
 const MAP_SIZE_LABEL: Record<MapSize | "custom", string> = {
   small: "pequeno",
@@ -124,6 +131,8 @@ interface StructView {
   own: boolean;
   /** velocidade angular do asteroide hospedeiro (gira em grupo com ele) */
   spin: number;
+  /** assinatura do último desenho (ocupação do hangar) — redesenha se mudar */
+  lastSig: string;
 }
 
 export class GameScene extends Phaser.Scene {
@@ -153,6 +162,7 @@ export class GameScene extends Phaser.Scene {
   private ownGfx!: Phaser.GameObjects.Graphics;
   private beamGfx!: Phaser.GameObjects.Graphics;
   private boundaryGfx!: Phaser.GameObjects.Graphics;
+  private jetGfx!: Phaser.GameObjects.Graphics;
   private remotes = new Map<string, RemoteView>();
   private asteroidGfx: Array<{ gfx: Phaser.GameObjects.Graphics; spin: number }> = [];
   private serverStructures = new Map<string, ServerStructure>();
@@ -196,8 +206,10 @@ export class GameScene extends Phaser.Scene {
 
     this.beamGfx = this.add.graphics();
     this.boundaryGfx = this.add.graphics();
+    this.jetGfx = this.add.graphics();
     this.worldLayer.add(this.beamGfx);
     this.worldLayer.add(this.boundaryGfx);
+    this.worldLayer.add(this.jetGfx);
     this.ownGfx = this.makeShipGfx(COLOR_OWN, "builder");
     this.ownGfx.setVisible(false);
 
@@ -305,29 +317,13 @@ export class GameScene extends Phaser.Scene {
     this.room.send(MSG_INPUT, input);
   }
 
-  /** Estrutura própria mais próxima da nave dentro de `range` (id ou ""). */
-  private nearestOwnStructId(range: number): string {
-    let best = "";
-    let bestD = range;
-    for (const [id, st] of this.serverStructures) {
-      if (st.owner !== this.room.sessionId) continue;
-      const d = dist(this.localShip!, st);
-      if (d <= bestD) {
-        bestD = d;
-        best = id;
-      }
-    }
-    return best;
-  }
-
-  /** Naves próprias guardadas em OUTROS hangares — candidatas a táxi. */
+  /** Naves próprias guardadas em QGs — candidatas a táxi (destino: estação). */
   private computeTaxiOptions() {
-    const dockedId = this.nearestOwnStructId(DOCK_RANGE);
     const opts: GameScene["taxiOpts"] = [];
     for (const [id, s] of this.serverShips) {
-      if (s.owner !== this.room.sessionId || !s.stored || s.hqId === dockedId) continue;
+      if (s.owner !== this.room.sessionId || !s.stored) continue;
       const src = this.serverStructures.get(s.hqId);
-      if (!src) continue;
+      if (!src || src.stype !== "hq") continue;
       opts.push({ id, kind: s.kind, srcType: src.stype, srcDist: dist(this.localShip!, src) });
     }
     opts.sort((a, b) => a.srcDist - b.srcDist);
@@ -530,12 +526,64 @@ export class GameScene extends Phaser.Scene {
     return 0;
   }
 
-  private makeStructGfx(type: StructureType, own: boolean): Phaser.GameObjects.Graphics {
+  private makeStructGfx(): Phaser.GameObjects.Graphics {
     const g = this.add.graphics();
-    g.lineStyle(this.strokeW(), own ? COLOR_STRUCT_OWN : COLOR_STRUCT_OTHER);
-    g.strokePoints(structureVerts(type, STRUCTURE_SPECS[type].radius), true, true);
     this.worldLayer.add(g);
     return g;
+  }
+
+  /**
+   * Desenha a estrutura + as vagas de hangar junto à base, com as naves que
+   * as ocupam. Tudo em coordenadas locais — gira em grupo com o asteroide.
+   */
+  private drawStructInto(view: StructView, occupants: ShipKind[]) {
+    const g = view.gfx;
+    const w = this.strokeW();
+    g.clear();
+    g.lineStyle(w, view.own ? COLOR_STRUCT_OWN : COLOR_STRUCT_OTHER);
+    g.strokePoints(structureVerts(view.type, view.radius), true, true);
+
+    // vagas do hangar: fileira abaixo da base (QG: 6 · estação: 2)
+    const cap = view.type === "hq" ? 6 : 2;
+    const slot = SHIP_RADIUS * 2.4;
+    const y0 = view.radius + slot * 0.9;
+    for (let i = 0; i < cap; i++) {
+      const x0 = (i - (cap - 1) / 2) * (slot * 1.15);
+      g.lineStyle(Math.max(w * 0.5, 0.5), COLOR_HANGAR);
+      g.strokeRect(x0 - slot / 2, y0 - slot / 2, slot, slot);
+      const kind = occupants[i];
+      if (kind) {
+        g.lineStyle(w * 0.75, view.own ? COLOR_FLEET_OWN : COLOR_REMOTE);
+        const mini = shipVerts(kind).map((v) => ({ x: x0 + v.x * 0.75, y: y0 + v.y * 0.75 }));
+        g.strokePoints(mini, true, true);
+      }
+    }
+  }
+
+  /** Jato de propulsão pixelado (azul/roxo), escala com a velocidade. */
+  private drawJet(x: number, y: number, angle: number, speed: number) {
+    // normaliza contra 2×max (táxi) — nave comum chega a ~0.5, táxi a ~1
+    const k = Math.min(speed / (SHIP_MAX_SPEED * 2), 1);
+    if (k < 0.03) return;
+    const g = this.jetGfx;
+    const back = angle + Math.PI;
+    const bx = Math.cos(back);
+    const by = Math.sin(back);
+    const px_ = -by; // perpendicular
+    const py_ = bx;
+    const t = this.time.now / 1000;
+    const len = SHIP_RADIUS * (0.6 + 3.2 * k);
+    const n = 2 + Math.floor(k * 8); // 2..10 "pixels"
+    for (let i = 0; i < n; i++) {
+      const f = (i + 0.5) / n;
+      const flick = Math.sin(t * 31 + i * 2.7 + x * 0.013);
+      const jitter = flick * SHIP_RADIUS * 0.28 * f;
+      const cx = x + bx * (SHIP_RADIUS * 0.75 + f * len) + px_ * jitter;
+      const cy = y + by * (SHIP_RADIUS * 0.75 + f * len) + py_ * jitter;
+      const size = SHIP_RADIUS * (0.42 - f * 0.22) * (0.7 + 0.6 * k);
+      g.fillStyle(i % 2 === 0 ? COLOR_JET_BLUE : COLOR_JET_PURPLE, 0.95 - f * 0.55);
+      g.fillRect(cx - size / 2, cy - size / 2, size, size);
+    }
   }
 
   /** Largura de traço em unidades de mundo para dar SCREEN_LINE_WIDTH px na tela. */
@@ -554,11 +602,8 @@ export class GameScene extends Phaser.Scene {
       view.gfx.lineStyle(w, view.color);
       view.gfx.strokePoints(shipVerts(view.kind), true, true);
     }
-    for (const view of this.structViews.values()) {
-      view.gfx.clear();
-      view.gfx.lineStyle(w, view.own ? COLOR_STRUCT_OWN : COLOR_STRUCT_OTHER);
-      view.gfx.strokePoints(structureVerts(view.type, view.radius), true, true);
-    }
+    // estruturas: invalida a assinatura → redesenhadas no próximo draw
+    for (const view of this.structViews.values()) view.lastSig = " ";
     this.rebuildAsteroids();
   }
 
@@ -570,6 +615,10 @@ export class GameScene extends Phaser.Scene {
     // rotação leve dos asteroides (visual, determinística por semente)
     const tt = this.time.now / 1000;
     for (const a of this.asteroidGfx) a.gfx.setRotation(a.spin * tt);
+
+    // jatos de propulsão (pixelados): nave própria + remotas em movimento
+    this.jetGfx.clear();
+    this.drawJet(own.x, own.y, this.localShip!.angle, Math.hypot(this.localShip!.vx, this.localShip!.vy));
 
     // naves remotas: interpolação em direção ao snapshot do servidor
     for (const [id, server] of this.serverShips) {
@@ -600,21 +649,35 @@ export class GameScene extends Phaser.Scene {
         view.angle += Phaser.Math.Angle.Wrap(server.angle - view.angle) * REMOTE_BLEND;
       }
       view.gfx.setPosition(view.rx, view.ry).setRotation(view.angle).setVisible(true);
+      this.drawJet(view.rx, view.ry, view.angle, Math.hypot(server.vx, server.vy));
     }
 
-    // estruturas: vivem DENTRO do asteroide hospedeiro e giram em grupo com ele
+    // estruturas: vivem DENTRO do asteroide hospedeiro e giram em grupo com
+    // ele; hangares desenhados junto à base com as naves que os ocupam
     for (const [id, st] of this.serverStructures) {
       let view = this.structViews.get(id);
       if (!view) {
         const own_ = st.owner === this.room.sessionId;
         view = {
-          gfx: this.makeStructGfx(st.stype, own_),
+          gfx: this.makeStructGfx(),
           type: st.stype,
           radius: STRUCTURE_SPECS[st.stype].radius,
           own: own_,
           spin: this.asteroidSpinById(st),
+          lastSig: "\0", // sentinela: força o primeiro desenho mesmo com hangar vazio
         };
         this.structViews.set(id, view);
+      }
+      // ocupantes do hangar desta estrutura (estáveis por id)
+      const occupants: ShipKind[] = [];
+      for (const [sid_, s] of [...this.serverShips].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+        void sid_;
+        if (s.stored && s.hqId === id) occupants.push(s.kind);
+      }
+      const sig = occupants.join(",");
+      if (sig !== view.lastSig) {
+        view.lastSig = sig;
+        this.drawStructInto(view, occupants);
       }
       const p = this.toRender(st);
       view.gfx.setPosition(p.x, p.y).setRotation(st.angle + view.spin * tt);
@@ -698,15 +761,14 @@ export class GameScene extends Phaser.Scene {
     // [G] auto-mineração: pilotando mineradora ancorada na própria estação
     const canAuto = activeKind === "mining" && anchored && nearOwnStation;
     const autoHint = canAuto ? "  » [G] auto-minerar na estação" : "";
-    // [T]/[Y] táxi: mostra a nave escolhida entre as disponíveis
-    const srcLabel: Record<StructureType, string> = { hq: "QG", miningStation: "estação" };
+    // [T]/[Y] táxi: só disponível ancorado na PRÓPRIA estação de mineração
     let taxiLine = "";
-    if (anchored && this.taxiOpts.length > 0) {
+    if (anchored && nearOwnStation && this.taxiOpts.length > 0) {
       const o = this.taxiOpts[this.taxiSel];
       const km = (o.srcDist / 1000).toFixed(1);
       taxiLine =
-        `\nTáxi ▸ ${kindLabel[o.kind]} (${srcLabel[o.srcType]} ${km}k)  ` +
-        `·  [T] trocar seleção (${this.taxiSel + 1}/${this.taxiOpts.length})  ·  [Y] chamar`;
+        `\nTáxi ▸ ${kindLabel[o.kind]} (QG a ${km}k)  ` +
+        `·  [T] trocar seleção (${this.taxiSel + 1}/${this.taxiOpts.length})  ·  [Y] chamar (2× vel.)`;
     }
 
     this.hud.setText(

@@ -247,27 +247,28 @@ export class MatchRoom extends Room<MatchState> {
   private tryTaxi(sessionId: string, shipId?: string): void {
     const active = this.activeShipOf(sessionId);
     if (!active || !active.anchored) return;
-    const dest = this.nearestOwnStructure(sessionId, active, DOCK_RANGE);
+    // táxi só está disponível ancorado numa ESTAÇÃO DE MINERAÇÃO própria
+    const dest = this.nearestOwnStructure(sessionId, active, DOCK_RANGE, "miningStation");
     if (!dest) return;
 
-    let best: { id: string; ship: ShipState; src: (typeof dest) } | null = null;
+    let best: { id: string; ship: ShipState; src: { id: string; sx: number; sy: number; x: number; y: number } } | null = null;
 
-    // nave escolhida pelo jogador (qual nave de qual QG)
+    // nave escolhida pelo jogador — precisa estar guardada num QG
     if (shipId) {
       const s = this.sim.ships.get(shipId);
       const src = s ? this.sim.structures.get(s.hqId) : undefined;
-      if (s && src && s.owner === sessionId && s.stored && s.hqId !== dest.id) {
+      if (s && src && src.type === "hq" && s.owner === sessionId && s.stored) {
         best = { id: shipId, ship: s, src };
       }
     }
 
-    // fallback: nave do hangar próprio mais perto do destino
+    // fallback: nave guardada no QG mais próximo da estação
     if (!best) {
       let bestDist = Infinity;
       for (const [id, s] of this.sim.ships) {
-        if (s.owner !== sessionId || !s.stored || s.hqId === dest.id) continue;
+        if (s.owner !== sessionId || !s.stored) continue;
         const src = this.sim.structures.get(s.hqId);
-        if (!src) continue;
+        if (!src || src.type !== "hq") continue;
         const d = dist(src, dest);
         if (d < bestDist) {
           bestDist = d;
@@ -275,21 +276,20 @@ export class MatchRoom extends Room<MatchState> {
         }
       }
     }
-    if (!best) return; // nenhuma nave disponível
-    if (!this.hangarHasFreeSlot(sessionId, dest, best.ship.kind)) return; // destino sem vaga
+    if (!best) return; // nenhuma nave em QG
+    if (!this.hangarHasFreeSlot(sessionId, dest, best.ship.kind)) return; // estação sem vaga
 
-    // despacha: sai do hangar de origem e voa até o destino
-    const local = findClearSpawn(this.sim.seed, best.src.sx, best.src.sy);
+    // despacha: spawna DO hangar (posição do QG) e voa reto até a estação
     best.ship.stored = false;
     best.ship.anchored = false;
     best.ship.taxiTo = dest.id;
     best.ship.sx = best.src.sx;
     best.ship.sy = best.src.sy;
-    best.ship.x = local.x;
-    best.ship.y = local.y;
+    best.ship.x = best.src.x;
+    best.ship.y = best.src.y;
     best.ship.vx = 0;
     best.ship.vy = 0;
-    console.log(`[room] ${sessionId} táxi: ${best.ship.kind} de ${best.src.id} → ${dest.id}`);
+    console.log(`[room] ${sessionId} táxi: ${best.ship.kind} de ${best.src.id} → ${dest.id} (2x, sem colisão)`);
   }
 
   /** Há vaga no hangar da estrutura para uma nave deste tipo (conta em trânsito)? */
