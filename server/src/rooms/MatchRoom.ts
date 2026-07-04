@@ -20,7 +20,6 @@ import {
   BUILD_ASTEROID_RANGE,
   relVec,
   dist,
-  normalizePos,
   type MapSize,
   type ShipInput,
   type BuildCommand,
@@ -363,41 +362,53 @@ export class MatchRoom extends Room<MatchState> {
     return best ?? null;
   }
 
-  /** Valida e constrói uma estrutura, encostada na borda do asteroide mais próximo. */
+  /**
+   * Valida e constrói uma estrutura DENTRO do asteroide mais próximo.
+   * O asteroide hospedeiro deixa de colidir e só comporta uma estrutura.
+   */
   private tryBuild(sessionId: string, type?: BuildCommand["type"]): void {
     const ship = this.activeShipOf(sessionId);
     if (!ship || !type) return;
     const spec = STRUCTURE_SPECS[type];
     if (!spec || this.sim.getOre(sessionId) < spec.cost) return;
 
-    // ambos (QG e estação) fixam-se na borda de um asteroide próximo
     const ast = this.sim.nearestAsteroid(ship, BUILD_ASTEROID_RANGE);
     if (!ast) return;
 
-    // ponto na borda, no lado voltado para a nave, com a estrutura orientada para fora
+    // 1 estrutura por asteroide (de qualquer jogador)
+    for (const st of this.sim.structures.values()) {
+      if (st.asteroidId === ast.id) return;
+    }
+
+    // a estrutura vive no CENTRO do asteroide; orientação base voltada à nave
     const { dx, dy } = relVec(ast, ship);
-    const d = Math.hypot(dx, dy) || 1;
-    const nx = dx / d;
-    const ny = dy / d;
-    const off = ast.radius + spec.radius * 0.5;
-    const pos = { sx: ast.sx, sy: ast.sy, x: ast.x + nx * off, y: ast.y + ny * off };
-    normalizePos(pos);
-    const angle = Math.atan2(ny, nx);
+    const angle = Math.atan2(dy, dx);
 
     this.sim.spendOre(sessionId, spec.cost);
     const id = `st-${this.structSeq++}`;
-    this.sim.addStructure({ id, type, owner: sessionId, sx: pos.sx, sy: pos.sy, x: pos.x, y: pos.y, angle });
+    this.sim.addStructure({
+      id,
+      type,
+      owner: sessionId,
+      sx: ast.sx,
+      sy: ast.sy,
+      x: ast.x,
+      y: ast.y,
+      angle,
+      asteroidId: ast.id,
+    });
 
     const ss = new StructureSchema();
     ss.stype = type;
     ss.owner = sessionId;
-    ss.sx = pos.sx;
-    ss.sy = pos.sy;
-    ss.x = pos.x;
-    ss.y = pos.y;
+    ss.sx = ast.sx;
+    ss.sy = ast.sy;
+    ss.x = ast.x;
+    ss.y = ast.y;
     ss.angle = angle;
+    ss.asteroidId = ast.id;
     this.state.structures.set(id, ss);
-    console.log(`[room] ${sessionId} construiu ${type} na borda de asteroide — setor (${pos.sx}, ${pos.sy})`);
+    console.log(`[room] ${sessionId} construiu ${type} no asteroide ${ast.id}`);
   }
 
   /**

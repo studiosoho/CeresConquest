@@ -86,6 +86,14 @@ describe("colisão nave × asteroide", () => {
     expect(ship).toEqual(before);
   });
 
+  it("asteroide com estrutura (passthrough) é atravessável", () => {
+    const a = sectorAsteroids(seed, beltSector, 0)[0];
+    const ship = { sx: a.sx, sy: a.sy, x: a.x, y: a.y, vx: 100, vy: 0 };
+    const before = { ...ship };
+    collideShip(ship, seed, new Set([a.id]));
+    expect(ship).toEqual(before); // sem empurrão: a nave está dentro e fica
+  });
+
   it("findClearSpawn devolve um ponto livre de asteroides", () => {
     const sp = findClearSpawn(seed, beltSector, 0);
     const point: WorldPos = { sx: beltSector, sy: 0, x: sp.x, y: sp.y };
@@ -140,6 +148,7 @@ describe("estruturas", () => {
       x: 5000,
       y: 5000,
       angle: 0,
+      asteroidId: "",
     });
     for (let i = 0; i < 20; i++) w.tick(1 / 20); // 1s
     // productionRate=10 → ~10 de minério em 1s

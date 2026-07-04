@@ -37,6 +37,7 @@ export class StructureSchema extends Schema {
   @type("float32") x = 0;
   @type("float32") y = 0;
   @type("float32") angle = 0;
+  @type("string") asteroidId = "";
 }
 
 export class MatchState extends Schema {

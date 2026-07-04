@@ -19,11 +19,19 @@ export interface Body extends WorldPos {
  * de raio `a.radius` (a silhueta batata está inscrita nele). Empurra a nave
  * para fora e remove a componente de velocidade que aponta para dentro
  * (deslizamento ao longo da superfície).
+ *
+ * `passthrough`: ids de asteroides SEM colisão (os que hospedam estruturas) —
+ * a nave os atravessa para alcançar a estrutura no interior.
  */
-export function collideShip(ship: Body, seed: number): void {
+export function collideShip(
+  ship: Body,
+  seed: number,
+  passthrough?: ReadonlySet<string>,
+): void {
   for (let oy = -1; oy <= 1; oy++) {
     for (let ox = -1; ox <= 1; ox++) {
       for (const a of sectorAsteroids(seed, ship.sx + ox, ship.sy + oy)) {
+        if (passthrough?.has(a.id)) continue;
         const { dx, dy } = relVec(a, ship); // do centro do asteroide até a nave
         const d = Math.hypot(dx, dy);
         const minDist = a.radius + SHIP_RADIUS;

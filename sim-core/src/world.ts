@@ -72,7 +72,17 @@ export class SimWorld {
     this.inputs.set(id, input);
   }
 
+  /** Asteroides ocupados por estruturas — atravessáveis (sem colisão). */
+  occupiedAsteroids(): Set<string> {
+    const set = new Set<string>();
+    for (const st of this.structures.values()) {
+      if (st.asteroidId) set.add(st.asteroidId);
+    }
+    return set;
+  }
+
   tick(dt: number): void {
+    const passthrough = this.occupiedAsteroids();
     for (const [id, ship] of this.ships) {
       // guardada no hangar: fora do mundo, não simula
       if (ship.stored) {
@@ -88,7 +98,7 @@ export class SimWorld {
       }
       const input = this.inputs.get(id) ?? NEUTRAL_INPUT;
       stepShip(ship, input, dt);
-      collideShip(ship, this.seed);
+      collideShip(ship, this.seed, passthrough);
       if (this.boundaryCenter) clampToBoundary(ship, this.boundaryCenter, this.boundaryRadius);
       ship.mining = false;
       if (input.mine) {

@@ -114,6 +114,7 @@ interface ServerStructure extends WorldPos {
   stype: StructureType;
   owner: string;
   angle: number;
+  asteroidId: string;
 }
 
 interface StructView {
@@ -121,6 +122,8 @@ interface StructView {
   type: StructureType;
   radius: number;
   own: boolean;
+  /** velocidade angular do asteroide hospedeiro (gira em grupo com ele) */
+  spin: number;
 }
 
 export class GameScene extends Phaser.Scene {
@@ -154,6 +157,8 @@ export class GameScene extends Phaser.Scene {
   private asteroidGfx: Array<{ gfx: Phaser.GameObjects.Graphics; spin: number }> = [];
   private serverStructures = new Map<string, ServerStructure>();
   private structViews = new Map<string, StructView>();
+  /** asteroides ocupados por estruturas → sem colisão (igual ao servidor) */
+  private passthrough = new Set<string>();
   private hud!: Phaser.GameObjects.Text;
 
   /** câmera de UI (sem zoom/scroll) e camadas separadas mundo × interface */
@@ -275,7 +280,8 @@ export class GameScene extends Phaser.Scene {
     state.structures.forEach((st: any, id: string) => {
       seenSt.add(id);
       this.serverStructures.set(id, {
-        stype: st.stype, owner: st.owner, sx: st.sx, sy: st.sy, x: st.x, y: st.y, angle: st.angle,
+        stype: st.stype, owner: st.owner, sx: st.sx, sy: st.sy, x: st.x, y: st.y,
+        angle: st.angle, asteroidId: st.asteroidId,
       });
     });
     for (const id of [...this.serverStructures.keys()]) {
@@ -285,6 +291,11 @@ export class GameScene extends Phaser.Scene {
         this.structViews.delete(id);
       }
     }
+
+    // asteroides ocupados → atravessáveis (mesma regra da colisão do servidor)
+    this.passthrough = new Set(
+      [...this.serverStructures.values()].map((st) => st.asteroidId).filter(Boolean),
+    );
 
     // a (re)inicialização da predição acontece em update(), conforme a nave
     // ativa (myShipId) aparecer ou mudar (troca no hangar)
@@ -396,7 +407,7 @@ export class GameScene extends Phaser.Scene {
       this.localShip.vy = 0;
     } else {
       stepShip(this.localShip, input, dt);
-      collideShip(this.localShip, this.worldSeed);
+      collideShip(this.localShip, this.worldSeed, this.passthrough);
       if (this.mapCenter && this.mapRadius > 0) {
         clampToBoundary(this.localShip, this.mapCenter, this.mapRadius);
       }
@@ -510,6 +521,15 @@ export class GameScene extends Phaser.Scene {
     return COLOR_REMOTE;
   }
 
+  /** Velocidade angular do asteroide hospedeiro de uma estrutura (rad/s). */
+  private asteroidSpinById(st: ServerStructure): number {
+    if (!st.asteroidId) return 0;
+    for (const a of sectorAsteroids(this.worldSeed, st.sx, st.sy)) {
+      if (a.id === st.asteroidId) return asteroidSpin(a.shapeSeed) * MAX_ASTEROID_SPIN;
+    }
+    return 0;
+  }
+
   private makeStructGfx(type: StructureType, own: boolean): Phaser.GameObjects.Graphics {
     const g = this.add.graphics();
     g.lineStyle(this.strokeW(), own ? COLOR_STRUCT_OWN : COLOR_STRUCT_OTHER);
@@ -582,7 +602,7 @@ export class GameScene extends Phaser.Scene {
       view.gfx.setPosition(view.rx, view.ry).setRotation(view.angle).setVisible(true);
     }
 
-    // estruturas (estáticas): cria o gráfico na primeira vez, reposiciona sempre
+    // estruturas: vivem DENTRO do asteroide hospedeiro e giram em grupo com ele
     for (const [id, st] of this.serverStructures) {
       let view = this.structViews.get(id);
       if (!view) {
@@ -592,11 +612,12 @@ export class GameScene extends Phaser.Scene {
           type: st.stype,
           radius: STRUCTURE_SPECS[st.stype].radius,
           own: own_,
+          spin: this.asteroidSpinById(st),
         };
         this.structViews.set(id, view);
       }
       const p = this.toRender(st);
-      view.gfx.setPosition(p.x, p.y).setRotation(st.angle);
+      view.gfx.setPosition(p.x, p.y).setRotation(st.angle + view.spin * tt);
     }
 
     const sim = new SimWorld(this.worldSeed);
@@ -655,7 +676,9 @@ export class GameScene extends Phaser.Scene {
     const hangarTotal = hangarMining + hangarAttack;
 
     // dicas de construção e produção (produção constrói no QG mais próximo)
-    const nearAst = !!sim.nearestAsteroid(this.localShip!, BUILD_ASTEROID_RANGE);
+    const buildAst = sim.nearestAsteroid(this.localShip!, BUILD_ASTEROID_RANGE);
+    const astOccupied = !!buildAst && this.passthrough.has(buildAst.id);
+    const nearAst = !!buildAst && !astOccupied;
     const st1 = STRUCTURE_SPECS.miningStation;
     const st2 = STRUCTURE_SPECS.hq;
     const p3 = SHIP_PRODUCTION.mining;
@@ -663,8 +686,9 @@ export class GameScene extends Phaser.Scene {
     const p5 = SHIP_PRODUCTION.builder;
     const mark = (ok: boolean) => (ok ? "» " : "  ");
     const need = !hasHq ? " — precisa de QG" : !anchored ? " — ancore [F]" : "";
-    const hint1 = `[1] ${st1.label} (${st1.cost})${nearAst ? "" : " — perto de asteroide"}`;
-    const hint2 = `[2] ${st2.label} (${st2.cost})`;
+    const astNote = astOccupied ? " — asteroide ocupado" : buildAst ? "" : " — perto de asteroide";
+    const hint1 = `[1] ${st1.label} (${st1.cost})${astNote}`;
+    const hint2 = `[2] ${st2.label} (${st2.cost})${astNote}`;
     const hint3 = `[3] ${p3.label} (${p3.cost})${need}`;
     const hint4 = `[4] ${p4.label} (${p4.cost})${need}`;
     const hint5 = `[5] ${p5.label} (${p5.cost})${need}`;

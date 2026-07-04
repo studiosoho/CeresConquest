@@ -9,6 +9,9 @@ export interface Structure extends WorldPos {
   type: StructureType;
   /** sessionId do dono */
   owner: string;
-  /** orientação (rad), apontando para fora da borda do asteroide */
+  /** orientação base (rad) — o visual gira junto com o asteroide hospedeiro */
   angle: number;
+  /** asteroide hospedeiro (id da procgen). A estrutura vive DENTRO dele; */
+  /** o asteroide deixa de colidir e só comporta uma estrutura. */
+  asteroidId: string;
 }
