@@ -23,8 +23,11 @@ export const SHIP_PRODUCTION: Record<ProducibleKind, ShipProductionSpec> = {
 /** Capacidade do hangar do QG por tipo de nave (2 de cada → 6 no total). */
 export const HANGAR_CAP = 2;
 
-/** Máximo de mineradoras auto-minerando por estação de mineração. */
-export const STATION_MINING_CAP = 2;
+/** Máximo de mineradoras auto-minerando (atreladas) por estação de mineração. */
+export const STATION_MINING_CAP = 4;
+
+/** Vagas do hangar de guarda da estação (para trocar/táxi). Usado no 3c. */
+export const STATION_HANGAR_CAP = 2;
 
 /** Distância máxima até a própria estrutura para ancorar. */
 export const DOCK_RANGE = 500;
