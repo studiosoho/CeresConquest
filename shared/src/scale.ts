@@ -29,6 +29,15 @@ export function radiusOf(cls: SizeClassName): number {
 export const ASTEROID_MIN_RADIUS = radiusOf("asteroidSmall"); // 200
 export const ASTEROID_MAX_RADIUS = radiusOf("asteroidHuge"); // 2000
 
+/** Classes de asteroide (pequeno/médio/grande), por raio. */
+export type AsteroidClass = "small" | "medium" | "large";
+
+export function asteroidClassOf(radius: number): AsteroidClass {
+  if (radius < 500) return "small";
+  if (radius < 1100) return "medium";
+  return "large";
+}
+
 /** Diâmetro do maior asteroide. */
 export const ASTEROID_MAX_DIAMETER = 2 * ASTEROID_MAX_RADIUS; // 4000
 

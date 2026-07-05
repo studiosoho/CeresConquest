@@ -2,6 +2,7 @@ export * from "./scale";
 export * from "./map";
 export * from "./structures";
 export * from "./ships";
+export * from "./asteroids";
 export * from "./constants";
 export * from "./coords";
 export * from "./rng";

@@ -41,6 +41,11 @@ export const MSG_SWAP = "swap";
 /** Configura a mineradora ancorada na estação para minerar sozinha (sem payload). */
 export const MSG_AUTOMINE = "automine";
 
+/** Ação do builder após pousar num asteroide vazio. */
+export type LandAction = "mine" | "build" | "liftoff";
+export interface LandActionCommand { action: LandAction; }
+export const MSG_LAND_ACTION = "landAction";
+
 /** Requisita um táxi: uma nave vem à estrutura ancorada. */
 export interface TaxiCommand {
   /** nave escolhida do hangar; se ausente, o servidor pega a do hangar mais próximo */
@@ -48,3 +53,6 @@ export interface TaxiCommand {
 }
 
 export const MSG_TAXI = "taxi";
+
+/** Expande a arena para o próximo tamanho (small→medium→large). */
+export const MSG_EXPAND = "expandMap";

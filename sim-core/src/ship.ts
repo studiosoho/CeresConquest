@@ -24,6 +24,8 @@ export interface ShipState extends WorldPos {
   anchored: boolean;
   /** estrutura de origem (hangar). "" = sem hangar (ex.: builder inicial) */
   hqId: string;
+  /** asteroide onde o builder está pousado para minerar ("" = nenhum) */
+  anchoredAsteroidId: string;
   /** guardada no hangar (fora do mundo: não simula nem renderiza) */
   stored: boolean;
   /** mineradora configurada para minerar sozinha numa estação */
@@ -34,6 +36,23 @@ export interface ShipState extends WorldPos {
   taxiTo: string;
   /** rampa de empuxo 0..1 — sobe suavemente enquanto acelera (leve aceleração) */
   thrustRamp: number;
+  /** vaga de hangar ocupada (-1 = nenhuma) */
+  bay: number;
+  /**
+   * Fase de pouso/decolagem do builder num asteroide vazio.
+   * "" = nenhuma, "landing" = descendo, "landed" = pousado, "liftoff" = subindo
+   */
+  landingPhase: "" | "landing" | "landed" | "liftoff";
+  /** progresso da animação 0..1 */
+  landingProgress: number;
+  /** posição alvo dentro do asteroide (ponto de pouso) */
+  landingTargetX: number;
+  landingTargetY: number;
+  /** posição de origem antes do pouso (para animação) */
+  landingOriginX: number;
+  landingOriginY: number;
+  /** velocidade angular do asteroide hospedeiro (rad/s) — nave gira junto */
+  landingAsteroidSpin: number;
 }
 
 export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"): ShipState {
@@ -50,11 +69,20 @@ export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"):
     kind,
     anchored: false,
     hqId: "",
+    anchoredAsteroidId: "",
     stored: false,
     autoMining: false,
     stationId: "",
     taxiTo: "",
     thrustRamp: 0,
+    bay: -1,
+    landingPhase: "",
+    landingProgress: 0,
+    landingTargetX: 0,
+    landingTargetY: 0,
+    landingOriginX: 0,
+    landingOriginY: 0,
+    landingAsteroidSpin: 0,
   };
 }
 

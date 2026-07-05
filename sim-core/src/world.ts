@@ -1,6 +1,6 @@
 import {
   MINING_RANGE,
-  MINING_RATE,
+  MINING_RATE_BY_KIND,
   NEUTRAL_INPUT,
   STRUCTURE_SPECS,
   TAXI_SPEED_MULT,
@@ -97,6 +97,8 @@ export class SimWorld {
         ship.mining = false;
         continue;
       }
+      // aranha (auto-mineração): movida pela lógica da estação, fora da física
+      if (ship.autoMining) continue;
       const input = this.inputs.get(id) ?? NEUTRAL_INPUT;
       // em taxiamento: dobro da velocidade e sem colisão (caminho reto)
       const isTaxi = !!ship.taxiTo;
@@ -104,11 +106,16 @@ export class SimWorld {
       if (!isTaxi) collideShip(ship, this.seed, passthrough);
       if (this.boundaryCenter) clampToBoundary(ship, this.boundaryCenter, this.boundaryRadius);
       ship.mining = false;
-      if (input.mine) {
+      const rate = MINING_RATE_BY_KIND[ship.kind];
+      // só minera se pousado num asteroide (landingPhase === "landed")
+      if (input.mine && rate > 0 && ship.landingPhase === "landed") {
         const target = this.nearestAsteroid(ship);
         if (target) {
-          this.addOre(ship.owner, MINING_RATE * dt);
-          ship.mining = true;
+          const occupied = passthrough.has(target.id);
+          if (!occupied || ship.kind === "builder") {
+            this.addOre(ship.owner, rate * dt);
+            ship.mining = true;
+          }
         }
       }
     }

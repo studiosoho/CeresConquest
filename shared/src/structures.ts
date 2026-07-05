@@ -24,7 +24,8 @@ export const STRUCTURE_SPECS: Record<StructureType, StructureSpec> = {
     cost: 100,
     radius: SHIP_RADIUS * 4,
     requiresAsteroid: true,
-    productionRate: 10,
+    // a estação sozinha NÃO minera — quem produz são as aranhas atreladas
+    productionRate: 0,
   },
   hq: {
     label: "Quartel-general",

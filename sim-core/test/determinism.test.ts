@@ -136,7 +136,7 @@ describe("fronteira do mapa", () => {
 });
 
 describe("estruturas", () => {
-  it("estação de mineração produz minério para o dono ao longo do tempo", () => {
+  it("a estação de mineração NÃO produz minério sozinha (só as aranhas)", () => {
     const w = new SimWorld(999);
     w.addShip("p1-ship", { sx: beltSector, sy: 0, x: 5000, y: 5000 }, "p1");
     w.addStructure({
@@ -149,10 +149,14 @@ describe("estruturas", () => {
       y: 5000,
       angle: 0,
       asteroidId: "",
+      asteroidClass: "small" as const,
+      shipBays: 2,
+      expandedBays: 2,
+      spiderBays: 2,
+      nextShipBay: 0,
+      nextSpiderBay: 0,
     });
     for (let i = 0; i < 20; i++) w.tick(1 / 20); // 1s
-    // productionRate=10 → ~10 de minério em 1s
-    expect(w.getOre("p1")).toBeGreaterThan(9);
-    expect(w.getOre("p1")).toBeLessThan(11);
+    expect(w.getOre("p1")).toBe(0);
   });
 });

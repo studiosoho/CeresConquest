@@ -16,6 +16,22 @@ export const SHIP_VERTS: Array<{ x: number; y: number }> = [
   { x: -R * 0.66, y: -R * 0.55 },
 ];
 
+/**
+ * Builder "feijão": silhueta oval arredondada com cabine saliente na frente.
+ * Mais rechonchuda que o scout — transmite utilidade, não velocidade.
+ */
+const BUILDER_VERTS: Array<{ x: number; y: number }> = [
+  { x: R * 1.0, y: 0 },
+  { x: R * 0.7, y: R * 0.45 },
+  { x: R * 0.1, y: R * 0.7 },
+  { x: -R * 0.5, y: R * 0.65 },
+  { x: -R * 0.9, y: R * 0.3 },
+  { x: -R * 0.9, y: -R * 0.3 },
+  { x: -R * 0.5, y: -R * 0.65 },
+  { x: R * 0.1, y: -R * 0.7 },
+  { x: R * 0.7, y: -R * 0.45 },
+];
+
 /** Nave de ataque: silhueta mais larga e agressiva (asas). */
 const ATTACK_VERTS: Array<{ x: number; y: number }> = [
   { x: R * 1.15, y: 0 },
@@ -39,7 +55,7 @@ const MINING_VERTS: Array<{ x: number; y: number }> = [
 export function shipVerts(kind: ShipKind): Array<{ x: number; y: number }> {
   if (kind === "attack") return ATTACK_VERTS;
   if (kind === "mining") return MINING_VERTS;
-  return SHIP_VERTS; // builder
+  return BUILDER_VERTS; // builder
 }
 
 /** Velocidade angular normalizada [-1,1] da rotação leve de um asteroide. */

@@ -4,3 +4,8 @@ dist/
 .env
 .DS_Store
 .claude/settings.local.json
+
+# Artefatos de build TS emitidos ao lado das fontes (usamos tsx/vite, sem build)
+**/src/**/*.js
+**/test/**/*.js
+*.tsbuildinfo

@@ -20,14 +20,40 @@ export const SHIP_PRODUCTION: Record<ProducibleKind, ShipProductionSpec> = {
   attack: { label: "Nave de ataque", cost: 150 },
 };
 
-/** Capacidade do hangar do QG por tipo de nave (2 de cada → 6 no total). */
-export const HANGAR_CAP = 2;
+import type { AsteroidClass } from "./scale";
+import { MINING_RATE } from "./constants";
 
-/** Máximo de mineradoras auto-minerando (atreladas) por estação de mineração. */
-export const STATION_MINING_CAP = 4;
+/** Vagas EXPANDIDAS (mining + attack + builder) no QG — fixo. */
+export const HQ_EXPANDED_BAYS = 2;
+/** Vagas NORMAIS (attack + builder) no QG — fixo. */
+export const HQ_NORMAL_BAYS = 4;
+/** Total de vagas de nave no QG. */
+export const HQ_SHIP_BAYS = HQ_EXPANDED_BAYS + HQ_NORMAL_BAYS;
 
-/** Vagas do hangar de guarda da estação (para trocar/táxi). Usado no 3c. */
-export const STATION_HANGAR_CAP = 2;
+/** Vagas EXPANDIDAS na estação de mineração (mining + attack + builder) — fixo. */
+export const STATION_EXPANDED_BAYS = 2;
+/** Vagas NORMAIS na estação de mineração — fixo (nenhuma). */
+export const STATION_NORMAL_BAYS = 0;
+/** Total de vagas de nave na estação. */
+export const STATION_SHIP_BAYS = STATION_EXPANDED_BAYS + STATION_NORMAL_BAYS;
+
+/** Vagas de ARANHAS mineradoras na estação, pela classe do asteroide. */
+export const STATION_SPIDER_BAYS: Record<AsteroidClass, number> = { small: 2, medium: 4, large: 6 };
+
+/** Taxa de mineração por classe de nave (caça não minera; builder à metade). */
+export const MINING_RATE_BY_KIND: Record<ShipKind, number> = {
+  builder: MINING_RATE / 2,
+  mining: MINING_RATE,
+  attack: 0,
+};
+
+/** A aranha mineradora minera 1,5× mais rápido que a nave mineradora. */
+export const SPIDER_MINING_MULT = 1.5;
+
+/** Velocidade de caminhada da aranha na superfície (unidades/s). */
+export const SPIDER_SPEED = 130;
+/** Tempo minerando num ponto antes de voltar para descarregar (s). */
+export const SPIDER_MINE_TIME = 5;
 
 /** Distância máxima até a própria estrutura para ancorar. */
 export const DOCK_RANGE = 500;

@@ -7,35 +7,39 @@ import {
   MSG_SWAP,
   MSG_AUTOMINE,
   MSG_TAXI,
+  MSG_LAND_ACTION,
+  MSG_EXPAND,
   TICK_RATE,
   SECTOR_SIZE,
-  MAP_SIZES,
-  DEFAULT_MAP_SIZE,
   STRUCTURE_SPECS,
   SHIP_PRODUCTION,
-  HANGAR_CAP,
-  STATION_MINING_CAP,
-  STATION_HANGAR_CAP,
+  HQ_SHIP_BAYS,
+  HQ_EXPANDED_BAYS,
+  STATION_SHIP_BAYS,
+  STATION_EXPANDED_BAYS,
+  STATION_SPIDER_BAYS,
   DOCK_RANGE,
   BUILD_ASTEROID_RANGE,
+  asteroidClassOf,
   relVec,
   dist,
-  type MapSize,
   type ShipInput,
   type BuildCommand,
   type ProduceCommand,
   type TaxiCommand,
+  type LandActionCommand,
 } from "@ceres/shared";
-import { SimWorld, findClearSpawn, type ShipState } from "@ceres/sim-core";
+import {
+  SimWorld,
+  findClearSpawn,
+  sectorAsteroids,
+  type ShipState,
+  type Structure,
+} from "@ceres/sim-core";
 import { MatchState, ShipSchema, StructureSchema, PlayerSchema } from "../schema/State";
 import { mapSpawns, beltBasePoint, type SpawnStrategy } from "../spawn";
-import {
-  computeBotInput,
-  computeMinerInput,
-  computeTaxiInput,
-  makeBotState,
-  type BotState,
-} from "../bots";
+import { computeBotInput, computeTaxiInput, makeBotState, type BotState } from "../bots";
+import { makeSpiderState, stepSpider, type SpiderState } from "../spiders";
 
 /** Nº de jogadores-teste autônomos (bots) por padrão. */
 const DEFAULT_BOTS = 10;
@@ -44,7 +48,7 @@ export interface MatchOptions {
   maxPlayers?: number;
   worldSeed?: number;
   spawnStrategy?: SpawnStrategy;
-  mapSize?: MapSize;
+  mapSize?: string;
   bots?: number;
 }
 
@@ -61,12 +65,16 @@ export class MatchRoom extends Room<MatchState> {
   private shipSeq = 0;
   /** nave que cada jogador pilota (sessionId → shipId) */
   private activeShip = new Map<string, string>();
+  /** estado das aranhas mineradoras (shipId → SpiderState) */
+  private spiders = new Map<string, SpiderState>();
+  /** centro da arena (para expandir a fronteira) */
+  private arenaCenter = { sx: 0, sy: 0, x: 0, y: 0 };
 
   onCreate(options: MatchOptions = {}) {
     this.maxClients = options.maxPlayers ?? 12;
     const botCount = options.bots ?? DEFAULT_BOTS;
-    const mapSize = options.mapSize ?? DEFAULT_MAP_SIZE;
-    const radiusSectors = MAP_SIZES[mapSize].radiusSectors;
+    const radiusSectors = options.mapSize === "large" ? 50
+      : options.mapSize === "medium" ? 20 : 8;
     const seed = options.worldSeed ?? (Math.random() * 0xffffffff) >>> 0;
 
     this.sim = new SimWorld(seed);
@@ -77,6 +85,7 @@ export class MatchRoom extends Room<MatchState> {
     const base = beltBasePoint(seed);
     const center = { sx: base.sx, sy: base.sy, x: SECTOR_SIZE / 2, y: SECTOR_SIZE / 2 };
     const radiusUnits = radiusSectors * SECTOR_SIZE;
+    this.arenaCenter = center;
     this.sim.setBoundary(center, radiusUnits);
 
     this.setState(new MatchState());
@@ -122,9 +131,15 @@ export class MatchRoom extends Room<MatchState> {
       this.tryTaxi(client.sessionId, cmd?.shipId);
     });
 
+    this.onMessage(MSG_LAND_ACTION, (client: Client, cmd: LandActionCommand) => {
+      this.tryLandAction(client.sessionId, cmd?.action);
+    });
+
+    this.onMessage(MSG_EXPAND, () => this.expandMap());
+
     this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
     console.log(
-      `[room] match criada — seed=${seed} mapa=${mapSize}(${radiusSectors}s) ` +
+      `[room] match criada — seed=${seed} raio=${radiusSectors}s ` +
         `maxPlayers=${this.maxClients} bots=${botCount}`,
     );
   }
@@ -175,15 +190,83 @@ export class MatchRoom extends Room<MatchState> {
     return this.sim.addShip(id, { sx: base.sx, sy: base.sy, x: local.x, y: local.y }, owner, kind);
   }
 
-  /** Alterna a ancoragem da nave ativa: ancora se estiver perto de uma estrutura própria. */
+  /**
+   * Alterna a ancoragem da nave ativa. Ancorar = ocupar a PRIMEIRA vaga
+   * livre do hangar de naves da estrutura; sem vaga, não ancora.
+   */
+  /** Velocidade angular de um asteroide pela shapeSeed (rad/s). */
+  private asteroidSpinOf(shapeSeed: number): number {
+    const MAX_SPIN = 0.12;
+    // mesmo cálculo de asteroidSpin em shapes.ts
+    const s = ((shapeSeed ^ 0x51ed2c) >>> 0);
+    let x = s >>> 0;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    const norm = (x >>> 0) / 0x100000000;
+    return (norm * 2 - 1) * MAX_SPIN;
+  }
+
   private tryToggleAnchor(sessionId: string): void {
     const ship = this.activeShipOf(sessionId);
     if (!ship) return;
-    if (ship.anchored) {
+
+    // cancela pouso/decolagem em andamento com [F]
+    if (ship.landingPhase === "landing" || ship.landingPhase === "liftoff") return;
+
+    // desancora (pouso em asteroide ou estrutura)
+    if (ship.anchored || ship.landingPhase === "landed") {
       ship.anchored = false;
+      ship.bay = -1;
+      ship.anchoredAsteroidId = "";
+      ship.landingPhase = ship.landingPhase === "landed" ? "liftoff" : "";
+      ship.landingProgress = 0;
+      if (!ship.stored) ship.hqId = "";
       return;
     }
-    if (this.nearestOwnStructure(sessionId, ship, DOCK_RANGE)) ship.anchored = true;
+
+    // builder e mining: pousam no centro do asteroide sem estrutura
+    if (ship.kind === "builder" || ship.kind === "mining") {
+      const ast = this.sim.nearestAsteroid(ship, DOCK_RANGE);
+      if (ast) {
+        // asteroide com estrutura: só builder pode pousar
+        const hasStruct = [...this.sim.structures.values()].some(s => s.asteroidId === ast.id);
+        if (hasStruct && ship.kind !== "builder") {
+          // mining não pousa em asteroide com estrutura — tenta estrutura própria
+        } else {
+          const spin = this.asteroidSpinOf(ast.shapeSeed);
+          ship.landingPhase = "landing";
+          ship.landingProgress = 0;
+          ship.landingOriginX = ship.x;
+          ship.landingOriginY = ship.y;
+          // alvo: centro do asteroide
+          ship.landingTargetX = ast.x;
+          ship.landingTargetY = ast.y;
+          ship.landingAsteroidSpin = spin;
+          ship.anchoredAsteroidId = ast.id;
+          ship.hqId = "";
+          ship.bay = -1;
+          ship.vx = 0;
+          ship.vy = 0;
+          return;
+        }
+      }
+    }
+
+    // pousa em estrutura própria com vaga compatível
+    const struct = this.nearestOwnStructure(sessionId, ship, DOCK_RANGE);
+    if (!struct) return;
+    const bay = this.firstFreeShipBay(struct, ship.kind);
+    if (bay < 0) return;
+    ship.anchored = true;
+    ship.hqId = struct.id;
+    ship.anchoredAsteroidId = "";
+    ship.landingPhase = "";
+    ship.bay = bay;
+    ship.sx = struct.sx;
+    ship.sy = struct.sy;
+    ship.x = struct.x;
+    ship.y = struct.y;
+    ship.vx = 0;
+    ship.vy = 0;
   }
 
   /** Troca a nave ativa por uma do hangar da estrutura ancorada. */
@@ -216,19 +299,24 @@ export class MatchRoom extends Room<MatchState> {
     console.log(`[room] ${sessionId} trocou de nave → ${next.kind} (${nid})`);
   }
 
-  /** Configura a mineradora ancorada numa estação para minerar sozinha. */
+  /**
+   * Transforma a mineradora ancorada numa ARANHA mineradora da estação:
+   * ela passa a caminhar pelo asteroide, minerando e descarregando sozinha.
+   */
   private tryAutoMine(sessionId: string): void {
     const active = this.activeShipOf(sessionId);
     if (!active || active.kind !== "mining" || !active.anchored) return;
     const station = this.nearestOwnStructure(sessionId, active, DOCK_RANGE, "miningStation");
     if (!station) return;
 
-    // capacidade: no máximo STATION_MINING_CAP mineradoras por estação
-    let count = 0;
-    for (const s of this.sim.ships.values()) {
-      if (s.autoMining && s.stationId === station.id) count++;
+    // vagas de aranha da estação (2/4/6 pela classe do asteroide)
+    if (station.nextSpiderBay >= station.spiderBays) return;
+
+    // raio do asteroide hospedeiro (para a aranha caminhar na superfície)
+    let astRadius = 400;
+    for (const a of sectorAsteroids(this.sim.seed, station.sx, station.sy)) {
+      if (a.id === station.asteroidId) astRadius = a.radius;
     }
-    if (count >= STATION_MINING_CAP) return;
 
     // transfere o controle para outra nave ANTES de largar a mineradora
     const activeId = this.activeShip.get(sessionId)!;
@@ -237,7 +325,90 @@ export class MatchRoom extends Room<MatchState> {
     active.autoMining = true;
     active.stationId = station.id;
     active.anchored = false;
-    console.log(`[room] ${sessionId} configurou auto-mineração em ${station.id}`);
+    active.bay = -1; // libera a vaga de nave — a aranha usa vaga de aranha
+    active.hqId = "";
+    this.spiders.set(activeId, makeSpiderState(astRadius));
+    station.nextSpiderBay += 1;
+    console.log(`[room] ${sessionId} aranha mineradora ativa em ${station.id} (${station.nextSpiderBay}/${station.spiderBays})`);
+  }
+
+  /**
+   * Ação do builder após pousar num asteroide vazio:
+   * "mine" = inicia mineração automática, "build" = constrói estação, "liftoff" = decola.
+   */
+  private tryLandAction(sessionId: string, action?: string): void {
+    const ship = this.activeShipOf(sessionId);
+    if (!ship || (ship.kind !== "builder" && ship.kind !== "mining") || ship.landingPhase !== "landed") return;
+
+    if (action === "liftoff") {
+      ship.landingPhase = "liftoff";
+      ship.landingProgress = 0;
+      return;
+    }
+
+    if (action === "mine") {
+      // mineração automática: marca como ancorado no asteroide
+      ship.anchored = true;
+      ship.landingPhase = "";
+      return;
+    }
+
+    if (action === "build" && ship.kind === "builder") {
+      // constrói estação de mineração no asteroide pousado
+      const spec = STRUCTURE_SPECS["miningStation"];
+      if (this.sim.getOre(sessionId) < spec.cost) return;
+
+      // encontra o asteroide pelo id armazenado
+      const astId = ship.anchoredAsteroidId;
+      let ast = null;
+      for (let oy = -1; oy <= 1; oy++) {
+        for (let ox = -1; ox <= 1; ox++) {
+          for (const a of sectorAsteroids(this.sim.seed, ship.sx + ox, ship.sy + oy)) {
+            if (a.id === astId) { ast = a; break; }
+          }
+          if (ast) break;
+        }
+        if (ast) break;
+      }
+      if (!ast) return;
+
+      // 1 estrutura por asteroide
+      for (const st of this.sim.structures.values()) {
+        if (st.asteroidId === ast.id) return;
+      }
+
+      const { dx, dy } = relVec(ast, ship);
+      const angle = Math.atan2(dy, dx);
+      const cls = asteroidClassOf(ast.radius);
+      const shipBays = STATION_SHIP_BAYS;
+      const expandedBays = STATION_EXPANDED_BAYS;
+      const spiderBays = STATION_SPIDER_BAYS[cls];
+
+      this.sim.spendOre(sessionId, spec.cost);
+      const id = `st-${this.structSeq++}`;
+      this.sim.addStructure({
+        id, type: "miningStation", owner: sessionId,
+        sx: ast.sx, sy: ast.sy, x: ast.x, y: ast.y,
+        angle, asteroidId: ast.id, asteroidClass: cls,
+        shipBays, expandedBays, spiderBays, nextShipBay: 0, nextSpiderBay: 0,
+      });
+      const ss = new StructureSchema();
+      ss.stype = "miningStation"; ss.owner = sessionId;
+      ss.sx = ast.sx; ss.sy = ast.sy; ss.x = ast.x; ss.y = ast.y;
+      ss.angle = angle; ss.asteroidId = ast.id; ss.asteroidClass = cls;
+      ss.shipBays = shipBays; ss.expandedBays = expandedBays;
+      ss.spiderBays = spiderBays; ss.nextShipBay = 0; ss.nextSpiderBay = 0;
+      this.state.structures.set(id, ss);
+
+      // builder ocupa a primeira vaga da estação recém-construída
+      ship.hqId = id;
+      ship.bay = 0;
+      ship.anchored = true;
+      ship.anchoredAsteroidId = "";
+      ship.landingPhase = "";
+      ship.sx = ast.sx; ship.sy = ast.sy; ship.x = ast.x; ship.y = ast.y;
+      console.log(`[room] ${sessionId} construiu miningStation (via pouso) em ${cls} — builder na vaga 0`);
+    }
   }
 
   /**
@@ -277,7 +448,7 @@ export class MatchRoom extends Room<MatchState> {
       }
     }
     if (!best) return; // nenhuma nave em QG
-    if (!this.hangarHasFreeSlot(sessionId, dest, best.ship.kind)) return; // estação sem vaga
+    if (this.firstFreeShipBay(dest, "builder", true) < 0) return; // estação sem vaga (conta em trânsito)
 
     // despacha: spawna DO hangar (posição do QG) e voa reto até a estação
     best.ship.stored = false;
@@ -292,20 +463,29 @@ export class MatchRoom extends Room<MatchState> {
     console.log(`[room] ${sessionId} táxi: ${best.ship.kind} de ${best.src.id} → ${dest.id} (2x, sem colisão)`);
   }
 
-  /** Há vaga no hangar da estrutura para uma nave deste tipo (conta em trânsito)? */
-  private hangarHasFreeSlot(
-    sessionId: string,
-    struct: { id: string; type: "hq" | "miningStation" },
-    kind: ShipState["kind"],
-  ): boolean {
-    let count = 0;
+  /**
+   * Primeira vaga LIVRE do hangar de naves da estrutura (-1 = cheio).
+   * `kind` filtra por compatibilidade: mining só cabe em vaga expandida.
+   * `countTransit` inclui táxis a caminho na contagem de capacidade.
+   */
+  private firstFreeShipBay(struct: Structure, kind: "builder" | "mining" | "attack" = "builder", countTransit = false): number {
+    const taken = new Set<number>();
+    let transit = 0;
     for (const s of this.sim.ships.values()) {
-      if (s.owner !== sessionId) continue;
-      const heading = (s.stored && s.hqId === struct.id) || s.taxiTo === struct.id;
-      if (!heading) continue;
-      if (struct.type === "hq" ? s.kind === kind : true) count++;
+      if (s.hqId === struct.id && (s.stored || s.anchored) && s.bay >= 0) taken.add(s.bay);
+      if (countTransit && s.taxiTo === struct.id) transit++;
     }
-    return count < (struct.type === "hq" ? HANGAR_CAP : STATION_HANGAR_CAP);
+    // vagas expandidas: índices 0..expandedBays-1
+    // vagas normais:    índices expandedBays..shipBays-1
+    const start = kind === "mining" ? 0 : 0; // mining só pode usar expandidas
+    const end   = kind === "mining" ? struct.expandedBays : struct.shipBays;
+    if (taken.size + transit >= end - start) {
+      // verifica se há vaga no intervalo permitido
+    }
+    for (let i = start; i < end; i++) {
+      if (!taken.has(i)) return i;
+    }
+    return -1;
   }
 
   /** Passa o controle do jogador para outra nave própria (prefere um builder). */
@@ -369,6 +549,8 @@ export class MatchRoom extends Room<MatchState> {
   private tryBuild(sessionId: string, type?: BuildCommand["type"]): void {
     const ship = this.activeShipOf(sessionId);
     if (!ship || !type) return;
+    // só o builder pode construir
+    if (ship.kind !== "builder") return;
     const spec = STRUCTURE_SPECS[type];
     if (!spec || this.sim.getOre(sessionId) < spec.cost) return;
 
@@ -384,6 +566,12 @@ export class MatchRoom extends Room<MatchState> {
     const { dx, dy } = relVec(ast, ship);
     const angle = Math.atan2(dy, dx);
 
+    const cls = asteroidClassOf(ast.radius);
+    // vagas fixas: QG tem 2 expandidas + 4 normais; estação tem 2 expandidas
+    const shipBays = type === "hq" ? HQ_SHIP_BAYS : STATION_SHIP_BAYS;
+    const expandedBays = type === "hq" ? HQ_EXPANDED_BAYS : STATION_EXPANDED_BAYS;
+    const spiderBays = type === "miningStation" ? STATION_SPIDER_BAYS[cls] : 0;
+
     this.sim.spendOre(sessionId, spec.cost);
     const id = `st-${this.structSeq++}`;
     this.sim.addStructure({
@@ -396,6 +584,12 @@ export class MatchRoom extends Room<MatchState> {
       y: ast.y,
       angle,
       asteroidId: ast.id,
+      asteroidClass: cls,
+      shipBays,
+      expandedBays,
+      spiderBays,
+      nextShipBay: 0,
+      nextSpiderBay: 0,
     });
 
     const ss = new StructureSchema();
@@ -407,8 +601,29 @@ export class MatchRoom extends Room<MatchState> {
     ss.y = ast.y;
     ss.angle = angle;
     ss.asteroidId = ast.id;
+    ss.asteroidClass = cls;
+    ss.shipBays = shipBays;
+    ss.expandedBays = expandedBays;
+    ss.spiderBays = spiderBays;
+    ss.nextShipBay = 0;
+    ss.nextSpiderBay = 0;
     this.state.structures.set(id, ss);
-    console.log(`[room] ${sessionId} construiu ${type} no asteroide ${ast.id}`);
+
+    // builder ocupa a primeira vaga da estrutura recém-construída
+    const activeShip = this.activeShipOf(sessionId);
+    if (activeShip) {
+      activeShip.hqId = id;
+      activeShip.bay = 0;
+      activeShip.anchored = true;
+      activeShip.anchoredAsteroidId = "";
+      activeShip.landingPhase = "";
+      activeShip.sx = ast.sx; activeShip.sy = ast.sy;
+      activeShip.x = ast.x; activeShip.y = ast.y;
+      activeShip.vx = 0; activeShip.vy = 0;
+    }
+    console.log(
+      `[room] ${sessionId} construiu ${type} em asteroide ${cls} (naves:${shipBays} aranhas:${spiderBays})`,
+    );
   }
 
   /**
@@ -426,20 +641,29 @@ export class MatchRoom extends Room<MatchState> {
     const hq = this.nearestOwnStructure(sessionId, pilot, Infinity, "hq");
     if (!hq) return;
 
-    // hangar deste QG: no máximo HANGAR_CAP naves de cada tipo
-    let count = 0;
-    for (const s of this.sim.ships.values()) {
-      if (s.owner === sessionId && s.hqId === hq.id && s.kind === kind) count++;
-    }
-    if (count >= HANGAR_CAP) return;
+    // capacidade = vagas de nave do QG (pela classe do asteroide)
+    const bay = this.firstFreeShipBay(hq, kind);
+    if (bay < 0) return; // hangar cheio ou sem vaga compatível
 
     this.sim.spendOre(sessionId, spec.cost);
     const id = `sh-${this.shipSeq++}`;
     const ship = this.spawnShip(id, hq, sessionId, kind);
     ship.hqId = hq.id;
-    ship.stored = true; // fica guardada no hangar (3b: mineradora busca estação)
+    ship.stored = true;
+    ship.bay = bay; // vaga calculada por firstFreeShipBay
     this.state.ships.set(id, this.mirrorSpawn(ship));
-    console.log(`[room] ${sessionId} fabricou ${kind} no hangar do QG ${hq.id}`);
+    console.log(`[room] ${sessionId} fabricou ${kind} — vaga ${ship.bay} do QG ${hq.id}`);
+  }
+
+  /** Expande a arena para o próximo tamanho: 8 → 20 → 50 setores. */
+  private expandMap(): void {
+    const cur = Math.round(this.state.mapRadius / SECTOR_SIZE);
+    const next = cur < 20 ? 20 : cur < 50 ? 50 : 0;
+    if (!next) return;
+    const radiusUnits = next * SECTOR_SIZE;
+    this.sim.setBoundary(this.arenaCenter, radiusUnits);
+    this.state.mapRadius = radiusUnits;
+    console.log(`[room] arena expandida: ${cur} → ${next} setores`);
   }
 
   private mirrorSpawn(ship: ShipState): ShipSchema {
@@ -455,22 +679,59 @@ export class MatchRoom extends Room<MatchState> {
     s.hqId = ship.hqId;
     s.autoMining = ship.autoMining;
     s.stationId = ship.stationId;
+    s.bay = ship.bay;
+    s.landingPhase = ship.landingPhase;
+    s.landingProgress = ship.landingProgress;
+    s.landingTargetX = ship.landingTargetX;
+    s.landingTargetY = ship.landingTargetY;
+    s.landingOriginX = ship.landingOriginX;
+    s.landingOriginY = ship.landingOriginY;
+    s.landingAsteroidSpin = ship.landingAsteroidSpin;
     return s;
   }
 
   private tick(dt: number) {
+    // Animação de pouso/decolagem do builder
+    const LAND_DURATION = 1.5;
+    const LIFT_DURATION = 1.0;
+    for (const [, ship] of this.sim.ships) {
+      if (ship.landingPhase === "landing") {
+        ship.landingProgress = Math.min(1, ship.landingProgress + dt / LAND_DURATION);
+        const t = ship.landingProgress;
+        ship.x = ship.landingOriginX + (ship.landingTargetX - ship.landingOriginX) * t;
+        ship.y = ship.landingOriginY + (ship.landingTargetY - ship.landingOriginY) * t;
+        ship.vx = 0; ship.vy = 0;
+        if (t >= 1) ship.landingPhase = "landed";
+      } else if (ship.landingPhase === "liftoff") {
+        ship.landingProgress = Math.min(1, ship.landingProgress + dt / LIFT_DURATION);
+        const t = ship.landingProgress;
+        ship.x = ship.landingTargetX + (ship.landingOriginX - ship.landingTargetX) * t;
+        ship.y = ship.landingTargetY + (ship.landingOriginY - ship.landingTargetY) * t;
+        ship.vx = 0; ship.vy = 0;
+        if (t >= 1) {
+          ship.landingPhase = "";
+          ship.anchored = false;
+          ship.anchoredAsteroidId = "";
+        }
+      }
+    }
     // IA dos bots neutros
     for (const [id, bot] of this.bots) {
       const ship = this.sim.ships.get(id);
       if (ship) this.sim.setInput(id, computeBotInput(ship, this.sim, bot, dt));
     }
-    // IA das auto-mineradoras → rumam à estação e mineram
-    for (const [id, ship] of this.sim.ships) {
-      if (!ship.autoMining) continue;
-      const station = this.sim.structures.get(ship.stationId);
-      if (station) this.sim.setInput(id, computeMinerInput(ship, this.sim, station));
+    // ARANHAS mineradoras → caminham pelo asteroide e descarregam na estação
+    for (const [id, spider] of this.spiders) {
+      const ship = this.sim.ships.get(id);
+      const station = ship ? this.sim.structures.get(ship.stationId) : undefined;
+      if (!ship || !station) {
+        this.spiders.delete(id);
+        continue;
+      }
+      const unloaded = stepSpider(ship, station, spider, dt);
+      if (unloaded > 0) this.sim.addOre(ship.owner, unloaded);
     }
-    // IA do táxi → voa até o destino; ao chegar, guarda no hangar de lá
+    // IA do táxi → voa até o destino; ao chegar, estaciona na 1ª vaga livre
     for (const [id, ship] of this.sim.ships) {
       if (!ship.taxiTo) continue;
       const dest = this.sim.structures.get(ship.taxiTo);
@@ -479,14 +740,16 @@ export class MatchRoom extends Room<MatchState> {
         continue;
       }
       if (dist(ship, dest) <= DOCK_RANGE) {
+        const freeBay = this.firstFreeShipBay(dest);
         ship.stored = true;
         ship.hqId = ship.taxiTo;
         ship.taxiTo = "";
         ship.anchored = false;
+        ship.bay = freeBay >= 0 ? freeBay : 0;
         ship.vx = 0;
         ship.vy = 0;
         this.sim.setInput(id, { thrust: false, turn: 0, mine: false });
-        console.log(`[room] táxi chegou: ${ship.kind} guardado em ${ship.hqId}`);
+        console.log(`[room] táxi chegou: ${ship.kind} na vaga ${ship.bay} de ${ship.hqId}`);
       } else {
         this.sim.setInput(id, computeTaxiInput(ship, dest));
       }
@@ -507,8 +770,36 @@ export class MatchRoom extends Room<MatchState> {
       s.anchored = ship.anchored;
       s.stored = ship.stored;
       s.hqId = ship.hqId;
+      s.anchoredAsteroidId = ship.anchoredAsteroidId;
       s.autoMining = ship.autoMining;
       s.stationId = ship.stationId;
+      s.bay = ship.bay;
+      s.landingPhase = ship.landingPhase;
+      s.landingProgress = ship.landingProgress;
+      s.landingTargetX = ship.landingTargetX;
+      s.landingTargetY = ship.landingTargetY;
+      s.landingOriginX = ship.landingOriginX;
+      s.landingOriginY = ship.landingOriginY;
+      s.landingAsteroidSpin = ship.landingAsteroidSpin;
+    }
+    // estruturas
+    for (const [id, st] of this.sim.structures) {
+      const s = this.state.structures.get(id);
+      if (!s) continue;
+      s.stype = st.type;
+      s.owner = st.owner;
+      s.sx = st.sx;
+      s.sy = st.sy;
+      s.x = st.x;
+      s.y = st.y;
+      s.angle = st.angle;
+      s.asteroidId = st.asteroidId;
+      s.asteroidClass = st.asteroidClass;
+      s.shipBays = st.shipBays;
+      s.expandedBays = st.expandedBays;
+      s.spiderBays = st.spiderBays;
+      s.nextShipBay = st.nextShipBay;
+      s.nextSpiderBay = st.nextSpiderBay;
     }
     // minério e nave ativa por jogador
     for (const [sid, p] of this.state.players) {

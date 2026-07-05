@@ -6,6 +6,8 @@ import {
   mulberry32,
   ASTEROID_MIN_RADIUS,
   ASTEROID_MAX_RADIUS,
+  getAsteroidClass,
+  type AsteroidClass,
 } from "@ceres/shared";
 
 /**
@@ -21,6 +23,8 @@ export interface Asteroid {
   x: number;
   y: number;
   radius: number;
+  /** classe do asteroide (P/M/G) */
+  asteroidClass: AsteroidClass;
   /** semente da silhueta — o cliente deriva o polígono wireframe dela */
   shapeSeed: number;
 }
@@ -90,6 +94,7 @@ export function sectorAsteroids(worldSeed: number, sx: number, sy: number): Aste
       x,
       y,
       radius,
+      asteroidClass: getAsteroidClass(radius),
       shapeSeed: hash3(sectorSeed, i, 0x51),
     });
   }

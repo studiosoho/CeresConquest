@@ -21,6 +21,15 @@ export class ShipSchema extends Schema {
   @type("string") kind = "builder";
   @type("string") hqId = "";
   @type("string") stationId = "";
+  @type("string") anchoredAsteroidId = "";
+  @type("int8") bay = -1;
+  @type("string") landingPhase = "";
+  @type("float32") landingProgress = 0;
+  @type("float32") landingTargetX = 0;
+  @type("float32") landingTargetY = 0;
+  @type("float32") landingOriginX = 0;
+  @type("float32") landingOriginY = 0;
+  @type("float32") landingAsteroidSpin = 0;
 }
 
 export class PlayerSchema extends Schema {
@@ -38,6 +47,12 @@ export class StructureSchema extends Schema {
   @type("float32") y = 0;
   @type("float32") angle = 0;
   @type("string") asteroidId = "";
+  @type("string") asteroidClass = "";
+  @type("uint8") shipBays = 0;
+  @type("uint8") expandedBays = 0;
+  @type("uint8") spiderBays = 0;
+  @type("uint8") nextShipBay = 0;
+  @type("uint8") nextSpiderBay = 0;
 }
 
 export class MatchState extends Schema {

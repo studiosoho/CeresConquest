@@ -9,6 +9,8 @@ import {
   MSG_SWAP,
   MSG_AUTOMINE,
   MSG_TAXI,
+  MSG_LAND_ACTION,
+  MSG_EXPAND,
   SECTOR_SIZE,
   SHIP_RADIUS,
   SHIP_MAX_SPEED,
@@ -16,10 +18,9 @@ import {
   SHIP_PRODUCTION,
   BUILD_ASTEROID_RANGE,
   DOCK_RANGE,
+  ASTEROID_CLASSES,
   relVec,
   dist,
-  mapSizeFromRadiusSectors,
-  type MapSize,
   type ShipInput,
   type StructureType,
   type ShipKind,
@@ -50,13 +51,9 @@ const COLOR_HANGAR = 0x3d4f63;
 /** jatos de propulsão pixelados (azul → roxo) */
 const COLOR_JET_BLUE = 0x5b8cff;
 const COLOR_JET_PURPLE = 0x9a5bff;
-
-const MAP_SIZE_LABEL: Record<MapSize | "custom", string> = {
-  small: "pequeno",
-  medium: "médio",
-  large: "grande",
-  custom: "custom",
-};
+/** estrelas da Via Láctea (fundo) */
+const COLOR_STAR_BRIGHT = 0xffffff;
+const COLOR_STAR_DIM = 0x8899bb;
 
 /**
  * Largura das linhas do wireframe, em PIXELS DE TELA (constante em qualquer
@@ -92,6 +89,9 @@ const COLOR_MINIMAP_BG = 0x000000;
 const COLOR_MINIMAP_BORDER = 0x3d4b5c;
 const COLOR_MINIMAP_GRID = 0x22303f;
 
+/** Número de estrelas de fundo geradas por setor. */
+const STARS_PER_SECTOR = 80;
+
 interface RemoteView {
   gfx: Phaser.GameObjects.Graphics;
   /** posição de render suavizada (no espaço relativo à origem) */
@@ -114,6 +114,13 @@ interface ServerShip extends WorldPos {
   anchored: boolean;
   stored: boolean;
   hqId: string;
+  landingPhase: string;
+  landingProgress: number;
+  landingTargetX: number;
+  landingTargetY: number;
+  landingOriginX: number;
+  landingOriginY: number;
+  landingAsteroidSpin: number;
 }
 
 /** Snapshot plano de uma estrutura vinda do schema. */
@@ -122,12 +129,14 @@ interface ServerStructure extends WorldPos {
   owner: string;
   angle: number;
   asteroidId: string;
+  shipBays: number;
 }
 
 interface StructView {
   gfx: Phaser.GameObjects.Graphics;
   type: StructureType;
   radius: number;
+  shipBays: number;
   own: boolean;
   /** velocidade angular do asteroide hospedeiro (gira em grupo com ele) */
   spin: number;
@@ -176,15 +185,18 @@ export class GameScene extends Phaser.Scene {
   private worldLayer!: Phaser.GameObjects.Container;
   private uiLayer!: Phaser.GameObjects.Container;
   private minimapGfx!: Phaser.GameObjects.Graphics;
+  private starGfx!: Phaser.GameObjects.Graphics;
   /** cache das posições (espaço de render) dos asteroides 3×3 — para o minimapa */
-  private nearbyAsteroids: Array<{ rx: number; ry: number }> = [];
+  private nearbyAsteroids: Array<{ rx: number; ry: number; asteroidClass: string }> = [];
   private zoomTarget = INITIAL_ZOOM;
   /** zoom no qual as linhas foram desenhadas por último (para redesenhar) */
   private lastStrokeZoom = 0;
+  /** true = minimapa mostra o mapa inteiro (tecla N) */
+  private minimapFull = false;
 
   private keys!: Record<
     | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS"
-    | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "F" | "C" | "G" | "T" | "Y",
+    | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "F" | "C" | "G" | "T" | "Y" | "N" | "M",
     Phaser.Input.Keyboard.Key
   >;
   private sendAccum = 0;
@@ -196,7 +208,7 @@ export class GameScene extends Phaser.Scene {
 
   async create() {
     this.keys = this.input.keyboard!.addKeys(
-      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO,THREE,FOUR,FIVE,F,C,G,T,Y",
+      "W,A,S,D,UP,LEFT,RIGHT,SPACE,PLUS,MINUS,ONE,TWO,THREE,FOUR,FIVE,F,C,G,T,Y,N,M",
     ) as GameScene["keys"];
 
     // camadas: a câmera principal (com zoom) só vê o mundo;
@@ -207,9 +219,12 @@ export class GameScene extends Phaser.Scene {
     this.beamGfx = this.add.graphics();
     this.boundaryGfx = this.add.graphics();
     this.jetGfx = this.add.graphics();
+    this.starGfx = this.add.graphics();
+    this.worldLayer.add(this.starGfx);
     this.worldLayer.add(this.beamGfx);
     this.worldLayer.add(this.boundaryGfx);
     this.worldLayer.add(this.jetGfx);
+    this.worldLayer.sendToBack(this.starGfx);
     this.ownGfx = this.makeShipGfx(COLOR_OWN, "builder");
     this.ownGfx.setVisible(false);
 
@@ -270,6 +285,13 @@ export class GameScene extends Phaser.Scene {
         mining: s.mining,
         owner: s.owner, kind: s.kind, anchored: s.anchored,
         stored: s.stored, hqId: s.hqId,
+        landingPhase: s.landingPhase ?? "",
+        landingProgress: s.landingProgress ?? 0,
+        landingTargetX: s.landingTargetX ?? 0,
+        landingTargetY: s.landingTargetY ?? 0,
+        landingOriginX: s.landingOriginX ?? 0,
+        landingOriginY: s.landingOriginY ?? 0,
+        landingAsteroidSpin: s.landingAsteroidSpin ?? 0,
       });
     });
     for (const id of [...this.serverShips.keys()]) {
@@ -293,7 +315,7 @@ export class GameScene extends Phaser.Scene {
       seenSt.add(id);
       this.serverStructures.set(id, {
         stype: st.stype, owner: st.owner, sx: st.sx, sy: st.sy, x: st.x, y: st.y,
-        angle: st.angle, asteroidId: st.asteroidId,
+        angle: st.angle, asteroidId: st.asteroidId, shipBays: st.shipBays,
       });
     });
     for (const id of [...this.serverStructures.keys()]) {
@@ -359,39 +381,66 @@ export class GameScene extends Phaser.Scene {
     }
 
     // construção, produção e ancoragem (autoritativas no servidor)
-    if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) {
-      this.room.send(MSG_BUILD, { type: "miningStation" as StructureType });
+    const landingPhase = mineServer.landingPhase ?? "";
+    const isLanding = landingPhase === "landing" || landingPhase === "liftoff";
+    const isLanded = landingPhase === "landed";
+
+    if (Phaser.Input.Keyboard.JustDown(this.keys.N)) {
+      this.minimapFull = !this.minimapFull;
     }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) {
-      this.room.send(MSG_BUILD, { type: "hq" as StructureType });
+    if (Phaser.Input.Keyboard.JustDown(this.keys.M)) {
+      this.room.send(MSG_EXPAND);
     }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) {
-      this.room.send(MSG_PRODUCE, { kind: "mining" });
+
+    // durante pouso/decolagem: bloqueia comandos de jogo
+    if (!isLanding && !isLanded) {
+      if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) {
+        this.room.send(MSG_BUILD, { type: "miningStation" as StructureType });
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) {
+        this.room.send(MSG_BUILD, { type: "hq" as StructureType });
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) {
+        this.room.send(MSG_PRODUCE, { kind: "mining" });
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.FOUR)) {
+        this.room.send(MSG_PRODUCE, { kind: "attack" });
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.FIVE)) {
+        this.room.send(MSG_PRODUCE, { kind: "builder" });
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.F)) {
+        this.room.send(MSG_ANCHOR);
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
+        this.room.send(MSG_SWAP);
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.G)) {
+        this.room.send(MSG_AUTOMINE);
+      }
+      // táxi: [T] cicla a nave escolhida, [Y] chama a selecionada
+      this.taxiOpts = this.computeTaxiOptions();
+      if (this.taxiOpts.length > 0) this.taxiSel %= this.taxiOpts.length;
+      else this.taxiSel = 0;
+      if (Phaser.Input.Keyboard.JustDown(this.keys.T) && this.taxiOpts.length > 0) {
+        this.taxiSel = (this.taxiSel + 1) % this.taxiOpts.length;
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.Y) && this.taxiOpts.length > 0) {
+        this.room.send(MSG_TAXI, { shipId: this.taxiOpts[this.taxiSel].id });
+      }
     }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.FOUR)) {
-      this.room.send(MSG_PRODUCE, { kind: "attack" });
-    }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.FIVE)) {
-      this.room.send(MSG_PRODUCE, { kind: "builder" });
-    }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.F)) {
-      this.room.send(MSG_ANCHOR);
-    }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
-      this.room.send(MSG_SWAP);
-    }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.G)) {
-      this.room.send(MSG_AUTOMINE);
-    }
-    // táxi: [T] cicla a nave escolhida, [Y] chama a selecionada
-    this.taxiOpts = this.computeTaxiOptions();
-    if (this.taxiOpts.length > 0) this.taxiSel %= this.taxiOpts.length;
-    else this.taxiSel = 0;
-    if (Phaser.Input.Keyboard.JustDown(this.keys.T) && this.taxiOpts.length > 0) {
-      this.taxiSel = (this.taxiSel + 1) % this.taxiOpts.length;
-    }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.Y) && this.taxiOpts.length > 0) {
-      this.room.send(MSG_TAXI, { shipId: this.taxiOpts[this.taxiSel].id });
+
+    // menu pós-pouso: SPACE=minerar, 1=construir estação, F=decolar
+    if (isLanded) {
+      if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE)) {
+        this.room.send(MSG_LAND_ACTION, { action: "mine" });
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) {
+        this.room.send(MSG_LAND_ACTION, { action: "build" });
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.F)) {
+        this.room.send(MSG_LAND_ACTION, { action: "liftoff" });
+      }
     }
 
     const anchored = mineServer.anchored;
@@ -495,7 +544,36 @@ export class GameScene extends Phaser.Scene {
           this.worldLayer.add(g);
           this.worldLayer.sendToBack(g);
           this.asteroidGfx.push({ gfx: g, spin: asteroidSpin(a.shapeSeed) * MAX_ASTEROID_SPIN });
-          this.nearbyAsteroids.push({ rx: pos.x, ry: pos.y });
+          this.nearbyAsteroids.push({ rx: pos.x, ry: pos.y, asteroidClass: a.asteroidClass });
+        }
+      }
+    }
+    this.rebuildStars();
+  }
+
+  private rebuildStars() {
+    this.starGfx.clear();
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        const sx = this.origin.sx + ox;
+        const sy = this.origin.sy + oy;
+        let seed = ((sx * 0x9e3779b9) ^ (sy * 0x6c62272e)) >>> 0;
+        const rng = () => {
+          seed = (seed ^ (seed << 13)) >>> 0;
+          seed = (seed ^ (seed >> 17)) >>> 0;
+          seed = (seed ^ (seed << 5)) >>> 0;
+          return seed / 0x100000000;
+        };
+        const bx = ox * SECTOR_SIZE;
+        const by = oy * SECTOR_SIZE;
+        for (let i = 0; i < STARS_PER_SECTOR; i++) {
+          const x = bx + rng() * SECTOR_SIZE;
+          const y = by + rng() * SECTOR_SIZE;
+          const bright = rng() > 0.75;
+          const size = bright ? 1.5 : 0.8;
+          const alpha = bright ? 0.9 : 0.4 + rng() * 0.3;
+          this.starGfx.fillStyle(bright ? COLOR_STAR_BRIGHT : COLOR_STAR_DIM, alpha);
+          this.starGfx.fillRect(x - size / 2, y - size / 2, size, size);
         }
       }
     }
@@ -543,8 +621,8 @@ export class GameScene extends Phaser.Scene {
     g.lineStyle(w, view.own ? COLOR_STRUCT_OWN : COLOR_STRUCT_OTHER);
     g.strokePoints(structureVerts(view.type, view.radius), true, true);
 
-    // vagas do hangar: fileira abaixo da base (QG: 6 · estação: 2)
-    const cap = view.type === "hq" ? 6 : 2;
+    // vagas do hangar: fileira abaixo da base (capacidade real da estrutura)
+    const cap = view.shipBays;
     const slot = SHIP_RADIUS * 2.4;
     const y0 = view.radius + slot * 0.9;
     for (let i = 0; i < cap; i++) {
@@ -603,13 +681,19 @@ export class GameScene extends Phaser.Scene {
       view.gfx.strokePoints(shipVerts(view.kind), true, true);
     }
     // estruturas: invalida a assinatura → redesenhadas no próximo draw
-    for (const view of this.structViews.values()) view.lastSig = " ";
+    for (const view of this.structViews.values()) view.lastSig = "\0";
     this.rebuildAsteroids();
   }
 
   private draw(_dt: number, authoritative: ServerShip | undefined) {
     const own = this.toRender(this.localShip!);
-    this.ownGfx.setPosition(own.x, own.y).setRotation(this.localShip!.angle);
+    const mineAuth = this.serverShips.get(this.myShipId);
+    const lPhaseRender = mineAuth?.landingPhase ?? "";
+    const lSpin = mineAuth?.landingAsteroidSpin ?? 0;
+    const ownAngle = (lPhaseRender === "landed" || lPhaseRender === "landing" || lPhaseRender === "liftoff")
+      ? this.localShip!.angle + lSpin * (this.time.now / 1000)
+      : this.localShip!.angle;
+    this.ownGfx.setPosition(own.x, own.y).setRotation(ownAngle);
     this.cameras.main.centerOn(own.x, own.y);
 
     // rotação leve dos asteroides (visual, determinística por semente)
@@ -662,9 +746,10 @@ export class GameScene extends Phaser.Scene {
           gfx: this.makeStructGfx(),
           type: st.stype,
           radius: STRUCTURE_SPECS[st.stype].radius,
+          shipBays: st.shipBays,
           own: own_,
           spin: this.asteroidSpinById(st),
-          lastSig: "\0", // sentinela: força o primeiro desenho mesmo com hangar vazio
+          lastSig: "\0",
         };
         this.structViews.set(id, view);
       }
@@ -710,7 +795,6 @@ export class GameScene extends Phaser.Scene {
 
     const ore = Math.floor(this.myOre);
     const zoom = this.cameras.main.zoom;
-    const mapName = MAP_SIZE_LABEL[mapSizeFromRadiusSectors(this.mapRadius / SECTOR_SIZE)];
     const activeKind = this.serverShips.get(this.myShipId)?.kind ?? "builder";
     const kindLabel: Record<ShipKind, string> = { builder: "builder", mining: "mineração", attack: "ataque" };
 
@@ -730,11 +814,25 @@ export class GameScene extends Phaser.Scene {
     }
     let hasHq = false;
     let nearOwnStation = false;
+    let nearOwnStruct: ServerStructure | null = null;
     for (const st of this.serverStructures.values()) {
       if (st.owner !== this.room.sessionId) continue;
       if (st.stype === "hq") hasHq = true;
       if (st.stype === "miningStation" && dist(this.localShip!, st) <= DOCK_RANGE) nearOwnStation = true;
+      if (dist(this.localShip!, st) <= DOCK_RANGE) {
+        if (!nearOwnStruct || dist(this.localShip!, st) < dist(this.localShip!, nearOwnStruct)) {
+          nearOwnStruct = st;
+        }
+      }
     }
+    // vagas livres na estrutura mais próxima (para feedback de ancoragem)
+    const nearStructOccupied = nearOwnStruct
+      ? [...this.serverShips.values()].filter(
+          (s) => s.hqId === [...this.serverStructures.entries()].find(([, v]) => v === nearOwnStruct)?.[0]
+            && (s.stored || s.anchored),
+        ).length
+      : 0;
+    const nearStructFree = nearOwnStruct ? Math.max(0, nearOwnStruct.shipBays - nearStructOccupied) : 0;
     const anchored = authoritative?.anchored ?? this.localShip!.anchored;
     const hangarTotal = hangarMining + hangarAttack;
 
@@ -757,6 +855,12 @@ export class GameScene extends Phaser.Scene {
     const hint5 = `[5] ${p5.label} (${p5.cost})${need}`;
     const canProd = hasHq && anchored;
     const anchorTag = anchored ? "  ⚓ ANCORADO" : "";
+    const canAnchor = !anchored && nearOwnStruct !== null;
+    const anchorHint = canAnchor
+      ? nearStructFree > 0
+        ? `  » [F] pousar (${nearStructFree} vaga${nearStructFree !== 1 ? "s" : ""} livre${nearStructFree !== 1 ? "s" : ""})`
+        : "  ⚓ hangar cheio"
+      : "";
     const swapHint = anchored && hangarTotal > 0 ? `  » [C] trocar (hangar: ${hangarTotal})` : "";
     // [G] auto-mineração: pilotando mineradora ancorada na própria estação
     const canAuto = activeKind === "mining" && anchored && nearOwnStation;
@@ -771,13 +875,35 @@ export class GameScene extends Phaser.Scene {
         `·  [T] trocar seleção (${this.taxiSel + 1}/${this.taxiOpts.length})  ·  [Y] chamar (2× vel.)`;
     }
 
-    this.hud.setText(
-      `Minério: ${ore}  ·  Pilotando: ${kindLabel[activeKind]}  ·  Mapa: ${mapName}  ·  Zoom ${zoom.toFixed(2)}x${anchorTag}${swapHint}${autoHint}\n` +
-        `W/↑ acelerar · A/D girar · ESPAÇO minerar · [F] ancorar · [C] trocar · [G] auto-minerar · roda/+/- zoom\n` +
-        `${mark(ore >= st1.cost && nearAst)}${hint1}    ${mark(ore >= st2.cost && nearAst)}${hint2}\n` +
-        `${mark(canProd && ore >= p3.cost)}${hint3}   ${mark(canProd && ore >= p4.cost)}${hint4}   ${mark(canProd && ore >= p5.cost)}${hint5}` +
-        taxiLine,
-    );
+    // HUD varia conforme a fase de pouso
+    const mineServerLanding = this.serverShips.get(this.myShipId);
+    const lPhase = mineServerLanding?.landingPhase ?? "";
+    if (lPhase === "landing") {
+      const pct = Math.round((mineServerLanding?.landingProgress ?? 0) * 100);
+      this.hud.setText(`Pousando… ${pct}%`);
+    } else if (lPhase === "liftoff") {
+      const pct = Math.round((mineServerLanding?.landingProgress ?? 0) * 100);
+      this.hud.setText(`Decolando… ${pct}%`);
+    } else if (lPhase === "landed") {
+      const canBuild = ore >= STRUCTURE_SPECS.miningStation.cost;
+      const isBuilder = activeKind === "builder";
+      this.hud.setText(
+        `Pousado no asteroide\n` +
+        `[ESPAÇO] iniciar mineração automática\n` +
+        (isBuilder
+          ? `[1] construir estação de mineração (${STRUCTURE_SPECS.miningStation.cost} minério)${canBuild ? "" : " — sem minério"}\n`
+          : "") +
+        `[F] decolar`,
+      );
+    } else {
+      this.hud.setText(
+        `Minério: ${ore}  ·  Pilotando: ${kindLabel[activeKind]}  ·  Zoom ${zoom.toFixed(2)}x${anchorTag}${anchorHint}${swapHint}${autoHint}\n` +
+          `W/↑ acelerar · A/D girar · ESPAÇO minerar · [F] ancorar · [C] trocar · [G] auto-minerar · roda/+/- zoom\n` +
+          `${mark(ore >= st1.cost && nearAst)}${hint1}    ${mark(ore >= st2.cost && nearAst)}${hint2}\n` +
+          `${mark(canProd && ore >= p3.cost)}${hint3}   ${mark(canProd && ore >= p4.cost)}${hint4}   ${mark(canProd && ore >= p5.cost)}${hint5}` +
+          taxiLine,
+      );
+    }
   }
 
   /** Minimapa no canto superior direito, centrado na nave própria. */
@@ -787,7 +913,8 @@ export class GameScene extends Phaser.Scene {
     const y0 = MINIMAP_MARGIN;
     const cx = x0 + size / 2;
     const cy = y0 + size / 2;
-    const k = size / 2 / MINIMAP_RANGE; // unidades → pixels do minimapa
+    const range = this.minimapFull && this.mapRadius > 0 ? this.mapRadius : MINIMAP_RANGE;
+    const k = size / 2 / range;
     const half = size / 2;
 
     const g = this.minimapGfx;
@@ -797,7 +924,7 @@ export class GameScene extends Phaser.Scene {
     g.lineStyle(1, COLOR_MINIMAP_BORDER, 1);
     g.strokeRect(x0, y0, size, size);
 
-    // fronteiras de setor (a grade dos quadrantes)
+    // fronteiras de setor
     g.lineStyle(1, COLOR_MINIMAP_GRID, 1);
     for (let i = -1; i <= 2; i++) {
       const dx = (i * SECTOR_SIZE - own.x) * k;
@@ -806,12 +933,20 @@ export class GameScene extends Phaser.Scene {
       if (Math.abs(dy) < half) g.lineBetween(x0, cy + dy, x0 + size, cy + dy);
     }
 
-    // asteroides próximos
-    g.fillStyle(COLOR_ASTEROID, 1);
+    // fronteira da arena no modo mapa inteiro
+    if (this.minimapFull && this.mapCenter && this.mapRadius > 0) {
+      const mc = this.toRender(this.mapCenter);
+      g.lineStyle(1, COLOR_BOUNDARY, 0.7);
+      g.strokeCircle(cx + (mc.x - own.x) * k, cy + (mc.y - own.y) * k, this.mapRadius * k);
+    }
+
+    // asteroides coloridos por classe (P=cinza, M=dourado, G=ouro)
     for (const a of this.nearbyAsteroids) {
       const dx = (a.rx - own.x) * k;
       const dy = (a.ry - own.y) * k;
       if (Math.abs(dx) < half - 2 && Math.abs(dy) < half - 2) {
+        const col = parseInt(ASTEROID_CLASSES[a.asteroidClass as keyof typeof ASTEROID_CLASSES].color.slice(1), 16);
+        g.fillStyle(col, 1);
         g.fillCircle(cx + dx, cy + dy, 1.5);
       }
     }
