@@ -17,7 +17,6 @@ import {
   SHIP_PRODUCTION,
   DOCK_RANGE,
   ASTEROID_CLASSES,
-  STATION_MINE_BUFFER,
   relVec,
   dist,
   type ShipInput,
@@ -137,7 +136,6 @@ interface ServerStructure extends WorldPos {
   asteroidId: string;
   shipBays: number;
   expandedBays: number;
-  mineBuffer: number;
 }
 
 interface StructView {
@@ -350,7 +348,6 @@ export class GameScene extends Phaser.Scene {
         stype: st.stype, owner: st.owner, sx: st.sx, sy: st.sy, x: st.x, y: st.y,
         angle: st.angle, asteroidId: st.asteroidId,
         shipBays: st.shipBays, expandedBays: st.expandedBays ?? 0,
-        mineBuffer: st.mineBuffer ?? 0,
       });
     });
     for (const id of [...this.serverStructures.keys()]) {
@@ -447,12 +444,12 @@ export class GameScene extends Phaser.Scene {
 
     // durante pouso/decolagem: bloqueia comandos de jogo
     if (!isLanding && !isLanded) {
-      // [F] desancora quando já ancorado
-      if (Phaser.Input.Keyboard.JustDown(this.keys.F) && mineServer.anchored) {
-        this.room.send(MSG_ANCHOR);
-      }
-      // [F] pousar: envia sempre — servidor valida proximidade
-      if (Phaser.Input.Keyboard.JustDown(this.keys.F) && !mineServer.anchored) {
+      // [F]: uma ÚNICA leitura de JustDown — a função CONSOME o flag ao
+      // retornar true, então chamá-la duas vezes no mesmo frame (uma por
+      // condição) faz a segunda sempre ver "false", mesmo com a tecla
+      // pressionada. Ancorar/pousar são mutuamente exclusivos, então um
+      // só if/else resolve com uma leitura.
+      if (Phaser.Input.Keyboard.JustDown(this.keys.F)) {
         this.room.send(MSG_ANCHOR);
       }
       // SPACE: coleta buffer da estação quando builder ancorado
@@ -1199,10 +1196,11 @@ export class GameScene extends Phaser.Scene {
       return (st && st.stype === "miningStation") ? st : null;
     })() : null;
     const builderMining = anchoredStationStruct && (mineAuth?.mining ?? false);
-    const stationBufferHint = anchoredStationStruct
-      ? `  ·  Buffer: ${Math.floor(anchoredStationStruct.mineBuffer)}/${STATION_MINE_BUFFER}` +
-        (activeKind === "builder" ? (builderMining ? "  » [ESP] parar mineração" : "  » [ESP] minerar") : "")
-      : "";
+    // minério vai direto para a carteira (sem buffer intermediário na estrutura)
+    const stationBufferHint =
+      anchoredStationStruct && activeKind === "builder"
+        ? (builderMining ? "  » [ESP] parar mineração" : "  » [ESP] minerar")
+        : "";
     // [T]/[Y] táxi: só disponível ancorado na PRÓPRIA estação de mineração
     let taxiLine = "";
     if (anchored && nearOwnStation && this.taxiOpts.length > 0) {

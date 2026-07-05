@@ -14,6 +14,4 @@ export interface Structure extends WorldPos {
   spiderBays: number;
   nextShipBay: number;
   nextSpiderBay: number;
-  /** buffer de minério acumulado pelas aranhas (descarregado pelo builder) */
-  mineBuffer: number;
 }

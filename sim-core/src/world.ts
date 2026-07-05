@@ -106,11 +106,16 @@ export class SimWorld {
         }
         continue;
       }
-      // ancorada: congelada no QG (não se move, não minera)
+      // ancorada: congelada na estrutura (não se move). Builder ancorado
+      // numa estação pode minerar via toggle (setado pela sala ANTES deste
+      // tick) — preserva ship.mining nesse caso; nas demais (QG, outras
+      // classes), permanece congelada e sem minerar.
       if (ship.anchored) {
         ship.vx = 0;
         ship.vy = 0;
-        ship.mining = false;
+        const station = this.structures.get(ship.hqId);
+        const canMineHere = ship.kind === "builder" && station?.type === "miningStation";
+        if (!canMineHere) ship.mining = false;
         continue;
       }
       // aranha (auto-mineração): movida pela lógica da estação, fora da física
@@ -121,8 +126,19 @@ export class SimWorld {
       stepShip(ship, input, dt, isTaxi ? TAXI_SPEED_MULT : 1);
       if (!isTaxi) collideShip(ship, this.seed, passthrough);
       if (this.boundaryCenter) clampToBoundary(ship, this.boundaryCenter, this.boundaryRadius);
-      // em voo livre não se minera — mineração só pousado ou via aranhas
+      // mineração em voo livre: segurando ESPAÇO perto de um asteroide
       ship.mining = false;
+      const rate = MINING_RATE_BY_KIND[ship.kind];
+      if (input.mine && rate > 0) {
+        const target = this.nearestAsteroid(ship);
+        if (target) {
+          const occupied = passthrough.has(target.id);
+          if (!occupied || ship.kind === "builder") {
+            this.addOre(ship.owner, rate * dt);
+            ship.mining = true;
+          }
+        }
+      }
     }
 
     // estruturas autônomas produzem minério para o dono

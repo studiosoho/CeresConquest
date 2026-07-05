@@ -20,7 +20,6 @@ import {
   STATION_SPIDER_BAYS,
   DOCK_RANGE,
   BUILD_ASTEROID_RANGE,
-  STATION_MINE_BUFFER,
   MINING_RATE_BY_KIND,
   asteroidClassOf,
   asteroidSpinRate,
@@ -294,6 +293,7 @@ export class MatchRoom extends Room<MatchState> {
           // asteroide com estrutura PRÓPRIA: anima até a vaga livre
           const effectiveKind = ship.kind === "builder" ? "mining" : ship.kind;
           const bay = this.firstFreeShipBay(ownStruct, effectiveKind);
+          console.log(`[anchor-diag] ownStruct=${ownStruct.id} effectiveKind=${effectiveKind} expandedBays=${ownStruct.expandedBays} shipBays=${ownStruct.shipBays} bay=${bay}`);
           if (bay < 0) return; // hangar cheio
           const spin = this.asteroidSpinOf(ast.shapeSeed);
           const bayPos = this.bayWorldPos(ownStruct, bay);
@@ -349,6 +349,7 @@ export class MatchRoom extends Room<MatchState> {
     ship.y = struct.y;
     ship.vx = 0;
     ship.vy = 0;
+    ship.mining = false; // zera resíduo de mineração em voo livre
   }
 
   /** Troca a nave ativa por uma do hangar da estrutura ancorada. */
@@ -482,7 +483,7 @@ export class MatchRoom extends Room<MatchState> {
         id, type: "miningStation", owner: sessionId,
         sx: ast.sx, sy: ast.sy, x: ast.x, y: ast.y,
         angle, asteroidId: ast.id, asteroidClass: cls,
-        shipBays, expandedBays, spiderBays, nextShipBay: 0, nextSpiderBay: 0, mineBuffer: 0,
+        shipBays, expandedBays, spiderBays, nextShipBay: 0, nextSpiderBay: 0,
       });
       const ss = new StructureSchema();
       ss.stype = "miningStation"; ss.owner = sessionId;
@@ -499,6 +500,7 @@ export class MatchRoom extends Room<MatchState> {
       ship.anchoredAsteroidId = "";
       ship.landingPhase = "";
       ship.sx = ast.sx; ship.sy = ast.sy; ship.x = ast.x; ship.y = ast.y;
+      ship.mining = false; // zera resíduo de mineração em voo livre
       console.log(`[room] ${sessionId} construiu miningStation (via pouso) em ${cls} — builder na vaga 0`);
     }
 
@@ -531,7 +533,7 @@ export class MatchRoom extends Room<MatchState> {
         id, type: "hq", owner: sessionId,
         sx: ast.sx, sy: ast.sy, x: ast.x, y: ast.y,
         angle, asteroidId: ast.id, asteroidClass: cls,
-        shipBays, expandedBays, spiderBays: 0, nextShipBay: 0, nextSpiderBay: 0, mineBuffer: 0,
+        shipBays, expandedBays, spiderBays: 0, nextShipBay: 0, nextSpiderBay: 0,
       });
       const ss = new StructureSchema();
       ss.stype = "hq"; ss.owner = sessionId;
@@ -546,6 +548,7 @@ export class MatchRoom extends Room<MatchState> {
       ship.anchoredAsteroidId = "";
       ship.landingPhase = "";
       ship.sx = ast.sx; ship.sy = ast.sy; ship.x = ast.x; ship.y = ast.y;
+      ship.mining = false; // zera resíduo de mineração em voo livre
       console.log(`[room] ${sessionId} construiu hq (via pouso) em ${cls}`);
     }
   }
@@ -666,6 +669,7 @@ export class MatchRoom extends Room<MatchState> {
     ship.y = struct.y;
     ship.vx = 0;
     ship.vy = 0;
+    ship.mining = false;
   }
 
   /** Estrutura própria MAIS PRÓXIMA (opcionalmente de um tipo) dentro de `range`. */
@@ -737,7 +741,6 @@ export class MatchRoom extends Room<MatchState> {
       spiderBays,
       nextShipBay: 0,
       nextSpiderBay: 0,
-      mineBuffer: 0,
     });
 
     const ss = new StructureSchema();
@@ -768,6 +771,9 @@ export class MatchRoom extends Room<MatchState> {
       activeShip.sx = ast.sx; activeShip.sy = ast.sy;
       activeShip.x = ast.x; activeShip.y = ast.y;
       activeShip.vx = 0; activeShip.vy = 0;
+      // zera resíduo de mineração em voo livre — ancorar começa sempre
+      // parado; a mineração na estação liga só via toggle explícito
+      activeShip.mining = false;
     }
     console.log(
       `[room] ${sessionId} construiu ${type} em asteroide ${cls} (naves:${shipBays} aranhas:${spiderBays})`,
@@ -864,6 +870,7 @@ export class MatchRoom extends Room<MatchState> {
             ship.landingPhase = "";
             ship.anchored = true;
             ship.anchoredAsteroidId = "";
+            ship.mining = false; // zera resíduo de mineração em voo livre
             const struct = this.sim.structures.get(ship.hqId);
             if (struct) {
               ship.sx = struct.sx; ship.sy = struct.sy;
@@ -889,16 +896,17 @@ export class MatchRoom extends Room<MatchState> {
       const ship = this.sim.ships.get(id);
       if (ship) this.sim.setInput(id, computeBotInput(ship, this.sim, bot, dt));
     }
-    // BUILDER minerando na estação: acumula no buffer (junto com as aranhas)
+    // BUILDER minerando na estação: credita direto na carteira do dono
+    // (carteira única — sem buffer intermediário na estrutura)
     for (const ship of this.sim.ships.values()) {
       if (!ship.anchored || !ship.mining || ship.kind !== "builder") continue;
       const station = this.sim.structures.get(ship.hqId);
       if (!station || station.type !== "miningStation") continue;
-      if (station.mineBuffer >= STATION_MINE_BUFFER) { ship.mining = false; continue; }
       const rate = MINING_RATE_BY_KIND["builder"];
-      station.mineBuffer = Math.min(STATION_MINE_BUFFER, station.mineBuffer + rate * dt);
+      this.sim.addOre(ship.owner, rate * dt);
     }
-    // ARANHAS mineradoras → caminham pelo asteroide e descarregam na estação
+    // ARANHAS mineradoras → caminham pelo asteroide e, ao descarregar,
+    // creditam direto na carteira do dono da estação (carteira única)
     for (const [id, spider] of this.spiders) {
       const ship = this.sim.ships.get(id);
       const station = ship ? this.sim.structures.get(ship.stationId) : undefined;
@@ -906,15 +914,8 @@ export class MatchRoom extends Room<MatchState> {
         this.spiders.delete(id);
         continue;
       }
-      // aranha para quando o buffer da estação está cheio
-      if (station.mineBuffer >= STATION_MINE_BUFFER) {
-        ship.mining = false;
-        continue;
-      }
       const unloaded = stepSpider(ship, station, spider, dt);
-      if (unloaded > 0) {
-        station.mineBuffer = Math.min(STATION_MINE_BUFFER, station.mineBuffer + unloaded);
-      }
+      if (unloaded > 0) this.sim.addOre(station.owner, unloaded);
     }
     // IA do táxi → voa até o destino; ao chegar, estaciona na 1ª vaga livre
     for (const [id, ship] of this.sim.ships) {
@@ -985,7 +986,6 @@ export class MatchRoom extends Room<MatchState> {
       s.spiderBays = st.spiderBays;
       s.nextShipBay = st.nextShipBay;
       s.nextSpiderBay = st.nextSpiderBay;
-      s.mineBuffer = st.mineBuffer;
     }
     // minério e nave ativa por jogador
     for (const [sid, p] of this.state.players) {
