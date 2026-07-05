@@ -38,3 +38,6 @@ export const STRUCTURE_SPECS: Record<StructureType, StructureSpec> = {
 
 /** Distância máxima até um asteroide para poder erguer uma estação de mineração. */
 export const BUILD_ASTEROID_RANGE = 600;
+
+/** Capacidade máxima do buffer de minério de uma estação de mineração. */
+export const STATION_MINE_BUFFER = 5000;

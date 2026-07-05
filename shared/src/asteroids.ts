@@ -1,6 +1,24 @@
 // Classes de asteroide (P/M/G por raio) e suas propriedades.
 
 import { ASTEROID_MAX_RADIUS, asteroidClassOf, SIZE_CLASS, type AsteroidClass } from "./scale";
+import { mulberry32 } from "./rng";
+
+/** Rotação máxima dos asteroides (rad/s) — leve. */
+export const MAX_ASTEROID_SPIN = 0.12;
+
+/**
+ * Velocidade angular normalizada [-1,1] de um asteroide pela shapeSeed.
+ * FONTE ÚNICA: usada pelo cliente (visual) e pelo servidor (nave pousada
+ * gira junto) — precisa ser idêntica nos dois lados.
+ */
+export function asteroidSpin(shapeSeed: number): number {
+  return mulberry32((shapeSeed ^ 0x51ed2c) >>> 0)() * 2 - 1;
+}
+
+/** Velocidade angular efetiva (rad/s) de um asteroide. */
+export function asteroidSpinRate(shapeSeed: number): number {
+  return asteroidSpin(shapeSeed) * MAX_ASTEROID_SPIN;
+}
 
 /** Especificação da classe de asteroide. */
 export interface AsteroidClassSpec {

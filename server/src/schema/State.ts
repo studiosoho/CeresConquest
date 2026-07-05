@@ -53,6 +53,7 @@ export class StructureSchema extends Schema {
   @type("uint8") spiderBays = 0;
   @type("uint8") nextShipBay = 0;
   @type("uint8") nextSpiderBay = 0;
+  @type("float32") mineBuffer = 0;
 }
 
 export class MatchState extends Schema {

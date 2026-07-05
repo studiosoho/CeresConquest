@@ -59,9 +59,9 @@ export function shipVerts(kind: ShipKind): Array<{ x: number; y: number }> {
 }
 
 /** Velocidade angular normalizada [-1,1] da rotação leve de um asteroide. */
-export function asteroidSpin(shapeSeed: number): number {
-  return mulberry32((shapeSeed ^ 0x51ed2c) >>> 0)() * 2 - 1;
-}
+// fonte única no shared — o servidor usa a MESMA função (nave pousada
+// gira em sincronia com o visual do asteroide)
+export { asteroidSpin } from "@ceres/shared";
 
 /**
  * Silhueta de asteroide em formato "batata", determinística pela shapeSeed:

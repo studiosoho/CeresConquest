@@ -90,6 +90,22 @@ export class SimWorld {
         ship.mining = false;
         continue;
       }
+      // pouso em asteroide: a sala controla posição/fases — SEM física nem
+      // colisão (senão a colisão empurraria a nave para fora do asteroide).
+      // Pousada ("landed") com anchored=true = mineração automática ligada.
+      if (ship.landingPhase !== "") {
+        ship.vx = 0;
+        ship.vy = 0;
+        ship.mining = false;
+        if (ship.landingPhase === "landed" && ship.anchored) {
+          const rate = MINING_RATE_BY_KIND[ship.kind];
+          if (rate > 0) {
+            this.addOre(ship.owner, rate * dt);
+            ship.mining = true;
+          }
+        }
+        continue;
+      }
       // ancorada: congelada no QG (não se move, não minera)
       if (ship.anchored) {
         ship.vx = 0;
@@ -105,19 +121,8 @@ export class SimWorld {
       stepShip(ship, input, dt, isTaxi ? TAXI_SPEED_MULT : 1);
       if (!isTaxi) collideShip(ship, this.seed, passthrough);
       if (this.boundaryCenter) clampToBoundary(ship, this.boundaryCenter, this.boundaryRadius);
+      // em voo livre não se minera — mineração só pousado ou via aranhas
       ship.mining = false;
-      const rate = MINING_RATE_BY_KIND[ship.kind];
-      // só minera se pousado num asteroide (landingPhase === "landed")
-      if (input.mine && rate > 0 && ship.landingPhase === "landed") {
-        const target = this.nearestAsteroid(ship);
-        if (target) {
-          const occupied = passthrough.has(target.id);
-          if (!occupied || ship.kind === "builder") {
-            this.addOre(ship.owner, rate * dt);
-            ship.mining = true;
-          }
-        }
-      }
     }
 
     // estruturas autônomas produzem minério para o dono
