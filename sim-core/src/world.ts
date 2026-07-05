@@ -126,19 +126,9 @@ export class SimWorld {
       stepShip(ship, input, dt, isTaxi ? TAXI_SPEED_MULT : 1);
       if (!isTaxi) collideShip(ship, this.seed, passthrough);
       if (this.boundaryCenter) clampToBoundary(ship, this.boundaryCenter, this.boundaryRadius);
-      // mineração em voo livre: segurando ESPAÇO perto de um asteroide
+      // sem mineração em voo livre — só pousado em asteroide vazio (landed)
+      // ou ancorado numa estação (toggle); ver os branches acima
       ship.mining = false;
-      const rate = MINING_RATE_BY_KIND[ship.kind];
-      if (input.mine && rate > 0) {
-        const target = this.nearestAsteroid(ship);
-        if (target) {
-          const occupied = passthrough.has(target.id);
-          if (!occupied || ship.kind === "builder") {
-            this.addOre(ship.owner, rate * dt);
-            ship.mining = true;
-          }
-        }
-      }
     }
 
     // estruturas autônomas produzem minério para o dono

@@ -219,7 +219,6 @@ export class GameScene extends Phaser.Scene {
     Phaser.Input.Keyboard.Key
   >;
   private sendAccum = 0;
-  private lastInput: ShipInput = { thrust: false, turn: 0, mine: false };
 
   constructor() {
     super("game");
@@ -530,7 +529,6 @@ export class GameScene extends Phaser.Scene {
       this.sendAccum = 0;
       this.sendInput(input);
     }
-    this.lastInput = input;
 
     // correção suave em direção ao estado autoritativo
     const authoritative = this.serverShips.get(this.myShipId);
@@ -1079,9 +1077,11 @@ export class GameScene extends Phaser.Scene {
 
     const anchored = authoritative?.anchored ?? this.localShip!.anchored;
 
-    // feixe de mineração (nave própria)
+    // feixe de mineração (nave própria) — usa o estado REAL do servidor
+    // (mining), não a intenção do input: não há mais mineração em voo
+    // livre, só pousado em asteroide vazio ou ancorado na estação
     this.beamGfx.clear();
-    if (this.lastInput.mine) {
+    if (authoritative?.mining) {
       const target = frameSim.nearestAsteroid(this.localShip!);
       if (target) {
         const t = this.toRender(target);
