@@ -4,6 +4,7 @@ import {
   stepShip,
   makeShip,
   collideShip,
+  collideCeres,
   clampToBoundary,
   findClearSpawn,
   SimWorld,
@@ -13,6 +14,8 @@ import {
   BELT_OUTER_SECTORS,
   SECTOR_SIZE,
   SHIP_RADIUS,
+  CERES_RADIUS,
+  ceresPosition,
   dist,
   type WorldPos,
 } from "@ceres/shared";
@@ -131,6 +134,44 @@ describe("fronteira do mapa", () => {
     const ship = { sx: beltSector, sy: 0, x: 6000, y: 5000, vx: 100, vy: 0 };
     const before = { ...ship };
     clampToBoundary(ship, center, R);
+    expect(ship).toEqual(before);
+  });
+});
+
+describe("Ceres", () => {
+  const seed = 424242;
+  const ceres = ceresPosition(seed);
+
+  it("posição é determinística e fica no cinturão", () => {
+    expect(ceresPosition(seed)).toEqual(ceres);
+    const r = Math.hypot(ceres.sx + 0.5, ceres.sy + 0.5);
+    expect(r).toBeGreaterThan(BELT_INNER_SECTORS - 1);
+    expect(r).toBeLessThan(BELT_OUTER_SECTORS + 1);
+  });
+
+  it("não gera asteroides dentro do raio de Ceres", () => {
+    // o setor de Ceres e o vizinho imediato devem estar vazios
+    expect(sectorAsteroids(seed, ceres.sx, ceres.sy)).toEqual([]);
+    expect(sectorAsteroids(seed, ceres.sx + 1, ceres.sy)).toEqual([]);
+  });
+
+  it("empurra a nave para fora do planeta (colisão sólida)", () => {
+    const ship = { sx: ceres.sx, sy: ceres.sy, x: ceres.x + 100, y: ceres.y, vx: -50, vy: 0 };
+    collideCeres(ship, ceres, CERES_RADIUS);
+    expect(dist(ceres, ship)).toBeGreaterThanOrEqual(CERES_RADIUS + SHIP_RADIUS - 0.5);
+  });
+
+  it("não afeta nave fora do planeta", () => {
+    const ship = {
+      sx: ceres.sx,
+      sy: ceres.sy,
+      x: ceres.x + CERES_RADIUS + 500,
+      y: ceres.y,
+      vx: 100,
+      vy: 0,
+    };
+    const before = { ...ship };
+    collideCeres(ship, ceres, CERES_RADIUS);
     expect(ship).toEqual(before);
   });
 });

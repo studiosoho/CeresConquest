@@ -1,4 +1,5 @@
 export * from "./scale";
+export * from "./ceres";
 export * from "./map";
 export * from "./structures";
 export * from "./ships";

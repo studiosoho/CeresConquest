@@ -1,7 +1,10 @@
 import {
   SECTOR_SIZE,
   SHIP_RADIUS,
+  CERES_RADIUS,
   sectorInBelt,
+  ceresPosition,
+  dist,
   hash3,
   mulberry32,
   ASTEROID_MIN_RADIUS,
@@ -49,6 +52,12 @@ const MIN_GAP = 2 * SHIP_RADIUS;
  */
 export function sectorAsteroids(worldSeed: number, sx: number, sy: number): Asteroid[] {
   if (!sectorInBelt(sx, sy)) return [];
+
+  // dentro de Ceres não há asteroides — o planeta anão ocupa o espaço
+  // (margem de 1 setor para nenhum asteroide "encostar" na superfície)
+  const ceres = ceresPosition(worldSeed);
+  const sectorCenter = { sx, sy, x: SECTOR_SIZE / 2, y: SECTOR_SIZE / 2 };
+  if (dist(ceres, sectorCenter) < CERES_RADIUS + SECTOR_SIZE) return [];
 
   const sectorSeed = hash3(worldSeed, sx, sy);
   const rng = mulberry32(sectorSeed);

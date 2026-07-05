@@ -4,13 +4,15 @@ import {
   NEUTRAL_INPUT,
   STRUCTURE_SPECS,
   TAXI_SPEED_MULT,
+  CERES_RADIUS,
+  ceresPosition,
   relVec,
   type ShipInput,
   type WorldPos,
 } from "@ceres/shared";
 import { makeShip, stepShip, type ShipState } from "./ship";
 import { sectorAsteroids, type Asteroid } from "./procgen";
-import { collideShip, clampToBoundary } from "./collision";
+import { collideShip, collideCeres, clampToBoundary } from "./collision";
 import type { Structure } from "./structures";
 
 /**
@@ -24,12 +26,15 @@ export class SimWorld {
   readonly structures = new Map<string, Structure>();
   /** minério por jogador (sessionId → quantidade) */
   readonly playerOre = new Map<string, number>();
+  /** posição de Ceres — derivada da semente (igual em servidor e cliente) */
+  readonly ceres: WorldPos;
   private readonly inputs = new Map<string, ShipInput>();
   private boundaryCenter: WorldPos | null = null;
   private boundaryRadius = 0;
 
   constructor(seed: number) {
     this.seed = seed;
+    this.ceres = ceresPosition(seed);
   }
 
   getOre(owner: string): number {
@@ -124,7 +129,10 @@ export class SimWorld {
       // em taxiamento: dobro da velocidade e sem colisão (caminho reto)
       const isTaxi = !!ship.taxiTo;
       stepShip(ship, input, dt, isTaxi ? TAXI_SPEED_MULT : 1);
-      if (!isTaxi) collideShip(ship, this.seed, passthrough);
+      if (!isTaxi) {
+        collideShip(ship, this.seed, passthrough);
+        collideCeres(ship, this.ceres, CERES_RADIUS); // planeta anão: sólido
+      }
       if (this.boundaryCenter) clampToBoundary(ship, this.boundaryCenter, this.boundaryRadius);
       // sem mineração em voo livre — só pousado em asteroide vazio (landed)
       // ou ancorado numa estação (toggle); ver os branches acima

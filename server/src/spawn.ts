@@ -1,41 +1,36 @@
 import {
-  BELT_CENTER_SECTORS,
   SECTOR_SIZE,
+  CERES_RADIUS,
   sectorInBelt,
-  mulberry32,
+  ceresPosition,
   type WorldPos,
 } from "@ceres/shared";
 
 export type SpawnStrategy = "neighboring" | "scattered" | "random";
 
-/** Ponto base da arena no anel do cinturão, determinístico pela semente. */
-export function beltBasePoint(seed: number): { sx: number; sy: number; angle: number } {
-  const rng = mulberry32((seed ^ 0x9e3779b9) >>> 0);
-  const angle = rng() * Math.PI * 2;
-  const R = BELT_CENTER_SECTORS;
-  return {
-    sx: Math.round(Math.cos(angle) * R),
-    sy: Math.round(Math.sin(angle) * R),
-    angle,
-  };
-}
+/** Margem entre a borda de Ceres e o setor de spawn mais próximo. */
+const CERES_SPAWN_MARGIN_SECTORS = 1;
 
 /**
  * Distribui `count` spawns em setores distintos do cinturão dentro do mapa,
- * espalhados ao longo da pista (direção tangente). Fica em 85% do raio para
- * garantir que ninguém nasça encostado na fronteira.
+ * espalhados ao longo da pista (direção tangente) e por FORA do raio de
+ * Ceres (protótipo: nasce perto dela, nunca dentro). Fica em 85% do raio
+ * da arena para garantir que ninguém nasça encostado na fronteira.
  */
 export function mapSpawns(seed: number, radiusSectors: number, count: number): WorldPos[] {
-  const base = beltBasePoint(seed);
+  const base = ceresPosition(seed);
   const tx = -Math.sin(base.angle);
   const ty = Math.cos(base.angle);
   const inner = radiusSectors * 0.85;
   const r = Math.ceil(inner);
+  const ceresRadiusSectors = CERES_RADIUS / SECTOR_SIZE + CERES_SPAWN_MARGIN_SECTORS;
 
   const cands: Array<{ sx: number; sy: number; proj: number }> = [];
   for (let dy = -r; dy <= r; dy++) {
     for (let dx = -r; dx <= r; dx++) {
-      if (dx * dx + dy * dy > inner * inner) continue;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > inner * inner) continue;
+      if (d2 < ceresRadiusSectors * ceresRadiusSectors) continue; // dentro de Ceres: pula
       const sx = base.sx + dx;
       const sy = base.sy + dy;
       if (!sectorInBelt(sx, sy)) continue;

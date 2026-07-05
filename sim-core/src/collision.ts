@@ -62,6 +62,39 @@ export function collideShip(
 }
 
 /**
+ * Colisão com Ceres (ou qualquer corpo circular grande): mantém a nave FORA
+ * do raio dado, empurrando para a superfície e removendo a velocidade que
+ * aponta para dentro (deslizamento). Pura e determinística — roda no
+ * servidor e na predição do cliente.
+ */
+export function collideCeres(ship: Body, center: WorldPos, radiusUnits: number): void {
+  const { dx, dy } = relVec(center, ship); // do centro de Ceres até a nave
+  const d = Math.hypot(dx, dy);
+  const minDist = radiusUnits + SHIP_RADIUS;
+  if (d >= minDist) return;
+
+  // normal de saída; se estiver exatamente no centro, empurra em +x
+  let nx = 1;
+  let ny = 0;
+  let dd = 0;
+  if (d > 1e-6) {
+    nx = dx / d;
+    ny = dy / d;
+    dd = d;
+  }
+  const pen = minDist - dd;
+  ship.x += nx * pen;
+  ship.y += ny * pen;
+
+  const vn = ship.vx * nx + ship.vy * ny;
+  if (vn < 0) {
+    ship.vx -= vn * nx;
+    ship.vy -= vn * ny;
+  }
+  normalizePos(ship);
+}
+
+/**
  * Fronteira do mapa: mantém a nave dentro de um raio a partir do centro da
  * arena. Empurra de volta e remove a velocidade que aponta para fora.
  * Pura e determinística — roda no servidor e na predição do cliente.

@@ -17,6 +17,9 @@ import {
   SHIP_PRODUCTION,
   DOCK_RANGE,
   ASTEROID_CLASSES,
+  CERES_RADIUS,
+  ceresPosition,
+  mulberry32,
   relVec,
   dist,
   type ShipInput,
@@ -29,6 +32,7 @@ import {
   makeShip,
   stepShip,
   collideShip,
+  collideCeres,
   clampToBoundary,
   sectorAsteroids,
   type ShipState,
@@ -39,6 +43,8 @@ const COLOR_OWN = 0xffffff;
 const COLOR_REMOTE = 0x7f8ea3;
 const COLOR_BEAM = 0x9fd4ff;
 const COLOR_BOUNDARY = 0xcc5544;
+/** Ceres, o planeta anão — objetivo de conquista */
+const COLOR_CERES = 0xe0b34c;
 const COLOR_STRUCT_OWN = 0x5fd0a8;
 const COLOR_STRUCT_OTHER = 0xc8985a;
 /** naves da minha frota (produzidas, autônomas) */
@@ -194,7 +200,11 @@ export class GameScene extends Phaser.Scene {
   private worldLayer!: Phaser.GameObjects.Container;
   private uiLayer!: Phaser.GameObjects.Container;
   private minimapGfx!: Phaser.GameObjects.Graphics;
+  private minimapMask!: Phaser.GameObjects.Graphics;
   private starGfx!: Phaser.GameObjects.Graphics;
+  /** Ceres: posição derivada da semente (nada trafega pela rede) */
+  private ceres: WorldPos | null = null;
+  private ceresGfx!: Phaser.GameObjects.Graphics;
   /** camadas de paralax (nebulosas e Via Láctea densa) — espaço de tela */
   private bgNebula!: Phaser.GameObjects.RenderTexture;
   private bgMilky!: Phaser.GameObjects.RenderTexture;
@@ -239,11 +249,15 @@ export class GameScene extends Phaser.Scene {
     this.jetGfx = this.add.graphics();
     this.landZoneGfx = this.add.graphics();
     this.starGfx = this.add.graphics();
+    this.ceresGfx = this.add.graphics();
     this.worldLayer.add(this.starGfx);
+    this.worldLayer.add(this.ceresGfx);
     this.worldLayer.add(this.beamGfx);
     this.worldLayer.add(this.boundaryGfx);
     this.worldLayer.add(this.jetGfx);
     this.worldLayer.add(this.landZoneGfx);
+    // fundo: estrelas atrás de tudo; Ceres logo acima delas
+    this.worldLayer.sendToBack(this.ceresGfx);
     this.worldLayer.sendToBack(this.starGfx);
 
     // camadas de paralax: nebulosas (mais lentas) e Via Láctea densa
@@ -265,6 +279,9 @@ export class GameScene extends Phaser.Scene {
     });
     this.minimapGfx = this.add.graphics();
     this.uiLayer.add([this.hud, this.minimapGfx]);
+    // máscara: recorta desenhos que estourem a caixa do minimapa (ex.: Ceres)
+    this.minimapMask = this.make.graphics();
+    this.minimapGfx.setMask(this.minimapMask.createGeometryMask());
 
     this.uiCam = this.cameras.add(0, 0, this.scale.width, this.scale.height);
     this.uiCam.ignore(this.worldLayer);
@@ -298,6 +315,11 @@ export class GameScene extends Phaser.Scene {
 
   private syncFromServer(state: any) {
     this.worldSeed = state.worldSeed >>> 0;
+    // Ceres: derivada da semente (uma vez), desenhada quando conhecida
+    if (!this.ceres && this.worldSeed !== 0) {
+      this.ceres = ceresPosition(this.worldSeed);
+      this.drawCeres();
+    }
     this.mapRadius = state.mapRadius;
     this.mapCenter = {
       sx: state.mapCenterSx,
@@ -520,6 +542,7 @@ export class GameScene extends Phaser.Scene {
     } else {
       stepShip(this.localShip, input, dt);
       collideShip(this.localShip, this.worldSeed, this.passthrough);
+      if (this.ceres) collideCeres(this.localShip, this.ceres, CERES_RADIUS);
       if (this.mapCenter && this.mapRadius > 0) {
         clampToBoundary(this.localShip, this.mapCenter, this.mapRadius);
       }
@@ -958,6 +981,35 @@ export class GameScene extends Phaser.Scene {
     return Phaser.Math.Clamp(SCREEN_LINE_WIDTH / this.cameras.main.zoom, 0.5, 80);
   }
 
+  /**
+   * Desenha Ceres, o planeta anão: contorno do disco, crateras
+   * determinísticas pela semente e o núcleo (a fonte do mineral, no lore).
+   * Coordenadas locais — posição e rotação lenta aplicadas por frame.
+   */
+  private drawCeres() {
+    const g = this.ceresGfx;
+    g.clear();
+    if (!this.ceres) return;
+    const w = this.strokeW();
+
+    g.lineStyle(w, COLOR_CERES, 1);
+    g.strokeCircle(0, 0, CERES_RADIUS);
+
+    // crateras (determinísticas — todos os clientes veem as mesmas)
+    const rng = mulberry32((this.worldSeed ^ 0xce7e5) >>> 0);
+    g.lineStyle(Math.max(w * 0.75, 0.5), COLOR_CERES, 0.5);
+    for (let i = 0; i < 9; i++) {
+      const a = rng() * Math.PI * 2;
+      const rr = CERES_RADIUS * (0.2 + rng() * 0.65);
+      const cr = CERES_RADIUS * (0.04 + rng() * 0.08);
+      g.strokeCircle(Math.cos(a) * rr, Math.sin(a) * rr, cr);
+    }
+
+    // núcleo com a fonte do mineral
+    g.lineStyle(Math.max(w * 0.75, 0.5), COLOR_CERES, 0.3);
+    g.strokeCircle(0, 0, CERES_RADIUS * 0.22);
+  }
+
   /** Redesenha naves e asteroides com a largura de traço do zoom atual. */
   private redrawStrokes() {
     const w = this.strokeW();
@@ -971,6 +1023,7 @@ export class GameScene extends Phaser.Scene {
     }
     // estruturas: invalida a assinatura → redesenhadas no próximo draw
     for (const view of this.structViews.values()) view.lastSig = "\0";
+    this.drawCeres();
     this.rebuildAsteroids();
   }
 
@@ -1005,6 +1058,12 @@ export class GameScene extends Phaser.Scene {
     // rotação leve dos asteroides (visual, determinística por semente)
     const tt = this.time.now / 1000;
     for (const a of this.asteroidGfx) a.gfx.setRotation(a.spin * tt);
+
+    // Ceres: reposiciona (origem flutuante) e gira bem devagar
+    if (this.ceres) {
+      const cp = this.toRender(this.ceres);
+      this.ceresGfx.setPosition(cp.x, cp.y).setRotation(tt * 0.008);
+    }
 
     // jatos de propulsão (pixelados): nave própria + remotas em movimento
     this.jetGfx.clear();
@@ -1258,6 +1317,10 @@ export class GameScene extends Phaser.Scene {
     const half = size / 2;
 
     const g = this.minimapGfx;
+    // máscara acompanha a caixa (a posição muda com o resize da tela)
+    this.minimapMask.clear();
+    this.minimapMask.fillStyle(0xffffff);
+    this.minimapMask.fillRect(x0, y0, size, size);
     g.clear();
     g.fillStyle(COLOR_MINIMAP_BG, 0.55);
     g.fillRect(x0, y0, size, size);
@@ -1278,6 +1341,18 @@ export class GameScene extends Phaser.Scene {
       const mc = this.toRender(this.mapCenter);
       g.lineStyle(1, COLOR_BOUNDARY, 0.7);
       g.strokeCircle(cx + (mc.x - own.x) * k, cy + (mc.y - own.y) * k, this.mapRadius * k);
+    }
+
+    // Ceres: disco dourado (a máscara recorta o que estourar a caixa)
+    if (this.ceres) {
+      const cp = this.toRender(this.ceres);
+      const ccx = cx + (cp.x - own.x) * k;
+      const ccy = cy + (cp.y - own.y) * k;
+      const cr = CERES_RADIUS * k;
+      g.fillStyle(COLOR_CERES, 0.2);
+      g.fillCircle(ccx, ccy, cr);
+      g.lineStyle(1.5, COLOR_CERES, 0.9);
+      g.strokeCircle(ccx, ccy, cr);
     }
 
     // asteroides coloridos por classe (P=cinza, M=dourado, G=ouro)

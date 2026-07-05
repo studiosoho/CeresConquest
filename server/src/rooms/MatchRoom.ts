@@ -23,6 +23,7 @@ import {
   MINING_RATE_BY_KIND,
   asteroidClassOf,
   asteroidSpinRate,
+  ceresPosition,
   relVec,
   dist,
   type ShipInput,
@@ -39,7 +40,7 @@ import {
   type Structure,
 } from "@ceres/sim-core";
 import { MatchState, ShipSchema, StructureSchema, PlayerSchema } from "../schema/State";
-import { mapSpawns, beltBasePoint, type SpawnStrategy } from "../spawn";
+import { mapSpawns, type SpawnStrategy } from "../spawn";
 import { computeBotInput, computeTaxiInput, makeBotState, type BotState } from "../bots";
 import { makeSpiderState, stepSpider, type SpiderState } from "../spiders";
 
@@ -85,8 +86,8 @@ export class MatchRoom extends Room<MatchState> {
     // spawns em setores distintos do cinturão dentro da arena do mapa
     this.spawns = mapSpawns(seed, radiusSectors, this.maxClients + botCount);
 
-    // fronteira circular: centro no ponto base do cinturão, raio pelo tamanho
-    const base = beltBasePoint(seed);
+    // fronteira circular: centrada em Ceres, raio pelo tamanho do mapa
+    const base = ceresPosition(seed);
     const center = { sx: base.sx, sy: base.sy, x: SECTOR_SIZE / 2, y: SECTOR_SIZE / 2 };
     const radiusUnits = radiusSectors * SECTOR_SIZE;
     this.arenaCenter = center;
