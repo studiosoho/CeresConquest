@@ -210,49 +210,6 @@ export class MatchRoom extends Room<MatchState> {
    * vagas expandidas (0..expandedBays-1) são mais largas, normais são quadradas.
    * O offset local é rotacionado pelo ângulo da estrutura.
    */
-  private bayWorldPos(struct: Structure, bay: number): { x: number; y: number } {
-    const SHIP_R = 20; // SHIP_RADIUS
-    const slotN = SHIP_R * 2.0;
-    const slotEW = SHIP_R * 3.2;
-    const slotEH = SHIP_R * 2.4;
-    const gap = SHIP_R * 0.5;
-    const structRadius = struct.type === "hq" ? SHIP_R * 6 : SHIP_R * 4;
-    const y0 = structRadius + slotEH * 0.6; // mesma fórmula do cliente
-
-    // ângulo atual da estrutura = ângulo base + rotação do asteroide até agora
-    const spin = this.asteroidSpinOf(this.getShapeSeedForStruct(struct));
-    const currentAngle = struct.angle + spin * this.elapsed;
-
-    // largura total para centralizar
-    let totalW = 0;
-    for (let i = 0; i < struct.shipBays; i++) {
-      totalW += (i < struct.expandedBays ? slotEW : slotN) + (i > 0 ? gap : 0);
-    }
-    let curX = -totalW / 2;
-    for (let i = 0; i < struct.shipBays; i++) {
-      const sw = i < struct.expandedBays ? slotEW : slotN;
-      const cx = curX + sw / 2;
-      if (i === bay) {
-        const cos = Math.cos(currentAngle);
-        const sin = Math.sin(currentAngle);
-        return {
-          x: struct.x + cx * cos - y0 * sin,
-          y: struct.y + cx * sin + y0 * cos,
-        };
-      }
-      curX += sw + gap;
-    }
-    return { x: struct.x, y: struct.y };
-  }
-
-  /** Retorna a shapeSeed do asteroide hospedeiro de uma estrutura. */
-  private getShapeSeedForStruct(struct: Structure): number {
-    for (const a of sectorAsteroids(this.sim.seed, struct.sx, struct.sy)) {
-      if (a.id === struct.asteroidId) return a.shapeSeed;
-    }
-    return 0;
-  }
-
   private tryToggleAnchor(sessionId: string): void {
     const ship = this.activeShipOf(sessionId);
     if (!ship) return;
@@ -291,21 +248,20 @@ export class MatchRoom extends Room<MatchState> {
         const anyStruct = !ownStruct && [...this.sim.structures.values()].some(s => s.asteroidId === ast.id);
 
         if (ownStruct) {
-          // asteroide com estrutura PRÓPRIA: anima até a vaga livre
-          const bay = this.firstFreeShipBay(ownStruct, ship.kind);
-          if (bay < 0) return; // hangar cheio
+          // estrutura PRÓPRIA: anima até a VAGA DE POUSO — o centro (0,0)
+          // da estrutura. É uma só por estrutura; ocupada = não pousa.
+          if (this.padOccupied(ownStruct.id)) return;
           const spin = this.asteroidSpinOf(ast.shapeSeed);
-          const bayPos = this.bayWorldPos(ownStruct, bay);
           ship.landingPhase = "landing";
           ship.landingProgress = 0;
           ship.landingOriginX = ship.x;
           ship.landingOriginY = ship.y;
-          ship.landingTargetX = bayPos.x;
-          ship.landingTargetY = bayPos.y;
+          ship.landingTargetX = ownStruct.x;
+          ship.landingTargetY = ownStruct.y;
           ship.landingAsteroidSpin = spin;
           ship.anchoredAsteroidId = "";
           ship.hqId = ownStruct.id;
-          ship.bay = bay;
+          ship.bay = -1; // vaga de pouso não consome vaga de hangar
           ship.vx = 0;
           ship.vy = 0;
           return;
@@ -332,16 +288,15 @@ export class MatchRoom extends Room<MatchState> {
       }
     }
 
-    // pousa em estrutura própria com vaga compatível (sem asteroide próximo)
+    // pousa em estrutura própria (sem asteroide próximo): vaga de pouso
     const struct = this.nearestOwnStructure(sessionId, ship, DOCK_RANGE);
     if (!struct) return;
-    const bay2 = this.firstFreeShipBay(struct, ship.kind);
-    if (bay2 < 0) return;
+    if (this.padOccupied(struct.id)) return; // vaga de pouso ocupada
     ship.anchored = true;
     ship.hqId = struct.id;
     ship.anchoredAsteroidId = "";
     ship.landingPhase = "";
-    ship.bay = bay2;
+    ship.bay = -1; // vaga de pouso não consome vaga de hangar
     ship.sx = struct.sx;
     ship.sy = struct.sy;
     ship.x = struct.x;
@@ -349,6 +304,14 @@ export class MatchRoom extends Room<MatchState> {
     ship.vx = 0;
     ship.vy = 0;
     ship.mining = false; // zera resíduo de mineração em voo livre
+  }
+
+  /** A vaga de pouso (centro da estrutura) está ocupada? */
+  private padOccupied(structId: string): boolean {
+    for (const s of this.sim.ships.values()) {
+      if (s.hqId === structId && s.anchored && !s.stored) return true;
+    }
+    return false;
   }
 
   /** Troca a nave ativa por uma do hangar da estrutura ancorada. */
@@ -368,14 +331,17 @@ export class MatchRoom extends Room<MatchState> {
     }
     if (!pick) return; // hangar vazio
 
-    // guarda a nave ativa neste hangar
+    // guarda a nave ativa neste hangar — ela herda a vaga que a nave
+    // escolhida vai liberar (a escolhida sai para a vaga de pouso)
+    const [nid, next] = pick;
+    const freedBay = next.bay;
     active.stored = true;
     active.anchored = false;
     active.hqId = struct.id;
+    active.bay = freedBay >= 0 ? freedBay : this.firstFreeShipBay(struct, active.kind);
     this.sim.setInput(this.activeShip.get(sessionId)!, { thrust: false, turn: 0, mine: false });
 
-    // tira a nave escolhida do hangar, ancorada na estrutura
-    const [nid, next] = pick;
+    // tira a nave escolhida do hangar → vaga de pouso (centro)
     this.deployFromHangar(next, struct);
     this.activeShip.set(sessionId, nid);
     console.log(`[room] ${sessionId} trocou de nave → ${next.kind} (${nid})`);
@@ -492,15 +458,15 @@ export class MatchRoom extends Room<MatchState> {
       ss.spiderBays = spiderBays; ss.nextShipBay = 0; ss.nextSpiderBay = 0;
       this.state.structures.set(id, ss);
 
-      // builder ocupa a primeira vaga da estação recém-construída
+      // builder fica na vaga de pouso (centro) da estação recém-construída
       ship.hqId = id;
-      ship.bay = 0;
+      ship.bay = -1;
       ship.anchored = true;
       ship.anchoredAsteroidId = "";
       ship.landingPhase = "";
       ship.sx = ast.sx; ship.sy = ast.sy; ship.x = ast.x; ship.y = ast.y;
       ship.mining = false; // zera resíduo de mineração em voo livre
-      console.log(`[room] ${sessionId} construiu miningStation (via pouso) em ${cls} — builder na vaga 0`);
+      console.log(`[room] ${sessionId} construiu miningStation (via pouso) em ${cls} — builder na vaga de pouso`);
     }
 
     if (action === "buildhq" && ship.kind === "builder") {
@@ -542,7 +508,7 @@ export class MatchRoom extends Room<MatchState> {
       ss.spiderBays = 0; ss.nextShipBay = 0; ss.nextSpiderBay = 0;
       this.state.structures.set(id, ss);
       ship.hqId = id;
-      ship.bay = 0;
+      ship.bay = -1; // vaga de pouso (centro)
       ship.anchored = true;
       ship.anchoredAsteroidId = "";
       ship.landingPhase = "";
@@ -618,10 +584,11 @@ export class MatchRoom extends Room<MatchState> {
 
   /**
    * Primeira vaga LIVRE do hangar de naves da estrutura (-1 = cheio).
+   * O hangar guarda apenas naves ARMAZENADAS (stored) — a nave pousada
+   * fica na vaga de pouso, no centro da estrutura, e não conta aqui.
    * `kind` decide onde procurar: builder/mineração preferem as vagas
    * expandidas (índices 0..expandedBays-1) e TRANSBORDAM para as normais
-   * quando cheias — assim o QG aceita builder + 2 minerações mesmo com o
-   * builder ocupando uma expandida. Ataque usa SOMENTE vagas normais
+   * quando cheias; ataque usa SOMENTE vagas normais
    * (índices expandedBays..shipBays-1), para nunca roubar uma expandida.
    * `countTransit` inclui táxis a caminho na contagem de capacidade.
    */
@@ -629,7 +596,7 @@ export class MatchRoom extends Room<MatchState> {
     const taken = new Set<number>();
     let transit = 0;
     for (const s of this.sim.ships.values()) {
-      if (s.hqId === struct.id && (s.stored || s.anchored) && s.bay >= 0) taken.add(s.bay);
+      if (s.hqId === struct.id && s.stored && s.bay >= 0) taken.add(s.bay);
       if (countTransit && s.taxiTo === struct.id) transit++;
     }
     const start = kind === "attack" ? struct.expandedBays : 0;
@@ -657,13 +624,14 @@ export class MatchRoom extends Room<MatchState> {
     return true;
   }
 
-  /** Tira uma nave do hangar e a posiciona ancorada NA posição da estrutura. */
+  /** Tira uma nave do hangar e a ancora na vaga de pouso (centro da estrutura). */
   private deployFromHangar(
     ship: ShipState,
     struct: { id: string; sx: number; sy: number; x: number; y: number },
   ): void {
     ship.stored = false;
     ship.anchored = true;
+    ship.bay = -1; // vaga de pouso não consome vaga de hangar
     ship.sx = struct.sx;
     ship.sy = struct.sy;
     ship.x = struct.x;
@@ -761,11 +729,11 @@ export class MatchRoom extends Room<MatchState> {
     ss.nextSpiderBay = 0;
     this.state.structures.set(id, ss);
 
-    // builder ocupa a primeira vaga da estrutura recém-construída
+    // builder fica na vaga de pouso (centro) da estrutura recém-construída
     const activeShip = this.activeShipOf(sessionId);
     if (activeShip) {
       activeShip.hqId = id;
-      activeShip.bay = 0;
+      activeShip.bay = -1;
       activeShip.anchored = true;
       activeShip.anchoredAsteroidId = "";
       activeShip.landingPhase = "";
@@ -853,21 +821,14 @@ export class MatchRoom extends Room<MatchState> {
       if (ship.landingPhase === "landing") {
         ship.landingProgress = Math.min(1, ship.landingProgress + dt / LAND_DURATION);
         const t = ship.landingProgress;
-        // se pousando em estrutura, atualiza o target para acompanhar a rotação do asteroide
-        if (ship.hqId) {
-          const struct = this.sim.structures.get(ship.hqId);
-          if (struct) {
-            const bayPos = this.bayWorldPos(struct, ship.bay);
-            ship.landingTargetX = bayPos.x;
-            ship.landingTargetY = bayPos.y;
-          }
-        }
+        // a vaga de pouso é o CENTRO da estrutura (0,0) — ponto fixo da
+        // rotação do asteroide, então o alvo não precisa ser recalculado
         ship.x = ship.landingOriginX + (ship.landingTargetX - ship.landingOriginX) * t;
         ship.y = ship.landingOriginY + (ship.landingTargetY - ship.landingOriginY) * t;
         ship.vx = 0; ship.vy = 0;
         if (t >= 1) {
           if (ship.hqId) {
-            // pouso em estrutura própria: finaliza como ancorado na posição da vaga
+            // pouso em estrutura própria: ancora na vaga de pouso (centro)
             ship.landingPhase = "";
             ship.anchored = true;
             ship.anchoredAsteroidId = "";
@@ -875,9 +836,8 @@ export class MatchRoom extends Room<MatchState> {
             const struct = this.sim.structures.get(ship.hqId);
             if (struct) {
               ship.sx = struct.sx; ship.sy = struct.sy;
-              // mantém a posição da vaga (landingTargetX/Y) em vez de mover para o centro
-              ship.x = ship.landingTargetX;
-              ship.y = ship.landingTargetY;
+              ship.x = struct.x;
+              ship.y = struct.y;
             }
           } else {
             // pouso em asteroide vazio: fica no estado "landed"

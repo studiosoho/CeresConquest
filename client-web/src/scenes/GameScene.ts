@@ -1210,11 +1210,12 @@ export class GameScene extends Phaser.Scene {
         }
       }
     }
-    // vagas livres na estrutura mais próxima (para feedback de ancoragem)
+    // vagas de hangar livres na estrutura mais próxima — só naves GUARDADAS
+    // contam (a nave pousada fica na vaga de pouso, no centro, à parte)
     const nearStructOccupied = nearOwnStruct
       ? [...this.serverShips.values()].filter(
           (s) => s.hqId === [...this.serverStructures.entries()].find(([, v]) => v === nearOwnStruct)?.[0]
-            && (s.stored || s.anchored),
+            && s.stored,
         ).length
       : 0;
     const nearStructFree = nearOwnStruct ? Math.max(0, nearOwnStruct.shipBays - nearStructOccupied) : 0;
