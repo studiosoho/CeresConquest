@@ -115,19 +115,50 @@ export function structureVerts(
   radius: number,
 ): Array<{ x: number; y: number }> {
   if (type === "hq") {
-    // losango (quadrado a 45°) — o quartel-general
+    // QUARTEL-GENERAL ESPACIAL (HQ)
+    // Uma estrutura imponente com uma torre central, asas/hangares laterais angulares 
+    // e uma base defensiva reforçada.
     return [
-      { x: 0, y: -radius },
-      { x: radius, y: 0 },
-      { x: 0, y: radius },
-      { x: -radius, y: 0 },
+      { x: 0, y: -radius },          // Topo da torre de comando principal
+      { x: radius * 0.15, y: -radius * 0.4 }, // Descida da torre
+      { x: radius * 0.4, y: -radius * 0.4 },  // Extensão do teto do hangar direito
+      { x: radius * 0.9, y: 0 },              // Ponta da asa direita / Plataforma de pouso
+      { x: radius * 0.5, y: radius * 0.3 },   // Recorte inferior da asa direita
+      { x: radius * 0.6, y: radius * 0.8 },   // Gerador/Propulsor inferior direito
+      { x: radius * 0.2, y: radius * 0.8 },   // Base inferior direita
+      { x: 0, y: radius * 0.5 },              // Recorte central inferior (entrada de naves capitais)
+      { x: -radius * 0.2, y: radius * 0.8 },  // Base inferior esquerda
+      { x: -radius * 0.6, y: radius * 0.8 },  // Gerador/Propulsor inferior esquerdo
+      { x: -radius * 0.5, y: radius * 0.3 },  // Recorte inferior da asa esquerda
+      { x: -radius * 0.9, y: 0 },             // Ponta da asa esquerda / Plataforma de pouso
+      { x: -radius * 0.4, y: -radius * 0.4 }, // Extensão do teto do hangar esquerdo
+      { x: -radius * 0.15, y: -radius * 0.4 },// Subida para a torre de comando
     ];
   }
-  // estação de mineração: hexágono
-  const verts: Array<{ x: number; y: number }> = [];
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
-    verts.push({ x: Math.cos(a) * radius, y: Math.sin(a) * radius });
-  }
-  return verts;
+  // // estação de mineração: hexágono
+  // const verts: Array<{ x: number; y: number }> = [];
+  // for (let i = 0; i < 6; i++) {
+  //   const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+  //   verts.push({ x: Math.cos(a) * radius, y: Math.sin(a) * radius });
+  // }
+  // return verts;
+  // ESTAÇÃO DE MINERAÇÃO DE ASTEROIDES
+  // Uma estrutura industrial assimétrica com braços coletores abertos na base (para capturar rochas)
+  // e antenas/painéis de processamento no topo.
+  return [
+    { x: 0, y: -radius * 0.9 },          // Antena de comunicação superior
+    { x: radius * 0.1, y: -radius * 0.5 },// Base da antena
+    { x: radius * 0.5, y: -radius * 0.5 },// Painel solar / Refinaria superior direita
+    { x: radius * 0.3, y: -radius * 0.1 },// Corpo central (zona de processamento)
+    { x: radius * 0.8, y: radius * 0.3 }, // Braço extrator direito (ponta externa)
+    { x: radius * 0.7, y: radius * 0.6 }, // Garra/Broca direita (ponta interna)
+    { x: radius * 0.2, y: radius * 0.2 }, // Recorte do poço de trituração central (lado direito)
+    { x: 0, y: radius * 0.4 },            // Fundo do poço onde o asteroide é processado
+    { x: -radius * 0.2, y: radius * 0.2 },// Recorte do poço de trituração central (lado esquerdo)
+    { x: -radius * 0.7, y: radius * 0.6 },// Garra/Broca esquerda (ponta interna)
+    { x: -radius * 0.8, y: radius * 0.3 },// Braço extrator esquerdo (ponta externa)
+    { x: -radius * 0.3, y: -radius * 0.1 },// Corpo central (lado esquerdo)
+    { x: -radius * 0.5, y: -radius * 0.5 },// Painel solar / Refinaria superior esquerda
+    { x: -radius * 0.1, y: -radius * 0.5 },// Base da antena (lado esquerdo)
+  ];
 }

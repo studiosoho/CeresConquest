@@ -12,7 +12,7 @@ conquista de Ceres, que abriga em seu núcleo uma grande fonte de um mineral val
 Características que definem a arquitetura:
 
 - O jogador **pilota uma única unidade por vez** (nave). Não há comando de enxames.
-- Unidades autônomas existem apenas para **manutenção, mineração e ronda tática (scout)**.
+- Unidades autônomas existem apenas para **manutenção, mineração, transporte de cargas e ronda tática (fighter)**.
 - Ritmo **rápido** (tempo real, resposta imediata ao pilotar).
 - Número de unidades **escala sem teto fixo**; o teto prático vem do tempo de partida.
 - Dois modos: **partida com início/fim** e **universo persistente com save**.
@@ -193,12 +193,14 @@ refatoração.
 
 | Entidade | Controle | Notas |
 |----------|----------|-------|
-| Nave scout | pilotável pelo jogador; ronda tática autônoma | única unidade com movimento autônomo |
-| Nave de ataque | pilotável pelo jogador (apenas) | fabricada no QG |
-| Estação de mineração | autônoma (economia) | estática, construída em asteroide |
-| Centro de distribuição de rações | autônomo (economia) | estático |
-| Base inicial | estática | recebe/envia cargas à Terra |
-| Quartel-general | estático | fabrica scouts e naves de ataque |
+| Nave builder | pilotável pelo jogador | construção de QG; Estação de Mineração; Mineração ao pousar em Asteroide vazio; fabricada no QG; Ocupa vaga Expandida |
+| Nave de ataque | pilotável pelo jogador | unidade com movimento autônomo de ronda entre dois asteroides próximos fabricada no QG; Ocupa vaga Normal |
+| Nave de Mineração | pilotável pelo jogador | Mineração ao pousar em Asteroide vazio; fabricada no QG; Auto-Mineração na Estação de Mineração; Ocupa vaga Expandida |
+| Nave de Transporte | pilotável pelo jogador | fabricada no QG; Ocupa vaga normal Carregamento de Minerio entre Estação de Mineração e Base Inicial; Carregamento de Rações entre Base Inicial e QG; Carregamento de Rações entre Base Inicial e Estação de Mineração |
+| Estação de mineração | autônoma (economia) | estática; construída em asteroide; Possui dois Hangares expandidos |
+| Centro de distribuição de rações | autônomo (economia) | estática; construída em asteroide; Hangar com 1 Vaga Expandida; Lança drones de ração em direção reta sem colisão até as estruturas próximas |
+| Base inicial | estática | Player recebe essa Base no Asteroide mais proximo ao local de spawn inicial do player; recebe/envia cargas à Terra; recebe/envia cargas às estruturas; Hangar com 1 Vaga Expandida e 2 Vagas Normais |
+| Quartel-general | estático | fabrica todos os tipos de Naves; Hangar com 2 Vagas Expandidas e 4 Vagas normais; Pode Taxiar naves do Hangar para o local do Jogador |
 | Asteroide | procgen | minerável, colonizável; estado só persiste se alterado |
 | Ceres | fixo | objetivo de conquista; fonte do mineral no núcleo |
 
@@ -245,8 +247,9 @@ O gameplay é idêntico nas duas versões; muda somente a apresentação.
    (tick, movimento de nave, mineração mínima) + `server/` (sala Colyseus,
    spawn `neighboring`, interest management básico) + `client-web/`
    (pilotar nave wireframe, ver asteroides procgen, 2+ jogadores sincronizados).
-2. **Fase 2 — economia e construção**: estruturas, produção no QG, cargas,
-   scouts autônomos em ronda.
+2. **Fase 2 — economia e construção**: estruturas, produção no QG, envio de cargas 
+   com drones e naves de transporte, mineradores autônomos na estação de mineração,
+   naves de ataque autônomos em ronda.
 3. **Fase 3 — combate e equipes**: naves de ataque, dano, alianças, condição
    de vitória (conquista de Ceres).
 4. **Fase 4 — universo persistente**: banco de dados, save/load

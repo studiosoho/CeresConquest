@@ -15,7 +15,7 @@ export interface ShipProductionSpec {
 }
 
 export const SHIP_PRODUCTION: Record<ProducibleKind, ShipProductionSpec> = {
-  builder: { label: "Builder", cost: 100 },
+  builder: { label: "Builder", cost: 300 },
   mining: { label: "Nave de mineração", cost: 80 },
   attack: { label: "Nave de ataque", cost: 150 },
 };

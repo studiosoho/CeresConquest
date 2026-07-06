@@ -99,10 +99,10 @@ export class MatchRoom extends Room<MatchState> {
     this.state.mapCenterSy = base.sy;
     this.state.mapRadius = radiusUnits;
 
-    // popula a partida com jogadores-teste autônomos (mineradoras neutras)
+    // popula a partida com jogadores-teste autônomos (attack neutros)
     for (let i = 0; i < botCount; i++) {
       const id = `bot-${i}`;
-      const ship = this.spawnShip(id, this.spawns[this.maxClients + i], "", "mining");
+      const ship = this.spawnShip(id, this.spawns[this.maxClients + i], "", "attack");
       this.state.ships.set(id, this.mirrorSpawn(ship));
       this.bots.set(id, makeBotState());
     }
@@ -145,7 +145,7 @@ export class MatchRoom extends Room<MatchState> {
     this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
     console.log(
       `[room] match criada — seed=${seed} raio=${radiusSectors}s ` +
-        `maxPlayers=${this.maxClients} bots=${botCount}`,
+      `maxPlayers=${this.maxClients} bots=${botCount}`,
     );
   }
 
@@ -212,10 +212,10 @@ export class MatchRoom extends Room<MatchState> {
    */
   private bayWorldPos(struct: Structure, bay: number): { x: number; y: number } {
     const SHIP_R = 20; // SHIP_RADIUS
-    const slotN  = SHIP_R * 2.0;
+    const slotN = SHIP_R * 2.0;
     const slotEW = SHIP_R * 3.2;
     const slotEH = SHIP_R * 2.4;
-    const gap    = SHIP_R * 0.5;
+    const gap = SHIP_R * 0.5;
     const structRadius = struct.type === "hq" ? SHIP_R * 6 : SHIP_R * 4;
     const y0 = structRadius + slotEH * 0.6; // mesma fórmula do cliente
 
@@ -280,9 +280,9 @@ export class MatchRoom extends Room<MatchState> {
       return;
     }
 
-    // builder e mining: pousam no asteroide mais próximo dentro do DOCK_RANGE * 2
+    // builder e mining: pousam no asteroide mais próximo dentro do DOCK_RANGE
     if (ship.kind === "builder" || ship.kind === "mining") {
-      const ast = this.sim.nearestAsteroid(ship, DOCK_RANGE * 2);
+      const ast = this.sim.nearestAsteroid(ship, DOCK_RANGE);
       console.log(`[anchor] ${sessionId} ship=(${ship.sx},${ship.sy},${Math.round(ship.x)},${Math.round(ship.y)}) ast=${ast?.id ?? "none"} edgeDist=${ast ? Math.round(Math.hypot((ast.sx - ship.sx) * 10000 + ast.x - ship.x, (ast.sy - ship.sy) * 10000 + ast.y - ship.y) - ast.radius) : "n/a"}`);
       if (ast) {
         const ownStruct = [...this.sim.structures.values()].find(
@@ -633,7 +633,7 @@ export class MatchRoom extends Room<MatchState> {
     // vagas expandidas: índices 0..expandedBays-1
     // vagas normais:    índices expandedBays..shipBays-1
     const end = kind === "mining" ? struct.expandedBays : struct.shipBays;
-    for (let i = 0; i < end; i++) {
+    for (let i = 0; i <= end; i++) {
       if (!taken.has(i)) return i;
     }
     return -1;

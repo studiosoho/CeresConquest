@@ -13,8 +13,8 @@ export const BELT_INNER_SECTORS = BELT_CENTER_SECTORS - BELT_HALF_WIDTH_SECTORS;
 export const BELT_OUTER_SECTORS = BELT_CENTER_SECTORS + BELT_HALF_WIDTH_SECTORS;
 
 // ── Nave (protótipo: uma classe única de nave pilotável) ──────────────
-export const SHIP_THRUST = 300; // aceleração, unidades/s²
-export const SHIP_MAX_SPEED = 400; // unidades/s
+export const SHIP_THRUST = 1200; // aceleração, unidades/s²
+export const SHIP_MAX_SPEED = 5200; // unidades/s
 export const SHIP_TURN_RATE = 3.5; // rad/s
 export const SHIP_DRAG = 0.35; // coeficiente de arrasto exponencial
 
