@@ -292,9 +292,7 @@ export class MatchRoom extends Room<MatchState> {
 
         if (ownStruct) {
           // asteroide com estrutura PRÓPRIA: anima até a vaga livre
-          const effectiveKind = ship.kind === "builder" ? "mining" : ship.kind;
-          const bay = this.firstFreeShipBay(ownStruct, effectiveKind);
-          console.log(`[anchor-diag] ownStruct=${ownStruct.id} effectiveKind=${effectiveKind} expandedBays=${ownStruct.expandedBays} shipBays=${ownStruct.shipBays} bay=${bay}`);
+          const bay = this.firstFreeShipBay(ownStruct, ship.kind);
           if (bay < 0) return; // hangar cheio
           const spin = this.asteroidSpinOf(ast.shapeSeed);
           const bayPos = this.bayWorldPos(ownStruct, bay);
@@ -620,7 +618,11 @@ export class MatchRoom extends Room<MatchState> {
 
   /**
    * Primeira vaga LIVRE do hangar de naves da estrutura (-1 = cheio).
-   * `kind` filtra por compatibilidade: mining só cabe em vaga expandida.
+   * `kind` decide onde procurar: builder/mineração preferem as vagas
+   * expandidas (índices 0..expandedBays-1) e TRANSBORDAM para as normais
+   * quando cheias — assim o QG aceita builder + 2 minerações mesmo com o
+   * builder ocupando uma expandida. Ataque usa SOMENTE vagas normais
+   * (índices expandedBays..shipBays-1), para nunca roubar uma expandida.
    * `countTransit` inclui táxis a caminho na contagem de capacidade.
    */
   private firstFreeShipBay(struct: Structure, kind: "builder" | "mining" | "attack" = "builder", countTransit = false): number {
@@ -630,10 +632,8 @@ export class MatchRoom extends Room<MatchState> {
       if (s.hqId === struct.id && (s.stored || s.anchored) && s.bay >= 0) taken.add(s.bay);
       if (countTransit && s.taxiTo === struct.id) transit++;
     }
-    // vagas expandidas: índices 0..expandedBays-1
-    // vagas normais:    índices expandedBays..shipBays-1
-    const end = kind === "mining" ? struct.expandedBays : struct.shipBays;
-    for (let i = 0; i <= end; i++) {
+    const start = kind === "attack" ? struct.expandedBays : 0;
+    for (let i = start; i < struct.shipBays; i++) {
       if (!taken.has(i)) return i;
     }
     return -1;
