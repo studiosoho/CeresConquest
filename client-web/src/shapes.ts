@@ -51,10 +51,27 @@ const MINING_VERTS: Array<{ x: number; y: number }> = [
   { x: R * 0.2, y: -R * 0.6 },
 ];
 
+/**
+ * Nave de transporte: contêiner longo com cabine estreita na frente —
+ * um caminhão espacial, feito para o porão, não para a briga.
+ */
+const TRANSPORT_VERTS: Array<{ x: number; y: number }> = [
+  { x: R * 1.05, y: 0 },
+  { x: R * 0.75, y: R * 0.3 },
+  { x: R * 0.45, y: R * 0.3 },
+  { x: R * 0.35, y: R * 0.6 },
+  { x: -R * 0.95, y: R * 0.6 },
+  { x: -R * 0.95, y: -R * 0.6 },
+  { x: R * 0.35, y: -R * 0.6 },
+  { x: R * 0.45, y: -R * 0.3 },
+  { x: R * 0.75, y: -R * 0.3 },
+];
+
 /** Vértices da nave conforme a classe. */
 export function shipVerts(kind: ShipKind): Array<{ x: number; y: number }> {
   if (kind === "attack") return ATTACK_VERTS;
   if (kind === "mining") return MINING_VERTS;
+  if (kind === "transport") return TRANSPORT_VERTS;
   return BUILDER_VERTS; // builder
 }
 
@@ -135,13 +152,55 @@ export function structureVerts(
       { x: -radius * 0.15, y: -radius * 0.4 },// Subida para a torre de comando
     ];
   }
-  // // estação de mineração: hexágono
-  // const verts: Array<{ x: number; y: number }> = [];
-  // for (let i = 0; i < 6; i++) {
-  //   const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
-  //   verts.push({ x: Math.cos(a) * radius, y: Math.sin(a) * radius });
-  // }
-  // return verts;
+  if (type === "initialBase") {
+    // BASE INICIAL — elo com a Terra
+    // Cúpula habitacional sobre plataforma larga de pouso, com antena de
+    // longo alcance (fala com a Terra) e silos de rações nas laterais.
+    return [
+      { x: 0, y: -radius },                    // ponta da antena para a Terra
+      { x: radius * 0.08, y: -radius * 0.55 }, // haste da antena
+      { x: radius * 0.35, y: -radius * 0.45 }, // ombro direito da cúpula
+      { x: radius * 0.55, y: -radius * 0.1 },  // borda direita da cúpula
+      { x: radius * 0.9, y: -radius * 0.1 },   // silo de rações direito (topo)
+      { x: radius * 0.9, y: radius * 0.35 },   // silo de rações direito (base)
+      { x: radius * 0.6, y: radius * 0.35 },   // recuo até a plataforma
+      { x: radius * 0.75, y: radius * 0.7 },   // apoio direito da plataforma
+      { x: -radius * 0.75, y: radius * 0.7 },  // apoio esquerdo da plataforma
+      { x: -radius * 0.6, y: radius * 0.35 },  // recuo até a plataforma
+      { x: -radius * 0.9, y: radius * 0.35 },  // silo de rações esquerdo (base)
+      { x: -radius * 0.9, y: -radius * 0.1 },  // silo de rações esquerdo (topo)
+      { x: -radius * 0.55, y: -radius * 0.1 }, // borda esquerda da cúpula
+      { x: -radius * 0.35, y: -radius * 0.45 },// ombro esquerdo da cúpula
+      { x: -radius * 0.08, y: -radius * 0.55 },// haste da antena
+    ];
+  }
+  // ESTAÇÃO DE MINERAÇÃO DE ASTEROIDES
+  // Uma estrutura industrial assimétrica com braços coletores abertos na base (para capturar rochas)
+  // e antenas/painéis de processamento no topo.
+  if (type === "rationCenter") {
+    // CENTRO DE DISTRIBUIÇÃO DE RAÇÕES
+    // Silo central com antena de longo alcance e braços de lançamento de drones.
+    return [
+      { x: 0,              y: -radius },           // ponta da antena
+      { x: radius * 0.08,  y: -radius * 0.55 },    // haste
+      { x: radius * 0.28,  y: -radius * 0.45 },    // ombro direito
+      { x: radius * 0.55,  y: -radius * 0.55 },    // braço de lançamento direito (topo)
+      { x: radius * 0.7,   y: -radius * 0.35 },    // ponta do braço direito
+      { x: radius * 0.55,  y: -radius * 0.15 },    // base do braço direito
+      { x: radius * 0.65,  y: radius * 0.2 },      // silo direito (topo)
+      { x: radius * 0.65,  y: radius * 0.65 },     // silo direito (base)
+      { x: radius * 0.2,   y: radius * 0.8 },      // base inferior direita
+      { x: 0,              y: radius * 0.6 },       // recorte central inferior
+      { x: -radius * 0.2,  y: radius * 0.8 },      // base inferior esquerda
+      { x: -radius * 0.65, y: radius * 0.65 },     // silo esquerdo (base)
+      { x: -radius * 0.65, y: radius * 0.2 },      // silo esquerdo (topo)
+      { x: -radius * 0.55, y: -radius * 0.15 },    // base do braço esquerdo
+      { x: -radius * 0.7,  y: -radius * 0.35 },    // ponta do braço esquerdo
+      { x: -radius * 0.55, y: -radius * 0.55 },    // braço de lançamento esquerdo (topo)
+      { x: -radius * 0.28, y: -radius * 0.45 },    // ombro esquerdo
+      { x: -radius * 0.08, y: -radius * 0.55 },    // haste
+    ];
+  }
   // ESTAÇÃO DE MINERAÇÃO DE ASTEROIDES
   // Uma estrutura industrial assimétrica com braços coletores abertos na base (para capturar rochas)
   // e antenas/painéis de processamento no topo.
