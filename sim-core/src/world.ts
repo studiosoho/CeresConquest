@@ -5,6 +5,8 @@ import {
   STRUCTURE_SPECS,
   TAXI_SPEED_MULT,
   CERES_RADIUS,
+  BASE_RATION_INCOME,
+  RATION_STORE_CAP,
   ceresPosition,
   relVec,
   type ShipInput,
@@ -143,6 +145,10 @@ export class SimWorld {
     for (const st of this.structures.values()) {
       const rate = STRUCTURE_SPECS[st.type].productionRate;
       if (rate > 0) this.addOre(st.owner, rate * dt);
+      // base inicial recebe rações da Terra continuamente
+      if (st.type === "initialBase") {
+        st.rationStore = Math.min(RATION_STORE_CAP, st.rationStore + BASE_RATION_INCOME * dt);
+      }
     }
   }
 

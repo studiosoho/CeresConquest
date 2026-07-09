@@ -5,9 +5,13 @@ import {
   SHIP_DRAG,
   THRUST_RAMP_TIME,
   THRUST_RAMP_MIN,
+  BULLET_AMMO_MAX,
+  GRENADE_AMMO_MAX,
+  SHIP_HP_MAX,
   normalizePos,
   type ShipInput,
   type ShipKind,
+  type CargoKind,
   type WorldPos,
 } from "@ceres/shared";
 
@@ -53,6 +57,19 @@ export interface ShipState extends WorldPos {
   landingOriginY: number;
   /** velocidade angular do asteroide hospedeiro (rad/s) — nave gira junto */
   landingAsteroidSpin: number;
+  /** porão de carga (nave de transporte): tipo ("" = vazio) e quantidade */
+  cargoKind: CargoKind;
+  cargoAmount: number;
+  /** HP atual da nave (0 = destruída) */
+  hp: number;
+  /** munição perfurante restante */
+  ammo: number;
+  /** granadas restantes */
+  grenadeAmmo: number;
+  /** cooldown até o próximo disparo perfurante (s) */
+  fireCooldown: number;
+  /** cooldown até a próxima granada (s) */
+  grenadeCooldown: number;
 }
 
 export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"): ShipState {
@@ -83,6 +100,13 @@ export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"):
     landingOriginX: 0,
     landingOriginY: 0,
     landingAsteroidSpin: 0,
+    cargoKind: "",
+    cargoAmount: 0,
+    hp: SHIP_HP_MAX,
+    ammo: kind === "attack" ? BULLET_AMMO_MAX : 0,
+    grenadeAmmo: kind === "attack" ? GRENADE_AMMO_MAX : 0,
+    fireCooldown: 0,
+    grenadeCooldown: 0,
   };
 }
 

@@ -196,6 +196,8 @@ describe("estruturas", () => {
       spiderBays: 2,
       nextShipBay: 0,
       nextSpiderBay: 0,
+      oreStore: 0,
+      rationStore: 0,
     });
     for (let i = 0; i < 20; i++) w.tick(1 / 20); // 1s
     expect(w.getOre("p1")).toBe(0);

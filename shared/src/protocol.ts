@@ -42,7 +42,7 @@ export const MSG_SWAP = "swap";
 export const MSG_AUTOMINE = "automine";
 
 /** Ação do builder após pousar num asteroide vazio. */
-export type LandAction = "mine" | "build" | "liftoff";
+export type LandAction = "mine" | "build" | "buildhq" | "buildration" | "liftoff" | "stationmine";
 export interface LandActionCommand { action: LandAction; }
 export const MSG_LAND_ACTION = "landAction";
 
@@ -53,6 +53,19 @@ export interface TaxiCommand {
 }
 
 export const MSG_TAXI = "taxi";
+
+/**
+ * Carga/descarga da nave de transporte na vaga de pouso (sem payload — o
+ * contexto decide): na estação carrega minério ou descarrega rações; na
+ * base inicial descarrega minério (credita a carteira / envia à Terra) ou
+ * carrega rações; no QG descarrega rações.
+ */
+export const MSG_CARGO = "cargo";
+
+/** Disparo da nave de ataque: "bullet" = perfurante, "grenade" = granada. */
+export type FireKind = "bullet" | "grenade";
+export interface FireCommand { kind: FireKind; }
+export const MSG_FIRE = "fire";
 
 /** Expande a arena para o próximo tamanho (small→medium→large). */
 export const MSG_EXPAND = "expandMap";

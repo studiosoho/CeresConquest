@@ -1,7 +1,7 @@
 # CeresConquest — Documento de Arquitetura
 
-> Versão 0.1 — 2026-07-03
-> Status: fundação aprovada, pré-implementação
+> Versão 0.2 — 2026-07-08
+> Status: protótipo em implementação (fases 1–3 parciais)
 
 ## 1. Visão geral do jogo
 
@@ -12,7 +12,7 @@ conquista de Ceres, que abriga em seu núcleo uma grande fonte de um mineral val
 Características que definem a arquitetura:
 
 - O jogador **pilota uma única unidade por vez** (nave). Não há comando de enxames.
-- Unidades autônomas existem apenas para **manutenção, mineração, transporte de cargas e ronda tática (fighter)**.
+- Unidades autônomas existem apenas para **economia**: mineração (aranhas), táxi de frota e drones de ração. Combate é sempre pilotado.
 - Ritmo **rápido** (tempo real, resposta imediata ao pilotar).
 - Número de unidades **escala sem teto fixo**; o teto prático vem do tempo de partida.
 - Dois modos: **partida com início/fim** e **universo persistente com save**.
@@ -95,8 +95,8 @@ grid da procgen, ver §5). Perfil de tráfego favorável:
 
 | Categoria | Frequência de update | Exemplos |
 |-----------|----------------------|----------|
-| Alta | por tick | nave pilotada de cada jogador |
-| Baixa | por evento/segundos | scouts em ronda, cargas, produção |
+| Alta | por tick | nave pilotada de cada jogador; projéteis de combate (perfurante/granada) |
+| Baixa | por evento/segundos | naves autônomas (táxi, aranhas), cargas, produção |
 | Estática | on-change | estações, QG, centros de distribuição |
 | Zero (não sincronizada) | — | asteroides intactos (procgen), planetas/Sol (função do tempo) |
 
@@ -194,15 +194,15 @@ refatoração.
 | Entidade | Controle | Notas |
 |----------|----------|-------|
 | Nave builder | pilotável pelo jogador | construção de QG; Estação de Mineração; Mineração ao pousar em Asteroide vazio; fabricada no QG; Ocupa vaga Expandida |
-| Nave de ataque | pilotável pelo jogador | unidade com movimento autônomo de ronda entre dois asteroides próximos fabricada no QG; Ocupa vaga Normal |
+| Nave de ataque | pilotável pelo jogador | munição perfurante; granada de proximidade com garras; fabricada no QG; Ocupa vaga Normal |
 | Nave de Mineração | pilotável pelo jogador | Mineração ao pousar em Asteroide vazio; fabricada no QG; Auto-Mineração na Estação de Mineração; Ocupa vaga Expandida |
 | Nave de Transporte | pilotável pelo jogador | fabricada no QG; Ocupa vaga normal Carregamento de Minerio entre Estação de Mineração e Base Inicial; Carregamento de Rações entre Base Inicial e QG; Carregamento de Rações entre Base Inicial e Estação de Mineração |
-| Estação de mineração | autônoma (economia) | estática; construída em asteroide; Possui dois Hangares expandidos |
+| Estação de mineração | autônoma (economia) | estática; construída em asteroide; Possui dois Hangares expandidos; necessita ração para funcionar; Player pode solicitar Taxi de nave de mineração de um QG proximo |
 | Centro de distribuição de rações | autônomo (economia) | estática; construída em asteroide; Hangar com 1 Vaga Expandida; Lança drones de ração em direção reta sem colisão até as estruturas próximas |
-| Base inicial | estática | Player recebe essa Base no Asteroide mais proximo ao local de spawn inicial do player; recebe/envia cargas à Terra; recebe/envia cargas às estruturas; Hangar com 1 Vaga Expandida e 2 Vagas Normais |
-| Quartel-general | estático | fabrica todos os tipos de Naves; Hangar com 2 Vagas Expandidas e 4 Vagas normais; Pode Taxiar naves do Hangar para o local do Jogador |
+| Base inicial | estática | Player recebe essa Base no Asteroide mais proximo ao local de spawn inicial do player; recebe rações e pessoas da terra; envia minérios e pessoas para Terra; recebe/envia cargas com naves de transporte; Hangar com 1 Vaga Expandida e 4 Vagas Normais; Player pode solicitar Taxi de nave de transporte de um QG proximo |
+| Quartel-general | estático | fabrica todos os tipos de Naves; Hangar com 2 Vagas Expandidas e 4 Vagas normais; Pode Taxiar naves do Hangar para o local do Jogador; necessita ração para funcionar |
 | Asteroide | procgen | minerável, colonizável; estado só persiste se alterado |
-| Ceres | fixo | objetivo de conquista; fonte do mineral no núcleo |
+| Ceres | fixo | objetivo de conquista; fonte do mineral no núcleo; pode ter 6 colonias de jogadores; Fatias iguais; Jogadores podem conquistar colonias dos outros jogadores |
 
 Equipes: jogadores podem se aliar; `keepTeamsTogether` afeta spawn; regras de
 vitória em equipe são design de jogo (fase posterior a este documento).
@@ -210,6 +210,45 @@ vitória em equipe são design de jogo (fase posterior a este documento).
 No `sim-core`, entidades carregam apenas dados de gameplay (posição, raio de
 colisão, tipo, dono, HP, carga). **Nenhuma geometria de renderização** vive na
 simulação ou trafega pela rede.
+
+### 8.1 Economia física (logística)
+
+O minério **não** credita a carteira no local de mineração. O fluxo é físico e
+depende de transporte, o que dá papel real às estruturas e às naves de carga:
+
+```
+mineração (aranhas/builder) → oreStore LOCAL da estação
+oreStore → nave de transporte (cap TRANSPORT_CARGO_CAP)
+transporte → descarrega na base inicial → credita a carteira ("envio à Terra")
+```
+
+Rações fluem no sentido inverso, alimentando o interior do cinturão:
+
+```
+Terra → base inicial (BASE_RATION_INCOME contínuo, até RATION_STORE_CAP)
+base → transporte OU drones do centro de distribuição
+→ rationStore das estruturas próprias no alcance
+```
+
+Estados sincronizados que sustentam o loop: `oreStore`/`rationStore` por
+estrutura e `cargoKind`/`cargoAmount` por nave. O comando de carga/descarga
+(`MSG_CARGO`) é sem payload — o **contexto** (classe da estrutura ancorada e o
+que está no porão) decide a operação. Os drones de ração são lançados pelo
+servidor em linha reta sem colisão; não são naves com IA.
+
+> **Consumo de rações** (estação/QG "necessitam ração para funcionar") e a
+> **conquista de colônias em Ceres** ainda são intenção de design — os estados
+> existem, mas nenhuma regra os consome ou gera derrota por falta ainda.
+
+### 8.2 Combate
+
+A nave de ataque dispara dois tipos de projétil, sincronizados como entidades
+próprias (mapa `projectiles`): **perfurante** (`bullet`, alcance/dano fixos,
+some ao percorrer `BULLET_RANGE`) e **granada** (`grenade`, detona por
+proximidade com dano em área decrescente pelo raio). HP, munição e cooldowns
+vivem no `sim-core`; a autoridade de colisão e destruição é do servidor. Ao
+destruir a nave ativa de um jogador, o controle é transferido para outra nave
+da frota (mesma lógica de `onLeave`/táxi).
 
 ## 9. Renderização e arte
 
@@ -240,6 +279,13 @@ sim-core (estado planar) ──► client-web  : Phaser, câmera topdown 2D
 
 O gameplay é idêntico nas duas versões; muda somente a apresentação.
 
+No `client-web`, a apresentação já é modular: `GameScene` orquestra a cena e o
+netcode, mas delega o desenho a renderers dedicados em `client-web/src/render/`
+(um por família de entidade — nave, asteroide, estrutura, planeta — mais HUD,
+efeitos, paleta e cache de texturas). A cena não conhece detalhe de desenho;
+isso mantém a fronteira lógica × apresentação nítida e antecipa a troca por um
+renderer 3D no desktop.
+
 ## 10. Roteiro de implementação
 
 1. **Fase 1 — esqueleto do modo partida** (valida o netcode):
@@ -247,13 +293,15 @@ O gameplay é idêntico nas duas versões; muda somente a apresentação.
    (tick, movimento de nave, mineração mínima) + `server/` (sala Colyseus,
    spawn `neighboring`, interest management básico) + `client-web/`
    (pilotar nave wireframe, ver asteroides procgen, 2+ jogadores sincronizados).
-2. **Fase 2 — economia e construção**: estruturas, produção no QG, envio de cargas 
-   com drones e naves de transporte, mineradores autônomos na estação de mineração,
-   naves de ataque autônomos em ronda.
-3. **Fase 3 — combate e equipes**: naves de ataque, dano, alianças, condição
-   de vitória (conquista de Ceres).
+2. **Fase 2 — economia e construção** (implementada): estruturas (QG, estação,
+   base inicial, centro de rações), produção no QG, logística física de minério
+   e rações (§8.1) com drones e naves de transporte, mineradores autônomos
+   (aranhas) na estação.
+3. **Fase 3 — combate e equipes** (parcial): nave de ataque pilotável com
+   perfurante e granada + dano/destruição (§8.2) já existem; **faltam** alianças,
+   consumo de rações e a condição de vitória (conquista de Ceres).
 4. **Fase 4 — universo persistente**: banco de dados, save/load
-   (semente + deltas), sala contínua.
+   (semente + deltas), sala contínua, status de players online e bots online, janela com estatistica dos players e bots.
 5. **Fase 5 — cliente desktop 3D** (Godot + colyseus-godot), consumindo o
    servidor existente sem alterações de backend.
 

@@ -30,6 +30,26 @@ export class ShipSchema extends Schema {
   @type("float32") landingOriginX = 0;
   @type("float32") landingOriginY = 0;
   @type("float32") landingAsteroidSpin = 0;
+  /** porão de carga (transporte): "" | "ore" | "rations" + quantidade */
+  @type("string") cargoKind = "";
+  @type("float32") cargoAmount = 0;
+  @type("float32") hp = 100;
+  @type("uint8") ammo = 0;
+  @type("uint8") grenadeAmmo = 0;
+}
+
+export class ProjectileSchema extends Schema {
+  /** "bullet" | "grenade" */
+  @type("string") kind = "bullet";
+  @type("string") owner = "";
+  @type("int32") sx = 0;
+  @type("int32") sy = 0;
+  @type("float32") x = 0;
+  @type("float32") y = 0;
+  @type("float32") vx = 0;
+  @type("float32") vy = 0;
+  /** distância percorrida (para expirar o perfurante) */
+  @type("float32") traveled = 0;
 }
 
 export class PlayerSchema extends Schema {
@@ -53,6 +73,10 @@ export class StructureSchema extends Schema {
   @type("uint8") spiderBays = 0;
   @type("uint8") nextShipBay = 0;
   @type("uint8") nextSpiderBay = 0;
+  /** minério LOCAL da estação (aguardando transporte) */
+  @type("float32") oreStore = 0;
+  /** rações em estoque (base recebe da Terra; QG/estação recebem por transporte) */
+  @type("float32") rationStore = 0;
 }
 
 export class MatchState extends Schema {
@@ -64,4 +88,5 @@ export class MatchState extends Schema {
   @type({ map: ShipSchema }) ships = new MapSchema<ShipSchema>();
   @type({ map: StructureSchema }) structures = new MapSchema<StructureSchema>();
   @type({ map: PlayerSchema }) players = new MapSchema<PlayerSchema>();
+  @type({ map: ProjectileSchema }) projectiles = new MapSchema<ProjectileSchema>();
 }
