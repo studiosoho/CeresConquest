@@ -9,7 +9,7 @@ import { GlowLayer } from "@babylonjs/core/Layers/glowLayer";
 import { PointsCloudSystem } from "@babylonjs/core/Particles/pointsCloudSystem";
 import type { CloudPoint } from "@babylonjs/core/Particles/cloudPoint";
 import {
-  DEFAULT_PORT,
+  SERVER_LOCATION,
   MSG_INPUT,
   MSG_PRODUCE,
   MSG_ANCHOR,
@@ -259,7 +259,9 @@ export class GameScene {
       { passive: false },
     );
 
-    const endpoint = `ws://${location.hostname}:${DEFAULT_PORT}`;
+    // Render (e qualquer PaaS equivalente) só expõe a porta 443 publicamente;
+    // a porta interna do servidor (DEFAULT_PORT) nunca entra na URL pública.
+    const endpoint = `https://${SERVER_LOCATION}`;
     const client = new Client(endpoint);
     try {
       this.room = await client.joinOrCreate("match");
