@@ -28,5 +28,7 @@ export const MINING_RATE = 25; // minério/s
 
 // ── Rede ──────────────────────────────────────────────────────────────
 export const TICK_RATE = 20; // ticks de simulação por segundo no servidor
-export const SERVER_LOCATION = "ceresconquestalfa.onrender.com"
+export const SERVER_LOCATION_PROD = "https://ceresconquestalfa.onrender.com"
+export const SERVER_LOCATION = 'ws://localhost'
+
 export const DEFAULT_PORT = 2567;

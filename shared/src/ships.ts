@@ -92,7 +92,7 @@ export const TAXI_SPEED_MULT = 2;
 
 // ── Combate (nave de ataque) ──────────────────────────────────────────
 /** Velocidade do projétil perfurante (unidades/s). */
-export const BULLET_SPEED = 12_000;
+export const BULLET_SPEED = 1_000;
 /** Alcance máximo do projétil perfurante antes de sumir (unidades). */
 export const BULLET_RANGE = 8_000;
 /** Raio de detecção de colisão do projétil. */
@@ -102,16 +102,16 @@ export const BULLET_DAMAGE = 25;
 /** Cooldown entre disparos perfurantes (s). */
 export const BULLET_COOLDOWN = 0.25;
 /** Estoque máximo de munição perfurante. */
-export const BULLET_AMMO_MAX = 60;
+export const BULLET_AMMO_MAX = 120;
 
 /** Velocidade da granada de proximidade (unidades/s). */
-export const GRENADE_SPEED = 5_000;
+export const GRENADE_SPEED = 1_000;
 /** Raio de detonação por proximidade (unidades). */
 export const GRENADE_PROX_RADIUS = 120;
 /** Raio de dano da explosão (unidades). */
 export const GRENADE_BLAST_RADIUS = 300;
 /** Dano máximo da granada (no centro da explosão). */
-export const GRENADE_DAMAGE = 80;
+export const GRENADE_DAMAGE = 120;
 /** Cooldown entre granadas (s). */
 export const GRENADE_COOLDOWN = 2.0;
 /** Estoque máximo de granadas. */

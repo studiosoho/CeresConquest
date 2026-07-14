@@ -147,6 +147,20 @@ export class HudRenderer {
     document.body.appendChild(this.root);
   }
 
+  /**
+   * Moldura do viewport do cockpit (câmera de primeira pessoa). Recebe as
+   * MESMAS frações do Viewport do Babylon (y a partir de baixo) — o canvas
+   * ocupa a janela inteira, então frações do canvas = porcentagens CSS.
+   */
+  initCockpitFrame(view: { left: number; bottom: number; width: number; height: number }): void {
+    const frame = document.createElement("div");
+    frame.style.cssText =
+      `position:absolute;left:${view.left * 100}%;bottom:${view.bottom * 100}%;` +
+      `width:${view.width * 100}%;height:${view.height * 100}%;` +
+      `border:1px solid ${cssColor(Palette.ui.minimapBorder, 0.8)};box-sizing:border-box;`;
+    this.root.appendChild(frame);
+  }
+
   // ── painel de status ──────────────────────────────────────────────
 
   drawStatus(ship: HudShipData, ctx: HudContextData): void {

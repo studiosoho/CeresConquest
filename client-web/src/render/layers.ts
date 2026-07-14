@@ -20,3 +20,17 @@ export const EFFECTS_LAYER_Z = -(ROCK_FRONT_REACH + 15);
 export const SHIP_LAYER_Z = -(ROCK_FRONT_REACH + 18);
 /** nave própria — destacada sobre as demais */
 export const SHIP_TOP_LAYER_Z = SHIP_LAYER_Z - 2;
+
+// ── máscaras de camada (multi-câmera) ────────────────────────────────
+// A câmera principal (top-down) fica na máscara default do Babylon
+// (0x0FFFFFFF). A câmera de cockpit vê o mundo MENOS os meshes marcados
+// MAIN_ONLY (nave própria — as linhas coladas no olho só sujariam a vista —
+// e as estrelas, que são um plano e de lado viram um risco) e MAIS os
+// meshes exclusivos dela (pano de fundo opaco do viewport).
+
+/** meshes visíveis SÓ na câmera principal (bit dentro da máscara default) */
+export const MASK_MAIN_ONLY = 0x2;
+/** meshes visíveis SÓ na câmera de cockpit (bit fora da máscara default) */
+export const MASK_FP_ONLY = 0x10000000;
+/** máscara da câmera de cockpit */
+export const FP_CAMERA_MASK = (0x0fffffff & ~MASK_MAIN_ONLY) | MASK_FP_ONLY;

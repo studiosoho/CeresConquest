@@ -196,7 +196,7 @@ export class MatchRoom extends Room<MatchState> {
   onJoin(client: Client) {
     const base = this.spawns[this.spawnIndex++ % this.spawns.length];
     const id = `p${this.shipSeq++}`;
-    const ship = this.spawnShip(id, base, client.sessionId, "builder");
+    const ship = this.spawnShip(id, base, client.sessionId, "attack"); // default: builder
     this.activeShip.set(client.sessionId, id);
     // espelha a posição de spawn JÁ no join — o primeiro estado que o
     // cliente recebe precisa ser real, não os defaults do schema

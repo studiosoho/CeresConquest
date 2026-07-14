@@ -3,13 +3,20 @@ import type { Engine } from "@babylonjs/core/Engines/engine";
 import type { Scene } from "@babylonjs/core/scene";
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
 import { Camera } from "@babylonjs/core/Cameras/camera";
-import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { Color4 } from "@babylonjs/core/Maths/math.color";
+import { Vector3, Quaternion } from "@babylonjs/core/Maths/math.vector";
+import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { GlowLayer } from "@babylonjs/core/Layers/glowLayer";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
+import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { SpotLight } from "@babylonjs/core/Lights/spotLight";
+import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
 import { PointsCloudSystem } from "@babylonjs/core/Particles/pointsCloudSystem";
 import type { CloudPoint } from "@babylonjs/core/Particles/cloudPoint";
 import {
-  SERVER_LOCATION,
+  SERVER_LOCATION_PROD,
+  // SERVER_LOCATION,
+  // DEFAULT_PORT,
   MSG_INPUT,
   MSG_PRODUCE,
   MSG_ANCHOR,
@@ -47,6 +54,7 @@ import {
 } from "@ceres/sim-core";
 import { Palette } from "../render/Palette";
 import { toScene } from "../render/coords";
+import { MASK_MAIN_ONLY, MASK_FP_ONLY, FP_CAMERA_MASK } from "../render/layers";
 import { c3 } from "../render/lineUtils";
 import { KeyInput } from "../input";
 import { MeshFactory } from "../render/MeshFactory";
@@ -75,6 +83,50 @@ const ZOOM_MAX = 3;
 const ZOOM_WHEEL_STEP = 1.15;
 const ZOOM_KEY_STEP = 1.03;
 const ZOOM_SMOOTH = 0.15;
+
+// ── câmera de cockpit (primeira pessoa) ──
+/** viewport do cockpit em frações do canvas (y a partir de BAIXO, como o
+ *  Viewport do Babylon) — a moldura DOM do HUD usa as mesmas frações */
+const FP_VIEW = { left: 0.37, bottom: 0.02, width: 0.26, height: 0.30 };
+/** leve pitch do olho para cima (rad) — levanta o horizonte, mostra mais
+ *  do campo à frente em vez de só o dorso das rochas no rodapé */
+const FP_EYE_PITCH = 0.05;
+
+// ── farol (spotlight) da nave própria ──
+/** meia-abertura do cone (rad) */
+const HEADLIGHT_ANGLE = 0.99;
+/** decaimento angular do cone (maior = borda mais dura) */
+const HEADLIGHT_EXPONENT = 6;
+const HEADLIGHT_INTENSITY = 5.0;
+/** alcance em unidades de mundo (asteroides grandes ficam a ~2000) */
+const HEADLIGHT_RANGE = 2000;
+/** inclinação do cone para cima (rad): −Z local = "cima" na vista do
+ *  cockpit, aponta um pouco acima do centro dos asteroides à frente */
+const HEADLIGHT_PITCH = 0.22;
+
+/**
+ * Máscara do cone (cookie/gobo do spotlight): gradiente radial branco→preto
+ * numa DynamicTexture — sem asset externo. Preto nas bordas = luz cortada,
+ * dando ao cone um recorte suave em vez de um disco duro.
+ */
+function makeConeMask(scene: Scene): DynamicTexture {
+  const size = 256;
+  const tex = new DynamicTexture("headlightMask", size, scene, false);
+  const ctx = tex.getContext() as unknown as CanvasRenderingContext2D;
+  const r = size / 2;
+  const grad = ctx.createRadialGradient(r, r, 0, r, r, r);
+  grad.addColorStop(0, "#ffffff");
+  grad.addColorStop(0.55, "#cfe4ff");
+  grad.addColorStop(1, "#000000");
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(r, r, r, 0, Math.PI * 2);
+  ctx.fill();
+  tex.update();
+  return tex;
+}
 
 /**
  * Número de estrelas de fundo geradas por setor. Poucas e discretas:
@@ -161,6 +213,10 @@ export class GameScene {
   private bScene: Scene;
   private canvas: HTMLCanvasElement;
   private camera: FreeCamera;
+  /** câmera de cockpit (primeira pessoa) — viewport no rodapé central */
+  private fpCamera: FreeCamera;
+  /** farol da nave própria — cone que ilumina asteroides/estruturas à frente */
+  private headlight!: SpotLight;
   private glow: GlowLayer;
 
   private room!: Room;
@@ -232,8 +288,76 @@ export class GameScene {
     this.camera.maxZ = 5000;
     this.updateOrtho();
 
-    this.glow = new GlowLayer("glow", scene);
+    // glow amarrado à câmera principal: sem isso o composite de tela cheia
+    // do EffectLayer também seria aplicado dentro do viewport do cockpit
+    this.glow = new GlowLayer("glow", scene, { camera: this.camera });
     this.glow.intensity = 1.4;
+
+    // câmera de cockpit (primeira pessoa): perspectiva, presa à cabine da
+    // nave própria (parent atribuído por frame em draw()), olhando pelo
+    // nariz (+X local) com horizonte nivelado no plano de jogo (up = −Z,
+    // em direção à câmera principal) — "ângulo z = 0"
+    this.fpCamera = new FreeCamera("fpCam", Vector3.Zero(), scene);
+    this.fpCamera.minZ = 2;
+    this.fpCamera.maxZ = 5000;
+    // rotação fixa no quadro local da nave: visada (+Z da câmera) → nariz
+    // (+X) e topo da câmera (+Y) → −Z (em direção à câmera principal).
+    // Quaternion explícito: Quaternion.FromLookDirectionLH devolve a visada
+    // INVERTIDA para este par (validado ao vivo — olhava pela cauda).
+    // Composto com um leve pitch em torno do eixo direito local (Xcam) para
+    // levantar o horizonte (sinal validado ao vivo).
+    const fpBase = new Quaternion(0.5, -0.5, 0.5, -0.5);
+    const fpPitch = Quaternion.RotationAxis(new Vector3(1, 0, 0), -FP_EYE_PITCH);
+    this.fpCamera.rotationQuaternion = fpBase.multiply(fpPitch);
+    this.fpCamera.layerMask = FP_CAMERA_MASK;
+    // recorte retangular no rodapé central do canvas (moldura vem do HUD)
+    this.fpCamera.viewport.x = FP_VIEW.left;
+    this.fpCamera.viewport.y = FP_VIEW.bottom;
+    this.fpCamera.viewport.width = FP_VIEW.width;
+    this.fpCamera.viewport.height = FP_VIEW.height;
+    // multi-câmera: a principal desenha a tela toda, o cockpit por cima
+    scene.activeCameras = [this.camera, this.fpCamera];
+
+    // pano de fundo opaco do cockpit: sem ele o viewport deixaria vazar a
+    // imagem da câmera principal onde o cockpit não desenha nada (a cor de
+    // fundo da cena só é limpa antes da PRIMEIRA câmera). Quad preto a
+    // 4500 unidades à frente, visível só na máscara do cockpit.
+    const backdrop = new Mesh("fpBackdrop", scene);
+    const bd = new VertexData();
+    const S = 15_000;
+    bd.positions = [-S, -S, 4500, S, -S, 4500, S, S, 4500, -S, S, 4500];
+    bd.indices = [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2]; // dupla face
+    bd.applyToMesh(backdrop);
+    const bdMat = new StandardMaterial("fpBackdropMat", scene);
+    bdMat.disableLighting = true; // emissivo preto default → preto chapado
+    backdrop.material = bdMat;
+    backdrop.parent = this.fpCamera;
+    backdrop.layerMask = MASK_FP_ONLY;
+    backdrop.isPickable = false;
+
+    // farol da nave própria: cone de luz saindo pelo nariz (+X local) que
+    // ilumina os materiais STANDARD à frente (asteroides/estruturas) — o
+    // wireframe emissivo das naves não responde a luz. `projectionTexture`
+    // é a MÁSCARA (cookie/gobo) que molda o cone: um gradiente radial suave
+    // gerado em runtime (sem asset externo). Uma única luz na nave própria:
+    // asteroides/estruturas ficam em 2 luzes (limite padrão 4). O parent é
+    // atribuído por frame em draw() (mesma cabine que a câmera de cockpit).
+    this.headlight = new SpotLight(
+      "headlight",
+      new Vector3(0, 0, 0),
+      // nariz (+X) inclinado um pouco para cima (−Z local): mira acima do
+      // centro dos asteroides à frente, não o dorso na base da vista
+      new Vector3(Math.cos(HEADLIGHT_PITCH), 0, -Math.sin(HEADLIGHT_PITCH)),
+      HEADLIGHT_ANGLE,
+      HEADLIGHT_EXPONENT,
+      scene,
+    );
+    this.headlight.intensity = HEADLIGHT_INTENSITY;
+    this.headlight.range = HEADLIGHT_RANGE;
+    this.headlight.diffuse = new Color3(0.7, 0.85, 1);
+    this.headlight.specular = Color3.Black();
+    this.headlight.projectionTexture = makeConeMask(scene);
+    this.headlight.projectionTextureUpDirection = new Vector3(0, 0, -1);
 
     this.keys = new KeyInput();
   }
@@ -247,6 +371,7 @@ export class GameScene {
     this.structureRenderer = new StructureRenderer(this.bScene, this.glow);
     this.effectsRenderer = new EffectsRenderer(this.bScene, this.glow);
     this.hudRenderer = new HudRenderer();
+    this.hudRenderer.initCockpitFrame(FP_VIEW);
 
     // zoom pela roda do mouse
     this.canvas.addEventListener(
@@ -261,7 +386,8 @@ export class GameScene {
 
     // Render (e qualquer PaaS equivalente) só expõe a porta 443 publicamente;
     // a porta interna do servidor (DEFAULT_PORT) nunca entra na URL pública.
-    const endpoint = `https://${SERVER_LOCATION}`;
+    //const endpoint = `${SERVER_LOCATION}:${DEFAULT_PORT}`;
+    const endpoint = `${SERVER_LOCATION_PROD}`;
     const client = new Client(endpoint);
     try {
       this.room = await client.joinOrCreate("match");
@@ -691,6 +817,9 @@ export class GameScene {
       this.starPcs?.dispose();
       this.starPcs = pcs;
       mesh.isPickable = false;
+      // estrelas moram num plano (z fixo): de lado, no cockpit, virariam
+      // um risco de pontos — só a câmera principal as vê
+      mesh.layerMask = MASK_MAIN_ONLY;
     });
   }
 
@@ -719,6 +848,18 @@ export class GameScene {
     const camPos = toScene(own.x, own.y);
     this.camera.position.x = camPos.x;
     this.camera.position.y = camPos.y;
+
+    // cockpit: prende a câmera de primeira pessoa à cabine da nave própria
+    // (o root muda quando a malha é recriada na troca de classe; o olho
+    // muda com a classe — reatribuir por frame é barato e cobre os dois)
+    const cockpit = this.shipRenderer.getCockpit(this.myShipId);
+    if (cockpit) {
+      if (this.fpCamera.parent !== cockpit.root) this.fpCamera.parent = cockpit.root;
+      this.fpCamera.position.copyFromFloats(cockpit.eye.x, cockpit.eye.y, cockpit.eye.z);
+      // farol na mesma cabine, emitindo pelo nariz (direção +X já fixada)
+      if (this.headlight.parent !== cockpit.root) this.headlight.parent = cockpit.root;
+      this.headlight.position.copyFromFloats(cockpit.eye.x, cockpit.eye.y, cockpit.eye.z);
+    }
 
     const zoom = this.zoom;
 

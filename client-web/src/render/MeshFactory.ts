@@ -55,6 +55,11 @@ export class ShipMeshInstance {
     this.root.position.z = z;
   }
 
+  /** Máscara de camada (visibilidade por câmera — ver render/layers.ts). */
+  setLayerMask(mask: number): void {
+    this.mesh.layerMask = mask;
+  }
+
   dispose(): void {
     // disciplina de dispose: glow, malha E material — senão vaza GPU
     this.glow.unReferenceMeshFromUsingItsOwnMaterial(this.mesh);

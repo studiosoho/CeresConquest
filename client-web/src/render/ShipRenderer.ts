@@ -7,9 +7,11 @@
  */
 
 import type { ShipKind } from "@ceres/shared";
+import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { MeshFactory, type ShipMeshInstance } from "./MeshFactory";
+import { shipMeshData } from "./ShipMeshGenerator";
 import { toScene, toSceneAngle } from "./coords";
-import { SHIP_LAYER_Z, SHIP_TOP_LAYER_Z } from "./layers";
+import { SHIP_LAYER_Z, SHIP_TOP_LAYER_Z, MASK_MAIN_ONLY } from "./layers";
 
 /** Dados mínimos que o renderer precisa de uma nave. */
 export interface ShipRenderData {
@@ -31,6 +33,8 @@ interface MeshEntry {
 export class ShipRenderer {
   private factory: MeshFactory;
   private entries = new Map<string, MeshEntry>();
+  /** id da nave destacada (própria) — reaplicado quando a malha é recriada */
+  private topId: string | null = null;
 
   constructor(factory: MeshFactory) {
     this.factory = factory;
@@ -53,6 +57,8 @@ export class ShipRenderer {
     instance.setDepthBias(SHIP_LAYER_Z);
     const entry: MeshEntry = { instance, kind: data.kind, visible: true };
     this.entries.set(id, entry);
+    // troca de classe recria a malha — o destaque de nave própria persiste
+    if (id === this.topId) this.applyTop(instance);
     this.applyData(entry, data);
   }
 
@@ -80,7 +86,25 @@ export class ShipRenderer {
 
   /** Destaca a nave (própria) por cima das demais. */
   bringToTop(id: string): void {
-    this.entries.get(id)?.instance.setDepthBias(SHIP_TOP_LAYER_Z);
+    this.topId = id;
+    const instance = this.entries.get(id)?.instance;
+    if (instance) this.applyTop(instance);
+  }
+
+  /**
+   * Ponto de vista do cockpit da nave: nó raiz (para parentar a câmera de
+   * primeira pessoa) + posição do olho no quadro local, conforme a classe.
+   */
+  getCockpit(id: string): { root: TransformNode; eye: { x: number; y: number; z: number } } | null {
+    const entry = this.entries.get(id);
+    if (!entry) return null;
+    return { root: entry.instance.root, eye: shipMeshData(entry.kind).eye };
+  }
+
+  private applyTop(instance: ShipMeshInstance): void {
+    instance.setDepthBias(SHIP_TOP_LAYER_Z);
+    // some da câmera de cockpit: as próprias linhas coladas no olho só sujam
+    instance.setLayerMask(MASK_MAIN_ONLY);
   }
 
   /** Destrói todas as malhas. */

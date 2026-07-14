@@ -47,7 +47,18 @@ const PLAN_RADIUS: Record<ShipKind, number> = {
 export interface ShipMeshData {
   /** segmentos de ARESTA (x1,y1,z1,x2,y2,z2 por segmento), espaço de cena */
   segments: number[];
+  /** ponto de vista do cockpit (dentro da cabine), no quadro local da nave */
+  eye: { x: number; y: number; z: number };
 }
+
+/** olho do piloto por classe, no quadro do PROTÓTIPO (dentro do vidro da
+ *  cabine: offset do módulo + altura de olho) — convertido em `finalize` */
+const CABIN_EYE: Record<ShipKind, { x: number; y: number; z: number }> = {
+  builder: { x: 0, y: 0.45, z: 2.8 },
+  mining: { x: 0, y: 0.45, z: 1.6 },
+  attack: { x: 0, y: 0.55, z: 2.6 },
+  transport: { x: 0, y: 0.45, z: 2.8 },
+};
 
 // ── acumulador de geometria ────────────────────────────────────────────
 
@@ -314,7 +325,11 @@ function finalize(a: Acc, kind: ShipKind): ShipMeshData {
     out[i + 1] = p[i] * s;
     out[i + 2] = -p[i + 1] * zs;
   }
-  return { segments: extractEdges(out, a.indices) };
+  const e = CABIN_EYE[kind];
+  return {
+    segments: extractEdges(out, a.indices),
+    eye: { x: e.z * s, y: e.x * s, z: -e.y * zs },
+  };
 }
 
 /**
