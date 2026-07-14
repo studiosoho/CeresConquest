@@ -70,7 +70,7 @@ import { computeBotInput, computeTaxiInput, makeBotState, type BotState } from "
 import { makeSpiderState, stepSpider, type SpiderState } from "../spiders";
 
 /** Nº de jogadores-teste autônomos (bots) por padrão. */
-const DEFAULT_BOTS = 10;
+const DEFAULT_BOTS = 30;
 
 export interface MatchOptions {
   maxPlayers?: number;

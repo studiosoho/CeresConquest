@@ -1,0 +1,1244 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visualizador de Naves Modulares - BabylonJS</title>
+    <!-- Tailwind CSS para Estilização do Painel de Controle -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Babylon.js Core Engine -->
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <!-- Fontes do Google para estilo Sci-fi -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Rajdhani', sans-serif;
+            background-color: #030712;
+            overflow: hidden;
+        }
+        .scifi-font {
+            font-family: 'Orbitron', sans-serif;
+        }
+        /* Custom scrollbar para painéis */
+        ::-webkit-scrollbar {
+            width: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(31, 41, 55, 0.5);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(6, 182, 212, 0.5);
+            border-radius: 2px;
+        }
+    </style>
+</head>
+<body class="text-gray-100 h-screen w-screen flex flex-col md:flex-row select-none">
+
+    <!-- Painel Lateral Esquerdo: Presets & Controles Gerais -->
+    <div class="w-full md:w-80 bg-slate-950/90 border-b md:border-b-0 md:border-r border-cyan-500/20 p-4 flex flex-col justify-between z-10 overflow-y-auto shrink-0">
+        <div>
+            <div class="flex items-center gap-2 mb-4">
+                <div class="w-3 h-3 rounded-full bg-cyan-400 animate-pulse"></div>
+                <h1 class="text-lg font-bold tracking-widest text-cyan-400 scifi-font uppercase">CONCEITO MODULAR</h1>
+            </div>
+            <p class="text-xs text-gray-400 mb-6 leading-relaxed">
+                Protótipo de montagem de chassis aeroespaciais integrados. Alterne entre as classes ou utilize os controles para customização modular.
+            </p>
+
+            <!-- Seleção de Presets -->
+            <div class="mb-6">
+                <span class="text-xs font-bold tracking-wider text-cyan-500/80 block mb-2 uppercase">Classes de Naves</span>
+                <div class="space-y-2">
+                    <button onclick="loadPreset('construtora')" id="btn-construtora" class="w-full text-left p-3 rounded bg-slate-900 border border-cyan-500/30 hover:border-cyan-400 transition flex items-center justify-between">
+                        <div>
+                            <span class="text-sm font-bold text-cyan-400 block">Nave Construtora</span>
+                            <span class="text-[10px] text-gray-400">Engenharia, Braços e Guindaste</span>
+                        </div>
+                        <span class="text-xs text-cyan-500 font-mono">#01</span>
+                    </button>
+                    <button onclick="loadPreset('mineradora')" id="btn-mineradora" class="w-full text-left p-3 rounded bg-slate-900 border border-green-500/30 hover:border-green-400 transition flex items-center justify-between">
+                        <div>
+                            <span class="text-sm font-bold text-green-400 block">Nave Mineradora</span>
+                            <span class="text-[10px] text-gray-400">Extração de Recursos e Broca</span>
+                        </div>
+                        <span class="text-xs text-green-500 font-mono">#02</span>
+                    </button>
+                    <button onclick="loadPreset('aranha')" id="btn-aranha" class="w-full text-left p-3 rounded bg-slate-900 border border-yellow-500/30 hover:border-yellow-400 transition flex items-center justify-between">
+                        <div>
+                            <span class="text-sm font-bold text-yellow-400 block">Mineradora (Aranha)</span>
+                            <span class="text-[10px] text-gray-400">Operação em Superfícies</span>
+                        </div>
+                        <span class="text-xs text-yellow-500 font-mono">#03</span>
+                    </button>
+                    <button onclick="loadPreset('ataque')" id="btn-ataque" class="w-full text-left p-3 rounded bg-slate-900 border border-red-500/30 hover:border-red-400 transition flex items-center justify-between">
+                        <div>
+                            <span class="text-sm font-bold text-red-400 block">Nave de Ataque</span>
+                            <span class="text-[10px] text-gray-400">Armamento Pesado e Caça</span>
+                        </div>
+                        <span class="text-xs text-red-500 font-mono">#04</span>
+                    </button>
+                    <button onclick="loadPreset('transporte')" id="btn-transporte" class="w-full text-left p-3 rounded bg-slate-900 border border-indigo-500/30 hover:border-indigo-400 transition flex items-center justify-between">
+                        <div>
+                            <span class="text-sm font-bold text-indigo-400 block">Nave de Transporte</span>
+                            <span class="text-[10px] text-gray-400">Containers e Alta Carga</span>
+                        </div>
+                        <span class="text-xs text-indigo-500 font-mono">#05</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Controles Gerais -->
+            <div class="space-y-4 border-t border-slate-800 pt-4">
+                <div>
+                    <div class="flex justify-between text-xs mb-1">
+                        <span class="text-gray-400 uppercase">Visualização Explodida</span>
+                        <span id="exploded-val" class="font-mono text-cyan-400 font-bold">0%</span>
+                    </div>
+                    <input type="range" id="exploded-slider" min="0" max="100" value="0" class="w-full accent-cyan-500 bg-slate-800 rounded-lg appearance-none h-1.5 cursor-pointer">
+                </div>
+
+                <div>
+                    <span class="text-xs font-bold tracking-wider text-cyan-500/80 block mb-2 uppercase">Modo de Exibição</span>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="setRenderMode('hologram')" id="btn-holo" class="py-2 text-xs font-bold rounded border bg-cyan-950/40 border-cyan-500 text-cyan-400 uppercase tracking-widest">Holograma</button>
+                        <button onclick="setRenderMode('solid')" id="btn-solid" class="py-2 text-xs font-bold rounded border bg-slate-900 border-slate-700 text-gray-400 uppercase tracking-widest">Metal Low-Poly</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="text-[10px] text-slate-500 font-mono mt-4 pt-4 border-t border-slate-900">
+            SISTEMA MODULAR V1.5 • BABYLON.JS ENGINE
+        </div>
+    </div>
+
+    <!-- Área de Exibição 3D Principal -->
+    <div class="flex-1 relative h-2/3 md:h-full">
+        <canvas id="renderCanvas" class="w-full h-full block outline-none"></canvas>
+
+        <!-- Indicador Técnico Flutuante -->
+        <div class="absolute top-4 right-4 bg-slate-950/80 border border-cyan-500/20 p-4 rounded text-xs pointer-events-none max-w-xs font-mono backdrop-blur-sm hidden sm:block">
+            <div class="text-cyan-400 font-bold border-b border-cyan-500/20 pb-1 mb-2">TELEMETRIA INTEGRADA</div>
+            <div class="grid grid-cols-2 gap-y-1 gap-x-4">
+                <span class="text-gray-500">CONEXÕES DE MÓDULO:</span> <span class="text-right text-gray-300">ESTÁVEIS</span>
+                <span class="text-gray-500">ESTRUTURA DE SPINA:</span> <span class="text-right text-gray-300">SISTEMA INTEGRADO</span>
+                <span class="text-gray-500">MÓDULOS ATIVOS:</span> <span id="telemetry-modules-count" class="text-right text-cyan-400">0 / 0</span>
+                <span class="text-gray-500">CONSUMO ENERGIA:</span> <span id="telemetry-power" class="text-right text-amber-400">120 GW</span>
+            </div>
+        </div>
+
+        <!-- Legenda Inferior de Visualização -->
+        <div class="absolute bottom-4 left-4 bg-slate-950/80 border border-slate-800 p-3 rounded text-xs font-mono backdrop-blur-sm flex gap-4 items-center">
+            <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 bg-cyan-500 inline-block rounded-sm"></span> Cabine/Chassi</div>
+            <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 bg-indigo-500 inline-block rounded-sm"></span> Carga/Containers</div>
+            <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 bg-yellow-500 inline-block rounded-sm"></span> Especializados</div>
+            <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 bg-red-500 inline-block rounded-sm"></span> Armamento</div>
+        </div>
+    </div>
+
+    <!-- Painel Lateral Direito: Configurador Customizado (DIY) -->
+    <div class="w-full md:w-80 bg-slate-950/90 border-t md:border-t-0 md:border-l border-cyan-500/20 p-4 flex flex-col justify-between z-10 overflow-y-auto shrink-0">
+        <div>
+            <div class="flex items-center gap-2 mb-4 pb-2 border-b border-slate-800">
+                <svg class="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"></path></svg>
+                <h2 class="text-sm font-bold tracking-widest text-cyan-400 uppercase font-mono">CONFIGURADOR MANUAL</h2>
+            </div>
+
+            <div class="space-y-4">
+                <!-- Seletor de Cabine -->
+                <div>
+                    <label class="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">Módulo Frontal (Cabine)</label>
+                    <select id="sel-cabin" onchange="updateCustomShip()" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white outline-none focus:border-cyan-500">
+                        <option value="CabinModule">Cabine Padrão (CabinModule)</option>
+                        <option value="MiningDrillModule">Broca de Perfuração (MiningDrillModule)</option>
+                        <option value="None">Vazio</option>
+                    </select>
+                </div>
+
+                <!-- Seletor de Chassi/Spine -->
+                <div>
+                    <label class="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">Espinha Dorsal (SpineModule)</label>
+                    <select id="sel-spine" onchange="updateCustomShip()" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white outline-none focus:border-cyan-500">
+                        <option value="SpineModule">Chassi de Trilho Leve</option>
+                        <option value="SpineHeavyModule">Chassi Reforçado</option>
+                        <option value="None">Sem Chassi (Compacta)</option>
+                    </select>
+                </div>
+
+                <!-- Seletor Central (Carga / Equipamentos) -->
+                <div>
+                    <label class="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">Módulo Central (Carga)</label>
+                    <select id="sel-cargo" onchange="updateCustomShip()" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white outline-none focus:border-cyan-500">
+                        <option value="None">Nenhum</option>
+                        <option value="CargoModule">Módulo de Carga Leve</option>
+                        <option value="ContainerModule">Bloco Container Triplo</option>
+                        <option value="ConstructionDeckModule">Placas Pré-fabricadas</option>
+                    </select>
+                </div>
+
+                <!-- Seletor de Motores -->
+                <div>
+                    <label class="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">Módulo Traseiro (Motores)</label>
+                    <select id="sel-engines" onchange="updateCustomShip()" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white outline-none focus:border-cyan-500">
+                        <option value="EngineSmallModule">Motores Duplos Leves</option>
+                        <option value="EngineLargeModule">Motores Quadruplos Pesados</option>
+                        <option value="None">Sem Propulsão</option>
+                    </select>
+                </div>
+
+                <!-- Seletor de Acessórios Superiores -->
+                <div>
+                    <label class="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">Módulo Superior</label>
+                    <select id="sel-top" onchange="updateCustomShip()" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white outline-none focus:border-cyan-500">
+                        <option value="None">Nenhum</option>
+                        <option value="CraneModule">Guindaste Articulado</option>
+                        <option value="RadarModule">Sensores e Antena</option>
+                    </select>
+                </div>
+
+                <!-- Seletor de Acessórios Laterais -->
+                <div>
+                    <label class="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">Módulos Laterais</label>
+                    <select id="sel-sides" onchange="updateCustomShip()" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white outline-none focus:border-cyan-500">
+                        <option value="None">Nenhum</option>
+                        <option value="MechanicalArmModule">Garras Hidráulicas Simples</option>
+                        <option value="AranhaLegsModule">Pernas Articuladas (Aranha)</option>
+                        <option value="WingWeaponModule">Asas de Ataque com Armas</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-6 border-t border-slate-800 pt-4 flex flex-col gap-2">
+            <button onclick="resetToCustom()" class="w-full py-2 bg-slate-900 border border-cyan-500/40 text-cyan-400 font-bold text-xs uppercase tracking-wider rounded hover:bg-cyan-500/10 transition">
+                Resetar para Customizado
+            </button>
+            <p class="text-[10px] text-gray-400 leading-normal text-center">
+                Mude os seletores para sair dos presets de naves construídas e desenhar uma espaçonave híbrida.
+            </p>
+        </div>
+    </div>
+
+    <!-- Script de Execução Principal (BabylonJS e Lógica) -->
+    <script>
+        const canvas = document.getElementById("renderCanvas");
+        let engine;
+        let scene;
+        let camera;
+        let glowLayer;
+
+        // Controle de Estado da Aplicação
+        let activePreset = "construtora"; // construtora, mineradora, aranha, ataque, transporte, custom
+        let isHologram = true; 
+        let explodedFactor = 0.0; // 0.0 a 1.0 (para afastar os blocos)
+
+        // Estrutura para segurar as referências das malhas (Meshes) e seus offsets nativos
+        let currentShipRoot = null;
+        let shipParts = []; // Array de { mesh: Node, baseOffset: Vector3, explodeDirection: Vector3 }
+
+        // Cores do Projeto (Blueprint neon)
+        const COLOR_BLUE = new BABYLON.Color3(0, 0.8, 1);
+        const COLOR_GREEN = new BABYLON.Color3(0.1, 1, 0.2);
+        const COLOR_YELLOW = new BABYLON.Color3(1, 0.8, 0);
+        const COLOR_RED = new BABYLON.Color3(1, 0.1, 0.1);
+        const COLOR_STEEL = new BABYLON.Color3(0.5, 0.7, 0.9);
+
+        // Inicializa o Motor de Renderização do BabylonJS
+        window.addEventListener('DOMContentLoaded', () => {
+            engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+            createScene();
+
+            // Loop de Render
+            engine.runRenderLoop(() => {
+                if (scene && scene.activeCamera) {
+                    scene.render();
+                }
+            });
+
+            // Redimensionamento do Canvas adaptativo
+            window.addEventListener('resize', () => {
+                engine.resize();
+            });
+
+            // Inicializa a primeira nave (Construtora)
+            loadPreset('construtora');
+        });
+
+        // Configuração da Cena Principal
+        const createScene = () => {
+            scene = new BABYLON.Scene(engine);
+            scene.clearColor = new BABYLON.Color4(0.01, 0.03, 0.06, 1.0); // Fundo escuro espacial
+
+            // Câmera Orbital com limites e controles excelentes
+            camera = new BABYLON.ArcRotateCamera("Camera", -Math.PI/4, Math.PI/2.4, 11, new BABYLON.Vector3(0, 0, 0), scene);
+            camera.attachControl(canvas, true);
+            camera.wheelPrecision = 40;
+            camera.lowerRadiusLimit = 4;
+            camera.upperRadiusLimit = 25;
+
+            // Iluminação Clássica
+            const light1 = new BABYLON.HemisphericLight("light1", new BABYLON.Vector3(1, 1, 0), scene);
+            light1.intensity = 0.6;
+            const light2 = new BABYLON.DirectionalLight("dirLight", new BABYLON.Vector3(-1, -2, -1), scene);
+            light2.position = new BABYLON.Vector3(10, 20, 10);
+            light2.intensity = 1.0; // Intensidade um pouco maior para valorizar o metal
+
+            // Adiciona camada de brilho neon (Glow Layer) para o efeito holográfico perfeito
+            glowLayer = new BABYLON.GlowLayer("glow", scene);
+            glowLayer.intensity = 0.95;
+
+            // Adiciona uma grade sutil no plano inferior (Grid Holográfico)
+            createFloorGrid();
+        };
+
+        // Cria uma grade espacial abaixo do modelo
+        const createFloorGrid = () => {
+            const gridContainer = new BABYLON.TransformNode("gridContainer", scene);
+            gridContainer.position.y = -3;
+
+            const gridColor = new BABYLON.Color3(0, 0.3, 0.5);
+            const gridMat = new BABYLON.StandardMaterial("gridMat", scene);
+            gridMat.emissiveColor = gridColor;
+            gridMat.wireframe = true;
+
+            const grid = BABYLON.MeshBuilder.CreateGround("floorGrid", { width: 30, height: 30, subdivisions: 30 }, scene);
+            grid.material = gridMat;
+            grid.parent = gridContainer;
+            
+            // Sutil desvanecimento para as bordas não ficarem duras
+            gridMat.alpha = 0.15;
+        };
+
+        // Material Generator dinâmico baseado na cor e modo
+        const getMaterialForModule = (color) => {
+            const matName = `mat_${color.r}_${color.g}_${color.b}_${isHologram ? 'holo' : 'solid'}`;
+            let existingMat = scene.getMaterialByName(matName);
+            if (existingMat) return existingMat;
+
+            const mat = new BABYLON.StandardMaterial(matName, scene);
+
+            if (isHologram) {
+                mat.diffuseColor = new BABYLON.Color3(0, 0, 0);
+                mat.specularColor = new BABYLON.Color3(0, 0, 0);
+                mat.emissiveColor = color;
+                mat.wireframe = true;
+                mat.alpha = 1.0;
+            } else {
+                // Modo Render Realizado (Sólido Metálico Estilizado)
+                // Usamos cores escuras de base difusa combinadas com alto brilho especular para simular metal anodizado
+                mat.diffuseColor = color.scale(0.25); 
+                
+                // Brilho especular metálico afiado (Sharp Specular Reflection)
+                mat.specularColor = color.scale(0.95).add(new BABYLON.Color3(0.2, 0.2, 0.2));
+                mat.specularPower = 12; // Valor médio que combina perfeitamente com Low-Poly flat surfaces
+                
+                // Emissão sutil nas sombras para não perder o volume geométrico no escuro
+                mat.emissiveColor = color.scale(0.08); 
+                mat.wireframe = false;
+                mat.alpha = 1.0;
+            }
+
+            return mat;
+        };
+
+        // Função utilitária para aplicar estilo Low Poly (Flat Shading) e Wireframe Integrado
+        const applyLowPolyStyle = (container, color) => {
+            const childMeshes = container.getChildMeshes();
+            childMeshes.forEach(mesh => {
+                // Não queremos aplicar flat shading nem cobrir os jatos de chama dos motores
+                if (mesh.name.toLowerCase().includes("flame")) {
+                    mesh.convertToFlatShadedMesh();
+                    return;
+                }
+
+                // Força o efeito Low Poly (facetas planas de shading)
+                mesh.convertToFlatShadedMesh();
+
+                // Se não estiver no modo holograma (ou seja, Metal Low-Poly), cria o wireframe sobreposto
+                if (!isHologram) {
+                    const wireClone = mesh.clone(mesh.name + "_wireframe");
+                    wireClone.parent = mesh;
+                    wireClone.position = BABYLON.Vector3.Zero();
+                    wireClone.rotation = BABYLON.Vector3.Zero();
+                    // Infla levemente para evitar z-fighting nas bordas externas
+                    wireClone.scaling = new BABYLON.Vector3(1.002, 1.002, 1.002);
+
+                    const wireMat = new BABYLON.StandardMaterial(mesh.name + "_wireMat", scene);
+                    wireMat.diffuseColor = new BABYLON.Color3(0, 0, 0);
+                    wireMat.specularColor = new BABYLON.Color3(0, 0, 0);
+                    
+                    // Cor de wireframe emissiva brilhante para contrastar com a face metálica escura
+                    wireMat.emissiveColor = color.scale(1.3);
+                    wireMat.wireframe = true;
+                    // zOffset empurra o desenho da linha para frente no buffer de profundidade
+                    wireMat.zOffset = -2.0;
+
+                    wireClone.material = wireMat;
+                }
+            });
+        };
+
+        // =========================================================================
+        // PROCEDURAL MESH GENERATORS (Módulos Reutilizáveis)
+        // =========================================================================
+
+        // 1. Cabine (CabinModule)
+        const assembleCabinModule = (color) => {
+            const container = new BABYLON.TransformNode("CabinModuleNode", scene);
+            const mat = getMaterialForModule(color);
+
+            // Parte central principal cônica/hexagonal da cabine
+            const mainBody = BABYLON.MeshBuilder.CreateBox("cabinMain", { width: 1.2, height: 1.0, depth: 1.8 }, scene);
+            mainBody.material = mat;
+            mainBody.parent = container;
+            
+            // Vidro / Topo inclinado
+            const glass = BABYLON.MeshBuilder.CreateCylinder("cabinGlass", { diameterTop: 0.1, diameterBottom: 1.2, height: 1.2, tessellation: 4 }, scene);
+            glass.material = mat;
+            glass.rotation.x = Math.PI / 2;
+            glass.position.z = 0.4;
+            glass.position.y = 0.1;
+            glass.parent = container;
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // 2. Chassis Principal (SpineModule)
+        const assembleSpineModule = (color, heavy = false) => {
+            const container = new BABYLON.TransformNode("SpineModuleNode", scene);
+            const mat = getMaterialForModule(color);
+
+            const length = heavy ? 4.5 : 3.5;
+            const h = heavy ? 0.6 : 0.4;
+            const w = heavy ? 0.8 : 0.6;
+
+            // Barras horizontais superiores e inferiores da estrutura
+            const topRail = BABYLON.MeshBuilder.CreateBox("topRail", { width: w, height: 0.1, depth: length }, scene);
+            topRail.material = mat;
+            topRail.position.y = h / 2;
+            topRail.parent = container;
+
+            const bottomRail = BABYLON.MeshBuilder.CreateBox("bottomRail", { width: w, height: 0.1, depth: length }, scene);
+            bottomRail.material = mat;
+            bottomRail.position.y = -h / 2;
+            bottomRail.parent = container;
+
+            // Conectores transversais (Trusses)
+            const steps = heavy ? 6 : 4;
+            for(let i = 0; i <= steps; i++) {
+                const zPos = -length/2 + (length / steps) * i;
+                const link = BABYLON.MeshBuilder.CreateBox("link_" + i, { width: w + 0.1, height: h, depth: 0.1 }, scene);
+                link.material = mat;
+                link.position.z = zPos;
+                link.parent = container;
+
+                // Transversal Diagonal sutil
+                if (i < steps) {
+                    const diag = BABYLON.MeshBuilder.CreateBox("diag_" + i, { width: 0.05, height: h * 1.3, depth: 0.05 }, scene);
+                    diag.material = mat;
+                    diag.rotation.x = Math.PI / 4;
+                    diag.position.z = zPos + (length / steps) / 2;
+                    diag.parent = container;
+                }
+            }
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // 3. Motores Pequenos (EngineSmallModule)
+        const assembleEngineSmall = (color) => {
+            const container = new BABYLON.TransformNode("EngineSmallModuleNode", scene);
+            const mat = getMaterialForModule(color);
+            const flameMat = getMaterialForModule(new BABYLON.Color3(1, 0.5, 0)); // Chamas laranjas/amarelas
+
+            // Dois blocos cilíndricos de propulsão
+            for (let side of [-0.4, 0.4]) {
+                const engineBlock = BABYLON.MeshBuilder.CreateCylinder("eng_" + side, { diameterTop: 0.35, diameterBottom: 0.5, height: 1.5, tessellation: 8 }, scene);
+                engineBlock.material = mat;
+                engineBlock.rotation.x = Math.PI / 2;
+                engineBlock.position.x = side;
+                engineBlock.parent = container;
+
+                // Bocal de exaustão
+                const nozzle = BABYLON.MeshBuilder.CreateCylinder("noz_" + side, { diameterTop: 0.5, diameterBottom: 0.3, height: 0.4, tessellation: 8 }, scene);
+                nozzle.material = mat;
+                nozzle.rotation.x = Math.PI / 2;
+                nozzle.position.x = side;
+                nozzle.position.z = -0.8;
+                nozzle.parent = container;
+
+                // Efeito visual procedural de chama de motor
+                const flame = BABYLON.MeshBuilder.CreateCylinder("flame_" + side, { diameterTop: 0, diameterBottom: 0.35, height: 0.8 }, scene);
+                flame.material = flameMat;
+                flame.rotation.x = -Math.PI / 2;
+                flame.position.x = side;
+                flame.position.z = -1.2;
+                flame.parent = container;
+            }
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // 4. Motores Grandes (EngineLargeModule)
+        const assembleEngineLarge = (color) => {
+            const container = new BABYLON.TransformNode("EngineLargeModuleNode", scene);
+            const mat = getMaterialForModule(color);
+            const flameMat = getMaterialForModule(new BABYLON.Color3(1, 0.3, 0));
+
+            // Quatro motores maciços em arranjo quadrado (2x2)
+            const offsets = [
+                { x: -0.5, y: 0.4 },
+                { x: 0.5, y: 0.4 },
+                { x: -0.5, y: -0.4 },
+                { x: 0.5, y: -0.4 }
+            ];
+
+            offsets.forEach((offset, idx) => {
+                const mainEng = BABYLON.MeshBuilder.CreateCylinder("heavyEng_" + idx, { diameterTop: 0.45, diameterBottom: 0.7, height: 1.8, tessellation: 8 }, scene);
+                mainEng.material = mat;
+                mainEng.rotation.x = Math.PI / 2;
+                mainEng.position.copyFromFloats(offset.x, offset.y, 0);
+                mainEng.parent = container;
+
+                const nozzle = BABYLON.MeshBuilder.CreateCylinder("heavyNoz_" + idx, { diameterTop: 0.6, diameterBottom: 0.4, height: 0.5, tessellation: 8 }, scene);
+                nozzle.material = mat;
+                nozzle.rotation.x = Math.PI / 2;
+                nozzle.position.copyFromFloats(offset.x, offset.y, -1.0);
+                nozzle.parent = container;
+
+                // Pluma de fogo cônica maior
+                const flame = BABYLON.MeshBuilder.CreateCylinder("heavyFlame_" + idx, { diameterTop: 0, diameterBottom: 0.5, height: 1.4 }, scene);
+                flame.material = flameMat;
+                flame.rotation.x = -Math.PI / 2;
+                flame.position.copyFromFloats(offset.x, offset.y, -1.8);
+                flame.parent = container;
+            });
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // 5. Deck de Construção / Placas (ConstructionDeckModule)
+        const assembleConstructionDeck = (color) => {
+            const container = new BABYLON.TransformNode("ConstructionDeckNode", scene);
+            const mat = getMaterialForModule(color);
+
+            // Base reta de sustentação inferior
+            const plate = BABYLON.MeshBuilder.CreateBox("deckPlate", { width: 2.2, height: 0.15, depth: 3.0 }, scene);
+            plate.material = mat;
+            plate.parent = container;
+
+            // Pequenos detalhes de estruturas metálicas de amarração de carga
+            for (let z of [-1.0, 0, 1.0]) {
+                for (let x of [-0.8, 0.8]) {
+                    const beam = BABYLON.MeshBuilder.CreateBox("dbeam_" + x + "_" + z, { width: 0.15, height: 0.5, depth: 0.15 }, scene);
+                    beam.material = mat;
+                    beam.position.copyFromFloats(x, 0.25, z);
+                    beam.parent = container;
+                }
+            }
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // 6. Guindaste Superior (CraneModule)
+        const assembleCraneModule = (color) => {
+            const container = new BABYLON.TransformNode("CraneNode", scene);
+            const mat = getMaterialForModule(color);
+
+            // Base rotacional do guindaste
+            const base = BABYLON.MeshBuilder.CreateCylinder("craneBase", { diameter: 0.8, height: 0.3, tessellation: 12 }, scene);
+            base.material = mat;
+            base.parent = container;
+
+            // Braço vertical estrutural
+            const armVertical = BABYLON.MeshBuilder.CreateBox("craneArmVert", { width: 0.2, height: 1.5, depth: 0.2 }, scene);
+            armVertical.material = mat;
+            armVertical.position.y = 0.75;
+            armVertical.rotation.x = -Math.PI/6; // Levemente inclinado para trás
+            armVertical.parent = container;
+
+            // Extensão horizontal
+            const armHorizontal = BABYLON.MeshBuilder.CreateBox("craneArmHoriz", { width: 0.15, height: 0.15, depth: 2.2 }, scene);
+            armHorizontal.material = mat;
+            armHorizontal.position.y = 1.6;
+            armHorizontal.position.z = 0.7;
+            armHorizontal.parent = container;
+
+            // Gancho de içamento
+            const cable = BABYLON.MeshBuilder.CreateCylinder("craneCable", { diameter: 0.03, height: 1.0 }, scene);
+            cable.material = mat;
+            cable.position.y = 1.1;
+            cable.position.z = 1.6;
+            cable.parent = container;
+
+            const hook = BABYLON.MeshBuilder.CreateBox("craneHook", { width: 0.3, height: 0.2, depth: 0.3 }, scene);
+            hook.material = mat;
+            hook.position.y = 0.6;
+            hook.position.z = 1.6;
+            hook.parent = container;
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // 7. Braços Mecânicos Laterais (MechanicalArmModule)
+        const assembleMechanicalArm = (color, sideMultiplier = 1) => {
+            const container = new BABYLON.TransformNode("MechArmNode", scene);
+            const mat = getMaterialForModule(color);
+
+            // Segmento 1 (Ombro/Junta lateral fixa)
+            const shoulder = BABYLON.MeshBuilder.CreateCylinder("shoulder_" + sideMultiplier, { diameter: 0.4, height: 0.4 }, scene);
+            shoulder.material = mat;
+            shoulder.rotation.z = Math.PI/2;
+            shoulder.parent = container;
+
+            // Segmento 2 (Braço de Extensão)
+            const arm1 = BABYLON.MeshBuilder.CreateBox("arm1_" + sideMultiplier, { width: 0.15, height: 0.15, depth: 1.2 }, scene);
+            arm1.material = mat;
+            arm1.position.x = 0.1 * sideMultiplier;
+            arm1.position.z = 0.5;
+            arm1.rotation.y = 0.3 * sideMultiplier;
+            arm1.parent = container;
+
+            // Junta cotovelo
+            const elbow = BABYLON.MeshBuilder.CreateSphere("elbow_" + sideMultiplier, { diameter: 0.3 }, scene);
+            elbow.material = mat;
+            elbow.position.x = arm1.position.x + Math.sin(0.3 * sideMultiplier) * 0.6;
+            elbow.position.z = arm1.position.z + Math.cos(0.3 * sideMultiplier) * 0.6;
+            elbow.parent = container;
+
+            // Segmento 3 (Antebraço direcionado à frente)
+            const arm2 = BABYLON.MeshBuilder.CreateBox("arm2_" + sideMultiplier, { width: 0.12, height: 0.12, depth: 0.8 }, scene);
+            arm2.material = mat;
+            arm2.position.x = elbow.position.x - 0.1 * sideMultiplier;
+            arm2.position.z = elbow.position.z + 0.4;
+            arm2.rotation.y = -0.15 * sideMultiplier;
+            arm2.parent = container;
+
+            // Garra funcional
+            const pincher = BABYLON.MeshBuilder.CreateBox("pincher_" + sideMultiplier, { width: 0.4, height: 0.1, depth: 0.3 }, scene);
+            pincher.material = mat;
+            pincher.position.x = arm2.position.x;
+            pincher.position.z = arm2.position.z + 0.4;
+            pincher.parent = container;
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // 8. Broca Frontal de Mineração (MiningDrillModule)
+        const assembleMiningDrillModule = (color) => {
+            const container = new BABYLON.TransformNode("MiningDrillNode", scene);
+            const mat = getMaterialForModule(color);
+
+            // Corpo de conexão traseiro da broca
+            const drillBack = BABYLON.MeshBuilder.CreateCylinder("drillBack", { diameterTop: 1.2, diameterBottom: 1.2, height: 0.4, tessellation: 8 }, scene);
+            drillBack.material = mat;
+            drillBack.rotation.x = Math.PI/2;
+            drillBack.parent = container;
+
+            // Cone principal helicoidal (Broca em si)
+            const drillCone = BABYLON.MeshBuilder.CreateCylinder("drillCone", { diameterTop: 0, diameterBottom: 1.0, height: 2.2, tessellation: 6 }, scene);
+            drillCone.material = mat;
+            drillCone.rotation.x = Math.PI/2;
+            drillCone.position.z = 1.1; // Extrapola para frente
+            drillCone.parent = container;
+
+            // Espirais procedurais da broca (Anéis escalonados menores)
+            for (let i = 1; i <= 4; i++) {
+                const ringSize = 1.0 - (i * 0.2);
+                const ring = BABYLON.MeshBuilder.CreateCylinder("drillRing_" + i, { diameterTop: ringSize, diameterBottom: ringSize + 0.1, height: 0.15, tessellation: 6 }, scene);
+                ring.material = mat;
+                ring.rotation.x = Math.PI/2;
+                ring.position.z = 0.2 + (i * 0.45);
+                ring.parent = container;
+            }
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // 9. Asas com Armamento de Ataque (WingWeaponModule)
+        const assembleWingWeaponModule = (color, sideMultiplier = 1) => {
+            const container = new BABYLON.TransformNode("WingWeaponNode", scene);
+            const mat = getMaterialForModule(color);
+
+            // Asa perfilada triangular
+            const wingShape = BABYLON.MeshBuilder.CreateBox("wing_" + sideMultiplier, { width: 1.8, height: 0.1, depth: 1.5 }, scene);
+            wingShape.material = mat;
+            // Rotaciona para dar o ângulo agressivo de caça
+            wingShape.rotation.y = 0.2 * sideMultiplier;
+            wingShape.rotation.z = -0.15 * sideMultiplier;
+            wingShape.position.x = 1.0 * sideMultiplier;
+            wingShape.parent = container;
+
+            // Canhão cilíndrico na ponta da asa
+            const weaponCyl = BABYLON.MeshBuilder.CreateCylinder("weaponCyl_" + sideMultiplier, { diameter: 0.2, height: 1.6, tessellation: 8 }, scene);
+            weaponCyl.material = mat;
+            weaponCyl.rotation.x = Math.PI / 2;
+            weaponCyl.position.x = 1.7 * sideMultiplier;
+            weaponCyl.position.z = 0.4;
+            weaponCyl.parent = container;
+
+            // Cano de Laser de alta precisão duplo
+            for (let offset of [-0.07, 0.07]) {
+                const barrel = BABYLON.MeshBuilder.CreateCylinder("barrel_" + sideMultiplier + "_" + offset, { diameter: 0.05, height: 0.8 }, scene);
+                barrel.material = mat;
+                barrel.rotation.x = Math.PI/2;
+                barrel.position.x = (1.7 + offset) * sideMultiplier;
+                barrel.position.z = 1.2;
+                barrel.parent = container;
+            }
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // 10. Módulo de Carga Estrutural (CargoModule)
+        const assembleCargoModule = (color) => {
+            const container = new BABYLON.TransformNode("CargoModuleNode", scene);
+            const mat = getMaterialForModule(color);
+
+            // Gaiola externa de suporte da carga
+            const cage = BABYLON.MeshBuilder.CreateBox("cargoCage", { width: 1.8, height: 1.1, depth: 3.2 }, scene);
+            cage.material = mat;
+            cage.parent = container;
+
+            // Cargas retangulares menores internas (Representação)
+            for (let z of [-0.9, 0, 0.9]) {
+                const subCargo = BABYLON.MeshBuilder.CreateBox("subCargo_" + z, { width: 1.4, height: 0.8, depth: 0.7 }, scene);
+                // Utiliza material de suporte roxo/índigo para destacar as cargas
+                subCargo.material = getMaterialForModule(COLOR_STEEL);
+                subCargo.position.z = z;
+                subCargo.parent = container;
+            }
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // 11. Containers de Carga Modular Fechados (ContainerModule)
+        const assembleContainerModule = (color) => {
+            const container = new BABYLON.TransformNode("ContainerNode", scene);
+            const mat = getMaterialForModule(color);
+            const borderMat = getMaterialForModule(COLOR_STEEL);
+
+            // Três grandes containers estanques lado a lado
+            const positions = [-1.0, 0, 1.0];
+            positions.forEach((pos, idx) => {
+                const box = BABYLON.MeshBuilder.CreateBox("contBox_" + idx, { width: 1.6, height: 1.1, depth: 0.85 }, scene);
+                box.material = mat;
+                box.position.z = pos;
+                box.parent = container;
+
+                // Frisos geométricos em "X" que reforçam o visual clássico de container industrial
+                const cross1 = BABYLON.MeshBuilder.CreateBox("cross1_" + idx, { width: 1.62, height: 0.05, depth: 0.05 }, scene);
+                cross1.material = borderMat;
+                cross1.rotation.y = 0.5;
+                cross1.position.copyFromFloats(0, 0, pos);
+                cross1.parent = container;
+
+                const cross2 = BABYLON.MeshBuilder.CreateBox("cross2_" + idx, { width: 1.62, height: 0.05, depth: 0.05 }, scene);
+                cross2.material = borderMat;
+                cross2.rotation.y = -0.5;
+                cross2.position.copyFromFloats(0, 0, pos);
+                cross2.parent = container;
+            });
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // 12. Pernas de Aranha (AranhaLegsModule)
+        const assembleAranhaLegs = (color, sideMultiplier = 1) => {
+            const container = new BABYLON.TransformNode("AranhaLegsNode", scene);
+            const mat = getMaterialForModule(color);
+
+            // Monta 2 Pernas por lado
+            for (let zOffset of [-0.6, 0.6]) {
+                const legRoot = new BABYLON.TransformNode("legRoot_" + sideMultiplier + "_" + zOffset, scene);
+                legRoot.position.z = zOffset;
+                legRoot.parent = container;
+
+                // Junta superior (Quadril)
+                const hip = BABYLON.MeshBuilder.CreateSphere("hip_" + sideMultiplier + "_" + zOffset, { diameter: 0.35 }, scene);
+                hip.material = mat;
+                hip.parent = legRoot;
+
+                // Coxa (Segmento inclinado para cima e para o lado)
+                const thigh = BABYLON.MeshBuilder.CreateCylinder("thigh_" + sideMultiplier + "_" + zOffset, { diameter: 0.15, height: 1.2 }, scene);
+                thigh.material = mat;
+                thigh.position.x = 0.45 * sideMultiplier;
+                thigh.position.y = 0.4;
+                thigh.rotation.z = -Math.PI / 4 * sideMultiplier;
+                thigh.parent = legRoot;
+
+                // Joelho articulado
+                const knee = BABYLON.MeshBuilder.CreateSphere("knee_" + sideMultiplier + "_" + zOffset, { diameter: 0.3 }, scene);
+                knee.material = mat;
+                knee.position.copyFromFloats(0.9 * sideMultiplier, 0.8, 0);
+                knee.parent = legRoot;
+
+                // Canela (Segmento longo que desce em direção ao solo)
+                const shin = BABYLON.MeshBuilder.CreateCylinder("shin_" + sideMultiplier + "_" + zOffset, { diameterTop: 0.15, diameterBottom: 0.06, height: 1.8 }, scene);
+                shin.material = mat;
+                shin.position.copyFromFloats(1.4 * sideMultiplier, 0.0, 0);
+                shin.rotation.z = Math.PI / 6 * sideMultiplier;
+                shin.parent = legRoot;
+
+                // Pé (Sapatilha de fixação na poeira de asteroides)
+                const foot = BABYLON.MeshBuilder.CreateCylinder("foot_" + sideMultiplier + "_" + zOffset, { diameterTop: 0.2, diameterBottom: 0.4, height: 0.15, tessellation: 4 }, scene);
+                foot.material = mat;
+                foot.position.copyFromFloats(1.85 * sideMultiplier, -0.85, 0);
+                foot.parent = legRoot;
+            }
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // 13. Radar de Varredura / Sensores (RadarModule)
+        const assembleRadarModule = (color) => {
+            const container = new BABYLON.TransformNode("RadarNode", scene);
+            const mat = getMaterialForModule(color);
+
+            // Antena/Haste vertical
+            const mast = BABYLON.MeshBuilder.CreateCylinder("radarMast", { diameter: 0.1, height: 1.2 }, scene);
+            mast.material = mat;
+            mast.position.y = 0.6;
+            mast.parent = container;
+
+            // Prato / Domo receptor do radar
+            const dome = BABYLON.MeshBuilder.CreateBox("radarDome", { width: 0.6, height: 0.1, depth: 0.6 }, scene);
+            dome.material = mat;
+            dome.position.y = 1.2;
+            dome.parent = container;
+
+            const rotPart = BABYLON.MeshBuilder.CreateBox("radarRot", { width: 0.1, height: 0.4, depth: 0.4 }, scene);
+            rotPart.material = mat;
+            rotPart.position.y = 1.45;
+            rotPart.parent = container;
+
+            applyLowPolyStyle(container, color);
+            return container;
+        };
+
+        // =========================================================================
+        // MOTOR DE MONTAGEM E INTERPOLAÇÃO (SHIP ASSEMBLY ENGINE)
+        // =========================================================================
+
+        const clearCurrentShip = () => {
+            if (currentShipRoot) {
+                currentShipRoot.dispose();
+            }
+            shipParts = [];
+            currentShipRoot = new BABYLON.TransformNode("shipRoot", scene);
+        };
+
+        // Adiciona um módulo e define sua dinâmica de explosão
+        const addModuleToShip = (mesh, baseOffset, explodeDirection) => {
+            mesh.parent = currentShipRoot;
+            mesh.position.copyFrom(baseOffset);
+            shipParts.push({
+                mesh: mesh,
+                baseOffset: baseOffset.clone(),
+                explodeDirection: explodeDirection.clone()
+            });
+        };
+
+        // Atualiza dinamicamente as posições dos blocos de acordo com o slider do Modo Explodido
+        const applyExplosionFactor = () => {
+            shipParts.forEach(part => {
+                const shift = part.explodeDirection.scale(explodedFactor * 2.5); // Multiplicador de escala de dispersão
+                part.mesh.position.copyFrom(part.baseOffset.add(shift));
+            });
+        };
+
+        // Carrega um Layout de Preset com base nos dados do Blueprint
+        const loadPreset = (presetName) => {
+            activePreset = presetName;
+            clearCurrentShip();
+            document.getElementById("exploded-slider").value = 0;
+            explodedFactor = 0;
+            document.getElementById("exploded-val").innerText = "0%";
+
+            // Altera visualmente os botões ativos para o usuário saber onde está navegando
+            const buttons = ['construtora', 'mineradora', 'aranha', 'ataque', 'transporte'];
+            buttons.forEach(btn => {
+                const b = document.getElementById("btn-" + btn);
+                if (btn === presetName) {
+                    b.classList.remove("bg-slate-900", "border-cyan-500/30", "border-green-500/30", "border-yellow-500/30", "border-red-500/30", "border-indigo-500/30");
+                    b.classList.add("bg-cyan-950/40", "border-cyan-400", "ring-1", "ring-cyan-500/50");
+                } else {
+                    b.classList.add("bg-slate-900");
+                    b.classList.remove("bg-cyan-950/40", "border-cyan-400", "ring-1", "ring-cyan-500/50");
+                }
+            });
+
+            // Sincroniza seletores laterais para espelhar a estrutura carregada
+            syncSelectorsWithPreset(presetName);
+
+            let mainColor = COLOR_BLUE;
+            let modulesCount = 0;
+
+            if (presetName === 'construtora') {
+                mainColor = COLOR_BLUE;
+
+                // 1. Chassi
+                const spine = assembleSpineModule(mainColor, false);
+                addModuleToShip(spine, new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, -0.3, 0));
+
+                // 2. Cabine
+                const cabin = assembleCabinModule(mainColor);
+                addModuleToShip(cabin, new BABYLON.Vector3(0, 0, 2.5), new BABYLON.Vector3(0, 0, 1.0));
+
+                // 3. Motores
+                const engines = assembleEngineSmall(mainColor);
+                addModuleToShip(engines, new BABYLON.Vector3(0, 0, -2.4), new BABYLON.Vector3(0, 0, -1.0));
+
+                // 4. Guindaste Superior (Specialized)
+                const crane = assembleCraneModule(COLOR_YELLOW);
+                addModuleToShip(crane, new BABYLON.Vector3(0, 0.4, 0.2), new BABYLON.Vector3(0, 1.0, 0));
+
+                // 5. Braços Laterais Esquerdo e Direito
+                const armL = assembleMechanicalArm(COLOR_YELLOW, -1);
+                addModuleToShip(armL, new BABYLON.Vector3(-0.5, 0, 0.8), new BABYLON.Vector3(-1.0, 0, 0));
+
+                const armR = assembleMechanicalArm(COLOR_YELLOW, 1);
+                addModuleToShip(armR, new BABYLON.Vector3(0.5, 0, 0.8), new BABYLON.Vector3(1.0, 0, 0));
+
+                // 6. Placas inferiores
+                const deck = assembleConstructionDeck(COLOR_STEEL);
+                addModuleToShip(deck, new BABYLON.Vector3(0, -0.5, -0.2), new BABYLON.Vector3(0, -1.0, 0));
+
+                modulesCount = 7;
+                document.getElementById("telemetry-power").innerText = "140 GW";
+
+            } else if (presetName === 'mineradora') {
+                mainColor = COLOR_GREEN;
+
+                // 1. Chassi Heavy
+                const spine = assembleSpineModule(mainColor, true);
+                addModuleToShip(spine, new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, -0.3, 0));
+
+                // 2. Cabine atrás da broca
+                const cabin = assembleCabinModule(mainColor);
+                addModuleToShip(cabin, new BABYLON.Vector3(0, 0, 1.3), new BABYLON.Vector3(0, 0.2, 0.5));
+
+                // 3. Broca frontal imensa
+                const drill = assembleMiningDrillModule(COLOR_YELLOW);
+                addModuleToShip(drill, new BABYLON.Vector3(0, 0, 2.8), new BABYLON.Vector3(0, 0, 1.2));
+
+                // 4. Bloco de Processamento de Carga
+                const processor = assembleCargoModule(mainColor);
+                addModuleToShip(processor, new BABYLON.Vector3(0, 0.1, -1.1), new BABYLON.Vector3(0, -0.8, 0));
+
+                // 5. Garras de Fixação do Asteroide
+                const armL = assembleMechanicalArm(COLOR_YELLOW, -1);
+                addModuleToShip(armL, new BABYLON.Vector3(-0.6, -0.2, 1.0), new BABYLON.Vector3(-1.0, 0, 0));
+
+                const armR = assembleMechanicalArm(COLOR_YELLOW, 1);
+                addModuleToShip(armR, new BABYLON.Vector3(0.6, -0.2, 1.0), new BABYLON.Vector3(1.0, 0, 0));
+
+                // 6. Motores Traseiros Pesados
+                const engines = assembleEngineLarge(mainColor);
+                addModuleToShip(engines, new BABYLON.Vector3(0, 0, -2.8), new BABYLON.Vector3(0, 0, -1.0));
+
+                modulesCount = 7;
+                document.getElementById("telemetry-power").innerText = "280 GW";
+
+            } else if (presetName === 'aranha') {
+                mainColor = COLOR_YELLOW;
+
+                // 1. Chassi
+                const spine = assembleSpineModule(mainColor, true);
+                addModuleToShip(spine, new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, 0.4, 0));
+
+                // 2. Cabine inclinada baixa
+                const cabin = assembleCabinModule(mainColor);
+                addModuleToShip(cabin, new BABYLON.Vector3(0, -0.1, 1.3), new BABYLON.Vector3(0, 0.2, 0.6));
+
+                // 3. Broca de extração de poço vertical instalada na frente/baixo
+                const drill = assembleMiningDrillModule(mainColor);
+                addModuleToShip(drill, new BABYLON.Vector3(0, -0.5, 2.6), new BABYLON.Vector3(0, -0.5, 1.0));
+
+                // 4. Pernas articuladas (Lado Esquerdo e Direito)
+                const legsL = assembleAranhaLegs(mainColor, -1);
+                addModuleToShip(legsL, new BABYLON.Vector3(-0.5, -0.3, 0), new BABYLON.Vector3(-1.2, 0, 0));
+
+                const legsR = assembleAranhaLegs(mainColor, 1);
+                addModuleToShip(legsR, new BABYLON.Vector3(0.5, -0.3, 0), new BABYLON.Vector3(1.2, 0, 0));
+
+                // 5. Propulsores de pouso/estabilidade vertical
+                const engines = assembleEngineSmall(COLOR_STEEL);
+                addModuleToShip(engines, new BABYLON.Vector3(0, 0, -2.5), new BABYLON.Vector3(0, 0, -1.0));
+
+                modulesCount = 6;
+                document.getElementById("telemetry-power").innerText = "210 GW";
+
+            } else if (presetName === 'ataque') {
+                mainColor = COLOR_RED;
+
+                // 1. Chassi de alta performance compacto
+                const spine = assembleSpineModule(mainColor, false);
+                addModuleToShip(spine, new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, -0.2, 0));
+
+                // 2. Cabine Aerodinâmica blindada
+                const cabin = assembleCabinModule(mainColor);
+                addModuleToShip(cabin, new BABYLON.Vector3(0, 0.1, 2.3), new BABYLON.Vector3(0, 0, 1.0));
+
+                // 3. Sensores/Radar de combate superiores
+                const radar = assembleRadarModule(mainColor);
+                addModuleToShip(radar, new BABYLON.Vector3(0, 0.5, 0.2), new BABYLON.Vector3(0, 0.8, 0));
+
+                // 4. Asas Armadas de Combate Laterais
+                const wingL = assembleWingWeaponModule(mainColor, -1);
+                addModuleToShip(wingL, new BABYLON.Vector3(-0.6, 0, 0.2), new BABYLON.Vector3(-1.2, 0, 0.1));
+
+                const wingR = assembleWingWeaponModule(mainColor, 1);
+                addModuleToShip(wingR, new BABYLON.Vector3(0.6, 0, 0.2), new BABYLON.Vector3(1.2, 0, 0.1));
+
+                // 5. Motores Reforçados de Alta Pressão
+                const engines = assembleEngineLarge(mainColor);
+                addModuleToShip(engines, new BABYLON.Vector3(0, 0, -2.4), new BABYLON.Vector3(0, 0, -1.0));
+
+                modulesCount = 6;
+                document.getElementById("telemetry-power").innerText = "350 GW";
+
+            } else if (presetName === 'transporte') {
+                mainColor = COLOR_STEEL;
+
+                // 1. Spine longo estendido
+                const spine = assembleSpineModule(mainColor, true);
+                addModuleToShip(spine, new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, -0.4, 0));
+
+                // 2. Cabine de alta resistência
+                const cabin = assembleCabinModule(mainColor);
+                addModuleToShip(cabin, new BABYLON.Vector3(0, 0, 2.5), new BABYLON.Vector3(0, 0, 1.0));
+
+                // 3. Bloco triplo de containers integrados
+                const containerBlk = assembleContainerModule(COLOR_STEEL);
+                addModuleToShip(containerBlk, new BABYLON.Vector3(0, 0.2, -0.2), new BABYLON.Vector3(0, 1.0, 0));
+
+                // 4. Blindagem/Cadeia de Carga Inferior
+                const deck = assembleConstructionDeck(COLOR_BLUE);
+                addModuleToShip(deck, new BABYLON.Vector3(0, -0.4, -0.2), new BABYLON.Vector3(0, -1.0, 0));
+
+                // 5. Motores Gigantes Industriais
+                const engines = assembleEngineLarge(mainColor);
+                addModuleToShip(engines, new BABYLON.Vector3(0, 0, -2.6), new BABYLON.Vector3(0, 0, -1.0));
+
+                modulesCount = 5;
+                document.getElementById("telemetry-power").innerText = "180 GW";
+            }
+
+            // Atualiza Telemetria
+            document.getElementById("telemetry-modules-count").innerText = `${modulesCount} / 12`;
+        };
+
+        // Lógica de Customização Manual (DIY)
+        const updateCustomShip = () => {
+            activePreset = "custom";
+            clearCurrentShip();
+
+            const cCabin = document.getElementById("sel-cabin").value;
+            const cSpine = document.getElementById("sel-spine").value;
+            const cCargo = document.getElementById("sel-cargo").value;
+            const cEngines = document.getElementById("sel-engines").value;
+            const cTop = document.getElementById("sel-top").value;
+            const cSides = document.getElementById("sel-sides").value;
+
+            // Remove realce de botões de preset
+            const buttons = ['construtora', 'mineradora', 'aranha', 'ataque', 'transporte'];
+            buttons.forEach(btn => {
+                document.getElementById("btn-" + btn).classList.add("bg-slate-900");
+                document.getElementById("btn-" + btn).classList.remove("bg-cyan-950/40", "border-cyan-400", "ring-1", "ring-cyan-500/50");
+            });
+
+            const customColor = COLOR_BLUE; // Default para customizados
+            let mCount = 0;
+
+            // 1. Monta Spine/Chassi
+            if (cSpine === 'SpineModule') {
+                const sp = assembleSpineModule(customColor, false);
+                addModuleToShip(sp, new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, -0.3, 0));
+                mCount++;
+            } else if (cSpine === 'SpineHeavyModule') {
+                const sp = assembleSpineModule(customColor, true);
+                addModuleToShip(sp, new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, -0.3, 0));
+                mCount++;
+            }
+
+            // 2. Monta Cabine
+            if (cCabin === 'CabinModule') {
+                const cab = assembleCabinModule(customColor);
+                addModuleToShip(cab, new BABYLON.Vector3(0, 0, 2.3), new BABYLON.Vector3(0, 0, 1.0));
+                mCount++;
+            } else if (cCabin === 'MiningDrillModule') {
+                const drill = assembleMiningDrillModule(COLOR_YELLOW);
+                addModuleToShip(drill, new BABYLON.Vector3(0, 0, 2.5), new BABYLON.Vector3(0, 0, 1.0));
+                mCount++;
+            }
+
+            // 3. Monta Central/Carga
+            if (cCargo === 'CargoModule') {
+                const cg = assembleCargoModule(customColor);
+                addModuleToShip(cg, new BABYLON.Vector3(0, 0.1, -0.2), new BABYLON.Vector3(0, -0.8, 0));
+                mCount++;
+            } else if (cCargo === 'ContainerModule') {
+                const cont = assembleContainerModule(COLOR_STEEL);
+                addModuleToShip(cont, new BABYLON.Vector3(0, 0.2, -0.2), new BABYLON.Vector3(0, 0.8, 0));
+                mCount++;
+            } else if (cCargo === 'ConstructionDeckModule') {
+                const dk = assembleConstructionDeck(COLOR_YELLOW);
+                addModuleToShip(dk, new BABYLON.Vector3(0, -0.4, -0.2), new BABYLON.Vector3(0, -1.0, 0));
+                mCount++;
+            }
+
+            // 4. Monta Motores
+            if (cEngines === 'EngineSmallModule') {
+                const eng = assembleEngineSmall(customColor);
+                addModuleToShip(eng, new BABYLON.Vector3(0, 0, -2.4), new BABYLON.Vector3(0, 0, -1.0));
+                mCount++;
+            } else if (cEngines === 'EngineLargeModule') {
+                const eng = assembleEngineLarge(COLOR_RED);
+                addModuleToShip(eng, new BABYLON.Vector3(0, 0, -2.6), new BABYLON.Vector3(0, 0, -1.0));
+                mCount++;
+            }
+
+            // 5. Monta Topo
+            if (cTop === 'CraneModule') {
+                const cr = assembleCraneModule(COLOR_YELLOW);
+                addModuleToShip(cr, new BABYLON.Vector3(0, 0.4, 0.2), new BABYLON.Vector3(0, 1.0, 0));
+                mCount++;
+            } else if (cTop === 'RadarModule') {
+                const rad = assembleRadarModule(COLOR_STEEL);
+                addModuleToShip(rad, new BABYLON.Vector3(0, 0.5, 0.2), new BABYLON.Vector3(0, 1.0, 0));
+                mCount++;
+            }
+
+            // 6. Monta Laterais
+            if (cSides === 'MechanicalArmModule') {
+                const armL = assembleMechanicalArm(COLOR_YELLOW, -1);
+                addModuleToShip(armL, new BABYLON.Vector3(-0.6, 0, 0.5), new BABYLON.Vector3(-1.0, 0, 0));
+                const armR = assembleMechanicalArm(COLOR_YELLOW, 1);
+                addModuleToShip(armR, new BABYLON.Vector3(0.6, 0, 0.5), new BABYLON.Vector3(1.0, 0, 0));
+                mCount += 2;
+            } else if (cSides === 'AranhaLegsModule') {
+                const legsL = assembleAranhaLegs(COLOR_YELLOW, -1);
+                addModuleToShip(legsL, new BABYLON.Vector3(-0.5, -0.3, 0), new BABYLON.Vector3(-1.2, 0, 0));
+                const legsR = assembleAranhaLegs(COLOR_YELLOW, 1);
+                addModuleToShip(legsR, new BABYLON.Vector3(0.5, -0.3, 0), new BABYLON.Vector3(1.2, 0, 0));
+                mCount += 2;
+            } else if (cSides === 'WingWeaponModule') {
+                const wingL = assembleWingWeaponModule(COLOR_RED, -1);
+                addModuleToShip(wingL, new BABYLON.Vector3(-0.6, 0, 0.2), new BABYLON.Vector3(-1.2, 0, 0));
+                const wingR = assembleWingWeaponModule(COLOR_RED, 1);
+                addModuleToShip(wingR, new BABYLON.Vector3(0.6, 0, 0.2), new BABYLON.Vector3(1.2, 0, 0));
+                mCount += 2;
+            }
+
+            applyExplosionFactor();
+            document.getElementById("telemetry-modules-count").innerText = `${mCount} / 12`;
+            document.getElementById("telemetry-power").innerText = `${mCount * 35} GW`;
+        };
+
+        // Sincroniza os selects do configurador quando um preset é escolhido
+        const syncSelectorsWithPreset = (preset) => {
+            const cabin = document.getElementById("sel-cabin");
+            const spine = document.getElementById("sel-spine");
+            const cargo = document.getElementById("sel-cargo");
+            const engines = document.getElementById("sel-engines");
+            const top = document.getElementById("sel-top");
+            const sides = document.getElementById("sel-sides");
+
+            if (preset === 'construtora') {
+                cabin.value = "CabinModule";
+                spine.value = "SpineModule";
+                cargo.value = "ConstructionDeckModule";
+                engines.value = "EngineSmallModule";
+                top.value = "CraneModule";
+                sides.value = "MechanicalArmModule";
+            } else if (preset === 'mineradora') {
+                cabin.value = "CabinModule";
+                spine.value = "SpineHeavyModule";
+                cargo.value = "CargoModule";
+                engines.value = "EngineLargeModule";
+                top.value = "None";
+                sides.value = "MechanicalArmModule";
+            } else if (preset === 'aranha') {
+                cabin.value = "CabinModule";
+                spine.value = "SpineHeavyModule";
+                cargo.value = "None";
+                engines.value = "EngineSmallModule";
+                top.value = "None";
+                sides.value = "AranhaLegsModule";
+            } else if (preset === 'ataque') {
+                cabin.value = "CabinModule";
+                spine.value = "SpineModule";
+                cargo.value = "None";
+                engines.value = "EngineLargeModule";
+                top.value = "RadarModule";
+                sides.value = "WingWeaponModule";
+            } else if (preset === 'transporte') {
+                cabin.value = "CabinModule";
+                spine.value = "SpineHeavyModule";
+                cargo.value = "ContainerModule";
+                engines.value = "EngineLargeModule";
+                top.value = "None";
+                sides.value = "None";
+            }
+        };
+
+        // Reseta todos os seletores para uma nave padrão híbrida customizada
+        const resetToCustom = () => {
+            document.getElementById("sel-cabin").value = "CabinModule";
+            document.getElementById("sel-spine").value = "SpineModule";
+            document.getElementById("sel-cargo").value = "ContainerModule";
+            document.getElementById("sel-engines").value = "EngineSmallModule";
+            document.getElementById("sel-top").value = "RadarModule";
+            document.getElementById("sel-sides").value = "MechanicalArmModule";
+            updateCustomShip();
+        };
+
+        // Altera entre o visual Aramado/Holográfico e o Sólido Estilizado
+        const setRenderMode = (mode) => {
+            isHologram = (mode === 'hologram');
+            
+            const btnHolo = document.getElementById("btn-holo");
+            const btnSolid = document.getElementById("btn-solid");
+
+            if (isHologram) {
+                btnHolo.className = "py-2 text-xs font-bold rounded border bg-cyan-950/40 border-cyan-500 text-cyan-400 uppercase tracking-widest";
+                btnSolid.className = "py-2 text-xs font-bold rounded border bg-slate-900 border-slate-700 text-gray-400 uppercase tracking-widest";
+                glowLayer.intensity = 0.95;
+            } else {
+                btnHolo.className = "py-2 text-xs font-bold rounded border bg-slate-900 border-slate-700 text-gray-400 uppercase tracking-widest";
+                btnSolid.className = "py-2 text-xs font-bold rounded border bg-cyan-950/40 border-cyan-500 text-cyan-400 uppercase tracking-widest";
+                glowLayer.intensity = 0.45; // Sutil no modo realístico para dar destaque às arestas emissivas
+            }
+
+            // Recarrega o estado atual de visualização com o novo estilo de materiais
+            if (activePreset === 'custom') {
+                updateCustomShip();
+            } else {
+                loadPreset(activePreset);
+            }
+        };
+
+        // Gerenciador do Controle Deslizante de Explosão (Exploded View Slider)
+        document.getElementById("exploded-slider").addEventListener("input", (e) => {
+            const val = e.target.value;
+            document.getElementById("exploded-val").innerText = val + "%";
+            explodedFactor = val / 100.0;
+            applyExplosionFactor();
+        });
+
+    </script>
+</body>
+</html>

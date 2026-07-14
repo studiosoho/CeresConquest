@@ -15,7 +15,8 @@ export const Palette = {
 
   asteroid: {
     line:   0xc9d4e0,   // contorno da rocha
-    crater: 0x8a98a8,   // círculos de cratera (wireframe)
+    fill:   0x232c38,   // faces do corpo 3D (rocha escura, lida por luz)
+    pad:    0x9fe0d8,   // retângulo da plataforma de construção
   },
 
   ceres: {
@@ -29,6 +30,7 @@ export const Palette = {
     other:  0xffb85c,   // âmbar (estruturas alheias)
     hangar: 0x6a90b0,   // vagas de hangar
     fleet:  0x7dff7d,   // minhas naves guardadas/frota
+    fill:   0x39434f,   // corpo dos prédios 3D (um tom acima da rocha)
   },
 
   fx: {

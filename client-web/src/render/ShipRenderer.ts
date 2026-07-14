@@ -1,13 +1,15 @@
 /**
- * ShipRenderer — gerencia sprites de naves usando texturas do TextureCache.
- * Sem nenhum Graphics, sem nenhum desenho, sem lógica de jogo.
- * GameScene chama create() e update() — só isso.
+ * ShipRenderer — gerencia as malhas de naves via MeshFactory.
+ * Sem nenhum desenho próprio, sem lógica de jogo.
+ * GameScene chama create() e update() — só isso (mesma API da era Phaser;
+ * posições/ângulos chegam em coordenadas do JOGO e a conversão para cena
+ * fica toda em render/coords.ts).
  */
 
-import Phaser from "phaser";
-import { SHIP_RADIUS } from "@ceres/shared";
 import type { ShipKind } from "@ceres/shared";
-import { TextureCache } from "./TextureCache";
+import { MeshFactory, type ShipMeshInstance } from "./MeshFactory";
+import { toScene, toSceneAngle } from "./coords";
+import { SHIP_LAYER_Z, SHIP_TOP_LAYER_Z } from "./layers";
 
 /** Dados mínimos que o renderer precisa de uma nave. */
 export interface ShipRenderData {
@@ -15,99 +17,88 @@ export interface ShipRenderData {
   y: number;
   angle: number;
   kind: ShipKind;
-  /** tint a aplicar no sprite (cor de time/dono) */
+  /** tint a aplicar na malha (cor de time/dono) */
   tint: number;
   visible: boolean;
 }
 
-interface SpriteEntry {
-  sprite: Phaser.GameObjects.Sprite;
+interface MeshEntry {
+  instance: ShipMeshInstance;
   kind: ShipKind;
+  visible: boolean;
 }
 
-/** Escala do sprite: o canvas de textura tem SHIP_RADIUS*4 + margem de lado. */
-const SHIP_TEX_SIZE = SHIP_RADIUS * 4 + SHIP_RADIUS * 4;
-void SHIP_TEX_SIZE; // referência de escala — TextureCache define o tamanho real
-/** O sprite deve aparecer com tamanho 1:1 no espaço de mundo. */
-const SPRITE_SCALE = 1;
-
 export class ShipRenderer {
-  private scene: Phaser.Scene;
-  private cache: TextureCache;
-  private container: Phaser.GameObjects.Container;
-  private sprites = new Map<string, SpriteEntry>();
+  private factory: MeshFactory;
+  private entries = new Map<string, MeshEntry>();
 
-  constructor(scene: Phaser.Scene, cache: TextureCache, container: Phaser.GameObjects.Container) {
-    this.scene = scene;
-    this.cache = cache;
-    this.container = container;
+  constructor(factory: MeshFactory) {
+    this.factory = factory;
   }
 
   /**
-   * Cria (ou recria se o kind mudou) o sprite para a nave com o id dado.
+   * Cria (ou recria se o kind mudou) a malha para a nave com o id dado.
    * Deve ser chamado quando a nave aparece ou troca de classe.
    */
   create(id: string, data: ShipRenderData): void {
-    const existing = this.sprites.get(id);
+    const existing = this.entries.get(id);
     if (existing && existing.kind === data.kind) {
-      // já existe com o kind correto — só atualiza visual
-      this.applyData(existing.sprite, data);
+      this.applyData(existing, data);
       return;
     }
-    existing?.sprite.destroy();
+    existing?.instance.dispose();
 
-    const key = this.cache.getShipKey(data.kind);
-    const sprite = this.scene.add.sprite(data.x, data.y, key);
-    sprite.setScale(SPRITE_SCALE);
-    sprite.setOrigin(0.5, 0.5);
-    this.applyData(sprite, data);
-    this.container.add(sprite);
-
-    this.sprites.set(id, { sprite, kind: data.kind });
+    const instance = this.factory.createShip(data.kind, data.tint);
+    // camada de voo: à frente do pior avanço de uma rocha em balanço
+    instance.setDepthBias(SHIP_LAYER_Z);
+    const entry: MeshEntry = { instance, kind: data.kind, visible: true };
+    this.entries.set(id, entry);
+    this.applyData(entry, data);
   }
 
   /**
-   * Atualiza posição, rotação, tint e visibilidade do sprite.
-   * Recria o sprite se o kind mudou (troca de nave no hangar).
+   * Atualiza posição, rotação, tint e visibilidade da malha.
+   * Recria a malha se o kind mudou (troca de nave no hangar).
    */
   update(id: string, data: ShipRenderData): void {
-    const entry = this.sprites.get(id);
-    if (!entry) {
+    const entry = this.entries.get(id);
+    if (!entry || entry.kind !== data.kind) {
       this.create(id, data);
       return;
     }
-    if (entry.kind !== data.kind) {
-      this.create(id, data);
-      return;
-    }
-    this.applyData(entry.sprite, data);
+    this.applyData(entry, data);
   }
 
-  /** Remove o sprite de uma nave que saiu do mundo. */
+  /** Remove a malha de uma nave que saiu do mundo. */
   remove(id: string): void {
-    const entry = this.sprites.get(id);
+    const entry = this.entries.get(id);
     if (entry) {
-      entry.sprite.destroy();
-      this.sprites.delete(id);
+      entry.instance.dispose();
+      this.entries.delete(id);
     }
   }
 
-  /** Traz o sprite de uma nave para o topo da camada. */
+  /** Destaca a nave (própria) por cima das demais. */
   bringToTop(id: string): void {
-    const entry = this.sprites.get(id);
-    if (entry) this.container.bringToTop(entry.sprite);
+    this.entries.get(id)?.instance.setDepthBias(SHIP_TOP_LAYER_Z);
   }
 
-  /** Destrói todos os sprites. */
+  /** Destrói todas as malhas. */
   destroy(): void {
-    for (const { sprite } of this.sprites.values()) sprite.destroy();
-    this.sprites.clear();
+    for (const { instance } of this.entries.values()) instance.dispose();
+    this.entries.clear();
   }
 
-  private applyData(sprite: Phaser.GameObjects.Sprite, data: ShipRenderData): void {
-    sprite.setPosition(data.x, data.y);
-    sprite.setRotation(data.angle);
-    sprite.setTint(data.tint);
-    sprite.setVisible(data.visible);
+  private applyData(entry: MeshEntry, data: ShipRenderData): void {
+    const { instance } = entry;
+    const p = toScene(data.x, data.y);
+    instance.root.position.x = p.x;
+    instance.root.position.y = p.y;
+    instance.root.rotation.z = toSceneAngle(data.angle);
+    instance.setTint(data.tint);
+    if (entry.visible !== data.visible) {
+      entry.visible = data.visible;
+      instance.setVisible(data.visible);
+    }
   }
 }

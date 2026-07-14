@@ -1,10 +1,16 @@
 /**
- * HudRenderer — HUD futurista desenhado com Graphics + Text.
- * Sem conhecer lógica de jogo, rede ou física.
- * GameScene passa os dados; HudRenderer decide como exibir.
+ * HudRenderer — HUD em overlay DOM sobre o canvas (texto monospace + barras
+ * via CSS) e um `<canvas>` 2D dedicado para o minimapa. Decisão 3 do plano de
+ * migração: o HUD sai do engine Babylon inteiramente — nem GlowLayer, nem
+ * câmera, nem GreasedLine entram aqui. Sem conhecer lógica de jogo, rede ou
+ * física: GameScene passa os dados, HudRenderer decide como exibir.
+ *
+ * O painel de status ancora via CSS `left`/`right` (não recalcula largura a
+ * partir da largura da tela como o Phaser fazia) — por isso `drawStatus` e
+ * `drawMinimap` não recebem mais dimensões de tela; o clip do minimapa vem de
+ * graça do próprio retângulo do `<canvas>`, sem precisar de geometry mask.
  */
 
-import Phaser from "phaser";
 import { CERES_RADIUS, SECTOR_SIZE, ASTEROID_CLASSES } from "@ceres/shared";
 import type { ShipKind, WorldPos } from "@ceres/shared";
 import { Palette } from "./Palette";
@@ -59,140 +65,171 @@ export interface MinimapData {
   toRender: (p: WorldPos) => { x: number; y: number };
 }
 
+/** `0xRRGGBB` → string CSS, com alpha opcional. */
+function cssColor(hex: number, alpha = 1): string {
+  const r = (hex >> 16) & 0xff;
+  const g = (hex >> 8) & 0xff;
+  const b = hex & 0xff;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 export class HudRenderer {
-  private panelGfx!: Phaser.GameObjects.Graphics;
-  private statusText!: Phaser.GameObjects.Text;
-  private minimapGfx!: Phaser.GameObjects.Graphics;
-  private minimapMask!: Phaser.GameObjects.Graphics;
+  private root: HTMLDivElement;
+  private statusPanel: HTMLDivElement;
+  private statusText: HTMLDivElement;
+  private hpBarOuter: HTMLDivElement;
+  private hpBarFill: HTMLDivElement;
+  private ammoBars: HTMLDivElement;
+  private bulletBarFill: HTMLDivElement;
+  private grenadeBarFill: HTMLDivElement;
+  private minimapCanvas: HTMLCanvasElement;
+  private minimapCtx: CanvasRenderingContext2D;
 
-  constructor(scene: Phaser.Scene, container: Phaser.GameObjects.Container) {
-    this.panelGfx = scene.add.graphics();
-    this.statusText = scene.add.text(0, 0, "", {
-      fontFamily: "monospace",
-      fontSize: "15px",
-      color: "#d8e8f8",
-      lineSpacing: 4,
-    });
-    this.minimapGfx = scene.add.graphics();
-    this.minimapMask = scene.make.graphics();
-    this.minimapGfx.setMask(this.minimapMask.createGeometryMask());
+  constructor() {
+    this.root = document.createElement("div");
+    this.root.style.cssText =
+      "position:fixed;inset:0;pointer-events:none;font-family:monospace;" +
+      "color:#d8e8f8;z-index:5;user-select:none;";
 
-    container.add([this.panelGfx, this.statusText, this.minimapGfx]);
-  }
+    this.statusPanel = document.createElement("div");
+    this.statusPanel.style.cssText =
+      `position:absolute;left:0;top:0;max-width:780px;` +
+      `right:${MINIMAP_SIZE + MINIMAP_MARGIN * 3}px;` +
+      `background:${cssColor(0x000000, 0.6)};border:1px solid ${cssColor(Palette.ui.minimapBorder, 0.6)};` +
+      "padding:8px 12px;box-sizing:border-box;";
 
-  resize(width: number, height: number): void {
-    void height;
-    void width;
-    // reposiciona o texto no próximo draw
+    this.statusText = document.createElement("div");
+    this.statusText.style.cssText = "font-size:15px;line-height:22px;white-space:pre-line;";
+    this.statusPanel.appendChild(this.statusText);
+
+    const makeBar = (): { outer: HTMLDivElement; fill: HTMLDivElement } => {
+      const outer = document.createElement("div");
+      outer.style.cssText =
+        `width:120px;height:6px;margin-top:4px;background:${cssColor(0x0a1018, 0.7)};` +
+        `border:1px solid ${cssColor(0x3a5060, 0.8)};box-sizing:border-box;`;
+      const fill = document.createElement("div");
+      fill.style.cssText = "height:100%;width:0;";
+      outer.appendChild(fill);
+      return { outer, fill };
+    };
+
+    const hpBar = makeBar();
+    this.hpBarOuter = hpBar.outer;
+    this.hpBarFill = hpBar.fill;
+    this.statusPanel.appendChild(this.hpBarOuter);
+
+    this.ammoBars = document.createElement("div");
+    const bulletBar = makeBar();
+    const grenadeBar = makeBar();
+    this.bulletBarFill = bulletBar.fill;
+    this.grenadeBarFill = grenadeBar.fill;
+    bulletBar.outer.style.height = "5px";
+    grenadeBar.outer.style.height = "5px";
+    grenadeBar.outer.style.marginTop = "3px";
+    this.ammoBars.appendChild(bulletBar.outer);
+    this.ammoBars.appendChild(grenadeBar.outer);
+    this.statusPanel.appendChild(this.ammoBars);
+
+    this.minimapCanvas = document.createElement("canvas");
+    this.minimapCanvas.style.cssText =
+      `position:absolute;right:${MINIMAP_MARGIN}px;top:${MINIMAP_MARGIN}px;` +
+      `width:${MINIMAP_SIZE}px;height:${MINIMAP_SIZE}px;`;
+    const dpr = window.devicePixelRatio || 1;
+    this.minimapCanvas.width = MINIMAP_SIZE * dpr;
+    this.minimapCanvas.height = MINIMAP_SIZE * dpr;
+    const ctx = this.minimapCanvas.getContext("2d");
+    if (!ctx) throw new Error("2D context indisponível para o minimapa");
+    this.minimapCtx = ctx;
+    this.minimapCtx.scale(dpr, dpr);
+
+    this.root.appendChild(this.statusPanel);
+    this.root.appendChild(this.minimapCanvas);
+    document.body.appendChild(this.root);
   }
 
   // ── painel de status ──────────────────────────────────────────────
 
-  drawStatus(ship: HudShipData, ctx: HudContextData, screenW: number): void {
-    this.panelGfx.clear();
-
+  drawStatus(ship: HudShipData, ctx: HudContextData): void {
     const lPhase = ship.landingPhase;
+    this.hpBarOuter.style.display = "none";
+    this.ammoBars.style.display = "none";
 
     if (lPhase === "landing") {
       const pct = Math.round(ship.landingProgress * 100);
-      this.drawPanel(0, 0, 260, 36);
-      this.statusText.setPosition(12, 8);
-      this.statusText.setText(`⬇ Pousando… ${pct}%`);
+      this.statusText.textContent = `⬇ Pousando… ${pct}%`;
       return;
     }
 
     if (lPhase === "landed") {
-      const lines = this.buildLandedText(ship, ctx);
-      this.drawPanel(0, 0, 420, 8 + lines.split("\n").length * 22);
-      this.statusText.setPosition(12, 8);
-      this.statusText.setText(lines);
+      this.statusText.textContent = this.buildLandedText(ship, ctx);
       return;
     }
 
     // ── painel principal em voo ───────────────────────────────────────
-    const lines = this.buildFlightText(ship, ctx);
-    const lineCount = lines.split("\n").length;
-    const panelW = Math.min(screenW - MINIMAP_SIZE - MINIMAP_MARGIN * 3, 780);
-    const panelH = 12 + lineCount * 22;
-    this.drawPanel(0, 0, panelW, panelH);
-    this.statusText.setPosition(12, 8);
-    this.statusText.setText(lines);
+    this.statusText.textContent = this.buildFlightText(ship, ctx);
 
-    // ── barra de HP ───────────────────────────────────────────────────
-    const barY = panelH + 6;
-    const barW = 120;
-    const barH = 6;
+    this.hpBarOuter.style.display = "";
     const hpFrac = Math.max(0, Math.min(1, ship.hp / 100));
-    const hpColor = hpFrac > 0.5 ? 0x44dd88 : hpFrac > 0.25 ? 0xffcc00 : 0xff3322;
-    this.panelGfx.fillStyle(0x0a1018, 0.7);
-    this.panelGfx.fillRect(12, barY, barW, barH);
-    this.panelGfx.fillStyle(hpColor, 0.9);
-    this.panelGfx.fillRect(12, barY, barW * hpFrac, barH);
-    this.panelGfx.lineStyle(1, 0x3a5060, 0.8);
-    this.panelGfx.strokeRect(12, barY, barW, barH);
+    const hpColor = hpFrac > 0.5 ? "#44dd88" : hpFrac > 0.25 ? "#ffcc00" : "#ff3322";
+    this.hpBarFill.style.width = `${hpFrac * 100}%`;
+    this.hpBarFill.style.background = hpColor;
 
-    // ── barras de munição (nave de ataque) ────────────────────────────
     if (ship.kind === "attack" && ship.ammoMax > 0) {
-      const ammoY = barY + 10;
-      const ammoFrac = ship.ammo / ship.ammoMax;
-      const grenFrac = ship.grenadeAmmo / ship.grenadeMax;
-      // perfurante
-      this.panelGfx.fillStyle(0x0a1018, 0.7);
-      this.panelGfx.fillRect(12, ammoY, barW, 5);
-      this.panelGfx.fillStyle(Palette.fx.bullet, 0.85);
-      this.panelGfx.fillRect(12, ammoY, barW * ammoFrac, 5);
-      this.panelGfx.lineStyle(1, 0x3a5060, 0.6);
-      this.panelGfx.strokeRect(12, ammoY, barW, 5);
-      // granada
-      this.panelGfx.fillStyle(0x0a1018, 0.7);
-      this.panelGfx.fillRect(12, ammoY + 8, barW, 5);
-      this.panelGfx.fillStyle(Palette.fx.grenade, 0.85);
-      this.panelGfx.fillRect(12, ammoY + 8, barW * grenFrac, 5);
-      this.panelGfx.lineStyle(1, 0x3a5060, 0.6);
-      this.panelGfx.strokeRect(12, ammoY + 8, barW, 5);
+      this.ammoBars.style.display = "";
+      this.bulletBarFill.style.width = `${(ship.ammo / ship.ammoMax) * 100}%`;
+      this.bulletBarFill.style.background = cssColor(Palette.fx.bullet, 0.85);
+      this.grenadeBarFill.style.width = `${(ship.grenadeAmmo / ship.grenadeMax) * 100}%`;
+      this.grenadeBarFill.style.background = cssColor(Palette.fx.grenade, 0.85);
     }
   }
 
   // ── minimapa ──────────────────────────────────────────────────────
 
-  drawMinimap(data: MinimapData, screenW: number, screenH: number): void {
+  drawMinimap(data: MinimapData): void {
     const size = MINIMAP_SIZE;
-    const x0 = screenW - size - MINIMAP_MARGIN;
-    const y0 = MINIMAP_MARGIN;
-    const cx = x0 + size / 2;
-    const cy = y0 + size / 2;
+    const cx = size / 2;
+    const cy = size / 2;
     const range = data.minimapFull && data.mapRadius > 0 ? data.mapRadius : MINIMAP_RANGE;
     const k = size / 2 / range;
     const half = size / 2;
     const own = data.own;
+    const g = this.minimapCtx;
 
-    const g = this.minimapGfx;
-    this.minimapMask.clear();
-    this.minimapMask.fillStyle(0xffffff);
-    this.minimapMask.fillRect(x0, y0, size, size);
-
-    g.clear();
+    g.clearRect(0, 0, size, size);
 
     // radar de arcade: fundo preto e uma única borda de linha
-    g.fillStyle(Palette.ui.minimapBg, 0.7);
-    g.fillRect(x0, y0, size, size);
-    g.lineStyle(1, Palette.ui.minimapBorder, 0.8);
-    g.strokeRect(x0, y0, size, size);
+    g.fillStyle = cssColor(Palette.ui.minimapBg, 0.7);
+    g.fillRect(0, 0, size, size);
+    g.strokeStyle = cssColor(Palette.ui.minimapBorder, 0.8);
+    g.lineWidth = 1;
+    g.strokeRect(0.5, 0.5, size - 1, size - 1);
 
     // grade de setores
-    g.lineStyle(1, Palette.ui.minimapGrid, 0.6);
+    g.strokeStyle = cssColor(Palette.ui.minimapGrid, 0.6);
     for (let i = -1; i <= 2; i++) {
       const dx = (i * SECTOR_SIZE - own.x) * k;
-      if (Math.abs(dx) < half) g.lineBetween(cx + dx, y0, cx + dx, y0 + size);
+      if (Math.abs(dx) < half) {
+        g.beginPath();
+        g.moveTo(cx + dx, 0);
+        g.lineTo(cx + dx, size);
+        g.stroke();
+      }
       const dy = (i * SECTOR_SIZE - own.y) * k;
-      if (Math.abs(dy) < half) g.lineBetween(x0, cy + dy, x0 + size, cy + dy);
+      if (Math.abs(dy) < half) {
+        g.beginPath();
+        g.moveTo(0, cy + dy);
+        g.lineTo(size, cy + dy);
+        g.stroke();
+      }
     }
 
     // fronteira da arena
     if (data.minimapFull && data.mapCenter && data.mapRadius > 0) {
       const mc = data.toRender(data.mapCenter);
-      g.lineStyle(1, Palette.fx.boundary, 0.6);
-      g.strokeCircle(cx + (mc.x - own.x) * k, cy + (mc.y - own.y) * k, data.mapRadius * k);
+      g.strokeStyle = cssColor(Palette.fx.boundary, 0.6);
+      g.beginPath();
+      g.arc(cx + (mc.x - own.x) * k, cy + (mc.y - own.y) * k, data.mapRadius * k, 0, Math.PI * 2);
+      g.stroke();
     }
 
     // Ceres
@@ -201,10 +238,13 @@ export class HudRenderer {
       const ccx = cx + (cp.x - own.x) * k;
       const ccy = cy + (cp.y - own.y) * k;
       const cr = CERES_RADIUS * k;
-      g.fillStyle(Palette.ceres.body, 0.25);
-      g.fillCircle(ccx, ccy, cr);
-      g.lineStyle(1.5, Palette.ceres.body, 0.9);
-      g.strokeCircle(ccx, ccy, cr);
+      g.beginPath();
+      g.arc(ccx, ccy, cr, 0, Math.PI * 2);
+      g.fillStyle = cssColor(Palette.ceres.body, 0.25);
+      g.fill();
+      g.lineWidth = 1.5;
+      g.strokeStyle = cssColor(Palette.ceres.body, 0.9);
+      g.stroke();
     }
 
     // asteroides
@@ -212,51 +252,47 @@ export class HudRenderer {
       const dx = (a.rx - own.x) * k;
       const dy = (a.ry - own.y) * k;
       if (Math.abs(dx) < half - 2 && Math.abs(dy) < half - 2) {
-        const col = parseInt(
-          ASTEROID_CLASSES[a.asteroidClass as keyof typeof ASTEROID_CLASSES].color.slice(1), 16,
-        );
-        g.fillStyle(col, 0.85);
-        g.fillCircle(cx + dx, cy + dy, 1.5);
+        g.fillStyle = ASTEROID_CLASSES[a.asteroidClass as keyof typeof ASTEROID_CLASSES].color;
+        g.globalAlpha = 0.85;
+        g.beginPath();
+        g.arc(cx + dx, cy + dy, 1.5, 0, Math.PI * 2);
+        g.fill();
+        g.globalAlpha = 1;
       }
     }
 
     // naves remotas
+    g.fillStyle = "#8899aa";
+    g.globalAlpha = 0.9;
     for (const r of data.remotes) {
       const dx = (r.rx - own.x) * k;
       const dy = (r.ry - own.y) * k;
       if (Math.abs(dx) < half - 2 && Math.abs(dy) < half - 2) {
-        g.fillStyle(0x8899aa, 0.9);
-        g.fillCircle(cx + dx, cy + dy, 2.5);
+        g.beginPath();
+        g.arc(cx + dx, cy + dy, 2.5, 0, Math.PI * 2);
+        g.fill();
       }
     }
+    g.globalAlpha = 1;
 
     // nave própria: ponto + seta de direção
-    g.fillStyle(0xffffff, 1);
-    g.fillCircle(cx, cy, 3.5);
-    g.lineStyle(1.5, 0xffffff, 1);
-    const ang = data.angle;
-    g.lineBetween(cx, cy, cx + Math.cos(ang) * 10, cy + Math.sin(ang) * 10);
-
-    // label "RADAR"
-    void screenH;
+    g.fillStyle = "#ffffff";
+    g.beginPath();
+    g.arc(cx, cy, 3.5, 0, Math.PI * 2);
+    g.fill();
+    g.strokeStyle = "#ffffff";
+    g.lineWidth = 1.5;
+    g.beginPath();
+    g.moveTo(cx, cy);
+    g.lineTo(cx + Math.cos(data.angle) * 10, cy + Math.sin(data.angle) * 10);
+    g.stroke();
   }
 
   destroy(): void {
-    this.panelGfx.destroy();
-    this.statusText.destroy();
-    this.minimapGfx.destroy();
-    this.minimapMask.destroy();
+    this.root.remove();
   }
 
   // ── helpers privados ──────────────────────────────────────────────
-
-  private drawPanel(x: number, y: number, w: number, h: number): void {
-    // painel de arcade: fundo preto e uma única borda de linha
-    this.panelGfx.fillStyle(0x000000, 0.6);
-    this.panelGfx.fillRect(x, y, w, h);
-    this.panelGfx.lineStyle(1, Palette.ui.minimapBorder, 0.6);
-    this.panelGfx.strokeRect(x, y, w, h);
-  }
 
   private buildFlightText(ship: HudShipData, ctx: HudContextData): string {
     const kindLabel: Record<ShipKind, string> = {

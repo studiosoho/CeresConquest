@@ -9,10 +9,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@babylonjs/core": "^9.16.1",
     "@ceres/shared": "*",
     "@ceres/sim-core": "*",
-    "colyseus.js": "^0.15.0",
-    "phaser": "^3.87.0"
+    "colyseus.js": "^0.15.0"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

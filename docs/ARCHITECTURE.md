@@ -1,6 +1,6 @@
 # CeresConquest — Documento de Arquitetura
 
-> Versão 0.2 — 2026-07-08
+> Versão 0.3 — 2026-07-14
 > Status: protótipo em implementação (fases 1–3 parciais)
 
 ## 1. Visão geral do jogo
@@ -26,7 +26,7 @@ Características que definem a arquitetura:
 | # | Decisão | Escolha | Alternativa rejeitada e motivo |
 |---|---------|---------|--------------------------------|
 | 1 | Netcode | **State sync com servidor autoritativo** | Lockstep determinístico — inviável para persistência/save e para determinismo cross-platform (JS × C#) |
-| 2 | Stack do protótipo | **Node + Colyseus (servidor), Phaser 3 + TS (cliente web)** | Engines visuais — menor afinidade com desenvolvimento code-first |
+| 2 | Stack do protótipo | **Node + Colyseus (servidor), Babylon.js + TS (cliente web)** | Engines visuais — menor afinidade com desenvolvimento code-first |
 | 3 | Cliente final desktop | **Godot 4 consumindo o MESMO servidor** (SDK colyseus-godot) | Reescrever backend — desnecessário; servidor não conhece engine de cliente |
 | 4 | Simulação | **Planar (2D), `sim-core` puro sem engine/rede** | Gameplay volumétrico 3D — divergiria web × desktop |
 | 5 | 3D no desktop | **Apenas apresentação** (renderer trocável) | 3D de gameplay — quebraria o reuso do sim-core |
@@ -44,9 +44,9 @@ Características que definem a arquitetura:
 CeresConquest/
 ├── docs/           # este documento e futuros ADRs/design docs
 ├── shared/         # contrato do protocolo + tipos (neutro; consumível pelo cliente desktop)
-├── sim-core/       # simulação pura do jogo — SEM Phaser, SEM Colyseus, SEM I/O
+├── sim-core/       # simulação pura do jogo — SEM Babylon, SEM Colyseus, SEM I/O
 ├── server/         # Colyseus: salas, interest management, persistência, ciclo de vida
-└── client-web/     # Phaser 3 + TypeScript: renderer 2D topdown do protótipo
+└── client-web/     # Babylon.js + TypeScript: renderer topdown (câmera ortográfica) do protótipo
 ```
 
 Regras de dependência (estritas, verificáveis por lint):
@@ -256,22 +256,42 @@ da frota (mesma lógica de `onLeave`/táxi).
 
 Geometria **vazada, somente linhas** (estilo Asteroids). Consequência
 arquitetural: assets são **listas de vértices**, não imagens — a mesma
-definição de forma é desenhada como linha 2D (Phaser) e como wireframe 3D
-(Godot). Não há pipeline de sprites/texturas no protótipo.
+definição de forma é desenhada como GreasedLine no plano XY (Babylon.js,
+câmera ortográfica) e como wireframe 3D (Godot). Não há pipeline de
+sprites/texturas no protótipo.
 
 ### 9.2 Derivação de formas
 
-- **Asteroides:** polígono irregular gerado deterministicamente da semente do
-  asteroide, **no cliente**. Mesma semente → mesma silhueta em web e desktop.
-- **Naves e estruturas:** formas definidas à mão (poucos vértices) em uma
-  biblioteca de shapes versionada junto ao cliente.
+- **Asteroides:** malha 3D irregular gerada deterministicamente da semente do
+  asteroide, **no cliente** (`render/AsteroidMeshGenerator.ts`): icosfera
+  deformada por ruído, com uma **plataforma de construção retangular** achatada
+  na face voltada à câmera — larga o suficiente para qualquer estrutura. Mesma
+  semente → mesma malha em web e desktop. A silhueta XY máxima continua igual
+  ao raio de colisão do sim-core; o eixo Z é puramente decorativo.
+- **Naves:** montagens de **módulos 3D comuns** (`render/ShipMeshGenerator.ts`):
+  cabine, spine leve/pesada, motores 2×/4×, broca, guindaste, braços
+  mecânicos, asas armadas, carga, containers, deck e radar — formas e layout
+  capturados do protótipo de arte (`docs/visualizador_de_naves_modulares.html`).
+  Cada classe é um **manifesto de montagem** (módulos + offsets); classe nova
+  ou variante é só composição. A malha montada é reduzida às **arestas de
+  feição** (bordas + vincos por ângulo diedro) com simplificação de planta
+  (a câmera é top-down fixa), normalizada ao footprint de colisão do sim-core
+  e desenhada como UMA GreasedLine por nave, tingida pela cor do dono
+  (1 malha/1 draw call por nave). As silhuetas 2D à mão de `shapes.ts`
+  sobrevivem apenas nas miniaturas das vagas de hangar das estruturas.
+- **Estruturas:** arquitetura 3D low-poly por tipo
+  (`render/StructureMeshGenerator.ts`) — cúpula (base inicial), tronco de
+  pirâmide com hangar (QG), galpão com torres (estação), silo com abóbadas
+  (rações). O nó é PARENTADO à plataforma do asteroide hospedeiro
+  (`getBuildFace`) — posição, inclinação e spin vêm da hierarquia de cena; o
+  servidor continua conhecendo só posição/asteroidId.
 - Efeitos (bloom "monitor vetorial", espessura, cor) são pós-processo do
   renderer; não afetam nada acima.
 
 ### 9.3 Renderer trocável
 
 ```
-sim-core (estado planar) ──► client-web  : Phaser, câmera topdown 2D
+sim-core (estado planar) ──► client-web  : Babylon.js, câmera ortográfica topdown
                         └──► client-desktop (futuro): Godot, câmera 3D,
                              wireframe 3D; eixo Z puramente decorativo
                              (altura de asteroides, inclinação do cinturão)
@@ -282,7 +302,8 @@ O gameplay é idêntico nas duas versões; muda somente a apresentação.
 No `client-web`, a apresentação já é modular: `GameScene` orquestra a cena e o
 netcode, mas delega o desenho a renderers dedicados em `client-web/src/render/`
 (um por família de entidade — nave, asteroide, estrutura, planeta — mais HUD,
-efeitos, paleta e cache de texturas). A cena não conhece detalhe de desenho;
+efeitos, paleta, fábrica de malhas e conversão de coordenadas). A cena não
+conhece detalhe de desenho;
 isso mantém a fronteira lógica × apresentação nítida e antecipa a troca por um
 renderer 3D no desktop.
 
