@@ -276,7 +276,7 @@ export class HudRenderer {
     }
 
     // naves remotas
-    g.fillStyle = "#8899aa";
+    g.fillStyle = "#fc1414";
     g.globalAlpha = 0.9;
     for (const r of data.remotes) {
       const dx = (r.rx - own.x) * k;
@@ -310,32 +310,32 @@ export class HudRenderer {
 
   private buildFlightText(ship: HudShipData, ctx: HudContextData): string {
     const kindLabel: Record<ShipKind, string> = {
-      builder: "Builder", mining: "Mineração", attack: "Ataque", transport: "Transporte",
+      builder: "Builder", mining: "Mining", attack: "Combat", transport: "Transport",
     };
     const line1 =
-      `⬡ ${ctx.ore} min  ·  ${kindLabel[ship.kind]}  ·  ${ctx.zoom.toFixed(2)}×` +
+      `⬡ ${ctx.ore} ores  ·  ${kindLabel[ship.kind]}  ·  ${ctx.zoom.toFixed(2)}×` +
       `${ctx.anchorTag}${ctx.anchorHint}${ctx.swapHint}${ctx.autoHint}` +
       `${ctx.stationBufferHint}${ctx.ammoHint}${ctx.storeHint}${ctx.cargoHint}`;
     const line2 =
-      `W/↑ acelerar · A/D girar${ctx.landHint}` +
+      `W/↑ THROTTLE · A/D TURN${ctx.landHint}` +
       (ship.kind === "attack"
-        ? " · [ESP] disparar · [G] granada"
-        : `${ctx.isFlying ? " · [G] auto-minerar · [C] trocar" : ""}`) +
-      " · roda/+/- zoom";
+        ? " · [SPACE] FIRE · [G] GRENADE"
+        : "") +
+      " · mouseroll/+/- zoom";
     return [line1, line2, ctx.prodLine, ctx.taxiLine].filter(Boolean).join("\n");
   }
 
   private buildLandedText(ship: HudShipData, ctx: HudContextData): string {
     const miningOn = ship.anchored;
     return (
-      `⬡ Pousado no asteroide${miningOn ? "  ·  ⛏ MINERANDO (minério: " + ctx.ore + ")" : ""}\n` +
+      `⬡ Landed${miningOn ? "  ·  ⛏ MINING (ore: " + ctx.ore + ")" : ""}\n` +
       (miningOn
-        ? "[ESPAÇO] parar mineração\n[F] decolar — pare a mineração antes"
-        : "[ESPAÇO] iniciar mineração automática\n" +
-          (ship.kind === "builder"
-            ? `[1] construir estação  [2] construir QG  [3] centro de rações\n`
-            : "") +
-          "[F] decolar")
+        ? "[SPACE] stop mining\n[F] take off — stop mining before"
+        : "[SPACE] start mining\n" +
+        (ship.kind === "builder"
+          ? `[1] build minestation (100)  [2] build HQ (300) [3] build food center (200)\n`
+          : "") +
+        "[F] take off")
     );
   }
 }

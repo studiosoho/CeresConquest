@@ -8,22 +8,25 @@
  *
  * Cada classe é um MANIFESTO DE MONTAGEM: módulos + offsets. Os módulos
  * são montados como triângulos e o resultado é reduzido às ARESTAS DE
- * FEIÇÃO (bordas + vincos, via ângulo diedro — wireframe de triângulos
- * puro satura em borrão com o glow), fundidas numa lista única de
- * segmentos por classe: o MeshFactory desenha tudo numa só GreasedLine —
+ * FEIÇÃO (bordas abertas + vincos, via ângulo diedro — wireframe de
+ * triângulos puro satura em borrão com o glow), fundidas numa lista única
+ * de segmentos por classe: o MeshFactory desenha tudo numa só GreasedLine —
  * uma malha, um draw call por nave.
+ *
+ * VOLUME 3D: como o cockpit (câmera de primeira pessoa, render/layers.ts)
+ * vê as outras naves em perspectiva, a geometria mantém as três dimensões.
+ * A escala é UNIFORME nos três eixos — preserva a proporção real do
+ * protótipo (altura de cabine, motores, guindaste) e a invariante de
+ * colisão (silhueta XY máxima = raio). Não há mais achatamento de
+ * profundidade nem poda de arestas por projeção de planta (isso existia
+ * para a câmera top-down e apagava o volume).
  *
  * Espaços de coordenadas:
  *   - Os módulos são descritos no quadro do PROTÓTIPO (x lateral, y para
  *     cima, z para a frente), com os números originais preservados.
  *   - `finalize` converte ao quadro local de cena da nave (+X = nariz,
- *     Y lateral, −Z em direção à câmera) e NORMALIZA a escala: o alcance
- *     radial máximo em planta vira `planR × SHIP_RADIUS` (coerente com a
- *     silhueta 2D anterior e o raio de colisão) e a profundidade é
- *     achatada para ±MAX_HALF_DEPTH — em câmera ortográfica top-down a
- *     altura não aparece na projeção, só no depth test, então o
- *     achatamento não tem custo visual e mantém a nave dentro da sua
- *     camada de voo (render/layers.ts).
+ *     Y lateral, −Z = cima na cabine / em direção à câmera principal) e
+ *     normaliza o alcance radial máximo em planta para `planR × SHIP_RADIUS`.
  *
  * Geometria puramente visual e determinística por classe — sem engine,
  * entidades, multiplayer ou lógica de jogo.
@@ -31,9 +34,6 @@
 
 import { SHIP_RADIUS } from "@ceres/shared";
 import type { ShipKind } from "@ceres/shared";
-
-/** meia-profundidade máxima da nave em unidades de mundo (orçamento de Z) */
-const MAX_HALF_DEPTH = 2.5;
 
 /** alcance radial em planta por classe, em múltiplos de SHIP_RADIUS —
  *  mesmos valores máximos das silhuetas 2D anteriores (broca estica a mining) */
@@ -311,24 +311,24 @@ const ASSEMBLE: Record<ShipKind, (a: Acc) => void> = {
 
 function finalize(a: Acc, kind: ShipKind): ShipMeshData {
   const p = a.positions;
-  let maxPlan = 0, maxH = 0;
+  let maxPlan = 0;
   for (let i = 0; i < p.length; i += 3) {
     maxPlan = Math.max(maxPlan, Math.hypot(p[i], p[i + 2]));
-    maxH = Math.max(maxH, Math.abs(p[i + 1]));
   }
+  // escala UNIFORME: normaliza a planta ao raio (colisão) e mantém a altura
+  // do protótipo na mesma proporção — a nave ganha volume real
   const s = (PLAN_RADIUS[kind] * SHIP_RADIUS) / maxPlan;
-  const zs = MAX_HALF_DEPTH / maxH;
   const out = new Array<number>(p.length);
   for (let i = 0; i < p.length; i += 3) {
     // protótipo (x lateral, y cima, z frente) → cena (x nariz, y lateral, −z câmera)
     out[i] = p[i + 2] * s;
     out[i + 1] = p[i] * s;
-    out[i + 2] = -p[i + 1] * zs;
+    out[i + 2] = -p[i + 1] * s;
   }
   const e = CABIN_EYE[kind];
   return {
     segments: extractEdges(out, a.indices),
-    eye: { x: e.z * s, y: e.x * s, z: -e.y * zs },
+    eye: { x: e.z * s, y: e.x * s, z: -e.y * s },
   };
 }
 
@@ -379,27 +379,16 @@ function extractEdges(positions: number[], indices: number[]): number[] {
     }
   }
 
-  // Simplificação de PLANTA: a câmera do jogo é ortográfica top-down FIXA,
-  // então aresta quase vertical projeta num ponto (só satura o glow) e pares
-  // topo/fundo (ex.: as duas faces de uma caixa) projetam no MESMO traço —
-  // descarta as primeiras e deduplica os últimos pela projeção XY. O corte
-  // de comprimento também poda micro-feições (pinos, cabos, frisos) que em
-  // zoom de jogo viram ruído de glow antes de virarem desenho.
-  const MIN_PLAN_LEN = 2.2;
-  const q = (v: number) => Math.round(v);
-  const seen = new Set<string>();
+  // Mantém TODAS as arestas de feição em 3D (o cockpit vê o volume). Só as
+  // diagonais coplanares das faces caem fora — pela regra do vinco abaixo.
   const segments: number[] = [];
   for (const e of edges.values()) {
     // borda aberta (1 face), junção múltipla (>2) ou vinco acentuado
     if (e.count === 2 && !e.sharp) continue;
-    const ax = positions[e.a * 3], ay = positions[e.a * 3 + 1], az = positions[e.a * 3 + 2];
-    const bx = positions[e.b * 3], by = positions[e.b * 3 + 1], bz = positions[e.b * 3 + 2];
-    if (Math.hypot(bx - ax, by - ay) < MIN_PLAN_LEN) continue;
-    const ka = `${q(ax)},${q(ay)}`, kb = `${q(bx)},${q(by)}`;
-    const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    segments.push(ax, ay, az, bx, by, bz);
+    segments.push(
+      positions[e.a * 3], positions[e.a * 3 + 1], positions[e.a * 3 + 2],
+      positions[e.b * 3], positions[e.b * 3 + 1], positions[e.b * 3 + 2],
+    );
   }
   return segments;
 }

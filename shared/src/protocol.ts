@@ -68,4 +68,5 @@ export interface FireCommand { kind: FireKind; }
 export const MSG_FIRE = "fire";
 
 /** Expande a arena para o próximo tamanho (small→medium→large). */
-export const MSG_EXPAND = "expandMap";
+// @deprecated("adicionar isto na criação da sala")
+//export const MSG_EXPAND = "expandMap";

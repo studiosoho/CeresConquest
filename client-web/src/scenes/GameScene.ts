@@ -1,4 +1,4 @@
-import { Client, type Room } from "colyseus.js";
+import type { Room } from "colyseus.js";
 import type { Engine } from "@babylonjs/core/Engines/engine";
 import type { Scene } from "@babylonjs/core/scene";
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
@@ -14,9 +14,6 @@ import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTextur
 import { PointsCloudSystem } from "@babylonjs/core/Particles/pointsCloudSystem";
 import type { CloudPoint } from "@babylonjs/core/Particles/cloudPoint";
 import {
-  SERVER_LOCATION_PROD,
-  // SERVER_LOCATION,
-  // DEFAULT_PORT,
   MSG_INPUT,
   MSG_PRODUCE,
   MSG_ANCHOR,
@@ -24,7 +21,7 @@ import {
   MSG_AUTOMINE,
   MSG_TAXI,
   MSG_LAND_ACTION,
-  MSG_EXPAND,
+  // MSG_EXPAND,
   MSG_CARGO,
   MSG_FIRE,
   SECTOR_SIZE,
@@ -362,7 +359,12 @@ export class GameScene {
     this.keys = new KeyInput();
   }
 
-  async create() {
+  /**
+   * Inicializa os renderers e assume a Room de "match" já juntada pelo lobby
+   * (o main.ts entrega). A conexão/matchmaking vive no lobby, não aqui.
+   */
+  async create(room: Room) {
+    this.room = room;
     // sistema de render
     this.meshFactory = new MeshFactory(this.bScene, this.glow);
     this.shipRenderer = new ShipRenderer(this.meshFactory);
@@ -383,18 +385,6 @@ export class GameScene {
       },
       { passive: false },
     );
-
-    // Render (e qualquer PaaS equivalente) só expõe a porta 443 publicamente;
-    // a porta interna do servidor (DEFAULT_PORT) nunca entra na URL pública.
-    //const endpoint = `${SERVER_LOCATION}:${DEFAULT_PORT}`;
-    const endpoint = `${SERVER_LOCATION_PROD}`;
-    const client = new Client(endpoint);
-    try {
-      this.room = await client.joinOrCreate("match");
-    } catch (err) {
-      console.error(`Falha ao conectar em ${endpoint}`, err);
-      return;
-    }
 
     // sincronização por diff a cada patch — evita depender da API de
     // callbacks do schema, que varia entre versões do colyseus.js
@@ -551,12 +541,13 @@ export class GameScene {
     const isLanding = landingPhase === "landing";
     const isLanded = landingPhase === "landed";
 
-    if (this.keys.justDown("N")) {
+    if (this.keys.justDown("M")) {
       this.minimapFull = !this.minimapFull;
     }
-    if (this.keys.justDown("M")) {
-      this.room.send(MSG_EXPAND);
-    }
+    // deprecated: será movido para configuração da sala
+    // if (this.keys.justDown("M")) {
+    //   this.room.send(MSG_EXPAND);
+    // }
 
     // SimWorld único por frame — reutilizado no input, draw e zona de pouso
     const frameSim = new SimWorld(this.worldSeed);
@@ -650,7 +641,7 @@ export class GameScene {
         this.room.send(MSG_LAND_ACTION, { action: "mine" });
       }
       if (this.keys.justDown("ONE")) {
-        this.room.send(MSG_LAND_ACTION, { action: "build" });
+        this.room.send(MSG_LAND_ACTION, { action: "buildmine" });
       }
       if (this.keys.justDown("TWO")) {
         this.room.send(MSG_LAND_ACTION, { action: "buildhq" });
@@ -1015,7 +1006,7 @@ export class GameScene {
     const p5 = SHIP_PRODUCTION.builder;
     const p6 = SHIP_PRODUCTION.transport;
     const mark = (ok: boolean) => (ok ? "» " : "  ");
-    const need = !hasHq ? " — precisa de QG" : !anchored ? " — ancore [F]" : "";
+    const need = !hasHq ? " — needs HQ" : !anchored ? " — land [F]" : "";
     const hint3 = `[3] ${p3.label} (${p3.cost})${need}`;
     const hint4 = `[4] ${p4.label} (${p4.cost})${need}`;
     const hint5 = `[5] ${p5.label} (${p5.cost})${need}`;
@@ -1025,18 +1016,18 @@ export class GameScene {
       const st = this.serverStructures.get(hqId);
       return !!st && st.stype === "hq";
     })();
-    const anchorTag = anchored ? "  ⚓ ANCORADO" : "";
+    const anchorTag = anchored ? "  ⚓ LANDED · [F] take off" : "";
     const canAnchor = !anchored && this.inLandZone;
     const anchorHint = canAnchor
       ? nearOwnStruct !== null
         ? nearStructFree > 0
-          ? `  » [F] pousar (${nearStructFree} vaga${nearStructFree !== 1 ? "s" : ""} livre${nearStructFree !== 1 ? "s" : ""})`
-          : "  ⚓ hangar cheio"
-        : "  » [F] pousar"
+          ? `  » [F] land (${nearStructFree} free slot${nearStructFree !== 1 ? "s" : ""})`
+          : "  ⚓ hangar full"
+        : "  » [F] land"
       : "";
-    const swapHint = anchored && !this.isFlying && hangarTotal > 0 ? `  » [C] trocar (hangar: ${hangarTotal})` : "";
+    const swapHint = anchored && !this.isFlying && hangarTotal > 0 ? `  » [C] switch (hangar: ${hangarTotal})` : "";
     const canAuto = activeKind === "mining" && anchored && !this.isFlying && nearOwnStation;
-    const autoHint = canAuto ? "  » [G] auto-minerar na estação" : "";
+    const autoHint = canAuto ? "  » [G] auto-mine in this station" : "";
     const anchoredStationStruct = anchored ? (() => {
       const st = this.serverStructures.get(mineAuth?.hqId ?? "");
       return (st && st.stype === "miningStation") ? st : null;
@@ -1044,17 +1035,17 @@ export class GameScene {
     const builderMining = anchoredStationStruct && (mineAuth?.mining ?? false);
     const stationBufferHint =
       anchoredStationStruct && activeKind === "builder"
-        ? (builderMining ? "  » [ESP] parar mineração" : "  » [ESP] minerar")
+        ? (builderMining ? "  » [ESP] stop mining" : "  » [ESP] start mining")
         : "";
     const anchoredStruct = anchored ? this.serverStructures.get(mineAuth?.hqId ?? "") ?? null : null;
     let storeHint = "";
     if (anchoredStruct) {
       if (anchoredStruct.stype === "miningStation") {
-        storeHint = `  ·  Estoque: ${Math.floor(anchoredStruct.oreStore)}/${STATION_ORE_STORE} minério · rações: ${Math.floor(anchoredStruct.rationStore)}`;
+        storeHint = `  ·  Buffer: ${Math.floor(anchoredStruct.oreStore)}/${STATION_ORE_STORE} ores · food: ${Math.floor(anchoredStruct.rationStore)}`;
       } else if (anchoredStruct.stype === "initialBase") {
-        storeHint = `  ·  Base — rações: ${Math.floor(anchoredStruct.rationStore)} (da Terra)`;
+        storeHint = `  ·  Base — food: ${Math.floor(anchoredStruct.rationStore)} (from Earth)`;
       } else if (anchoredStruct.stype === "hq") {
-        storeHint = `  ·  QG — rações: ${Math.floor(anchoredStruct.rationStore)}`;
+        storeHint = `  ·  HQ — food: ${Math.floor(anchoredStruct.rationStore)}`;
       }
     }
     let ammoHint = "";
@@ -1067,12 +1058,12 @@ export class GameScene {
     if (activeKind === "transport") {
       const ck = mineAuth?.cargoKind ?? "";
       const ca = Math.floor(mineAuth?.cargoAmount ?? 0);
-      cargoHint = ck === "" ? "  ·  Porão: vazio" : `  ·  Porão: ${ca} ${ck === "ore" ? "minério" : "rações"}`;
+      cargoHint = ck === "" ? "  ·  Container: empty" : `  ·  Buffer: ${ca} ${ck === "ore" ? "minério" : "rações"}`;
       if (anchoredStruct) {
         const st = anchoredStruct.stype;
-        if (ck === "rations" || (ck === "ore" && st === "initialBase")) cargoHint += "  » [E] descarregar";
-        else if (ck === "" && st === "miningStation" && anchoredStruct.oreStore > 0) cargoHint += "  » [E] carregar minério";
-        else if (ck === "" && st === "initialBase" && anchoredStruct.rationStore > 0) cargoHint += "  » [E] carregar rações";
+        if (ck === "rations" || (ck === "ore" && st === "initialBase")) cargoHint += "  » [E] unload";
+        else if (ck === "" && st === "miningStation" && anchoredStruct.oreStore > 0) cargoHint += "  » [E] load ores";
+        else if (ck === "" && st === "initialBase" && anchoredStruct.rationStore > 0) cargoHint += "  » [E] load food";
       }
     }
     let taxiLine = "";
@@ -1080,14 +1071,14 @@ export class GameScene {
       const o = this.taxiOpts[this.taxiSel];
       const km = (o.srcDist / 1000).toFixed(1);
       taxiLine =
-        `\nTáxi ▸ ${kindLabel[o.kind]} (QG a ${km}k)  ` +
-        `·  [T] trocar seleção (${this.taxiSel + 1}/${this.taxiOpts.length})  ·  [Y] chamar (2× vel.)`;
+        `\nTaxi ▸ ${kindLabel[o.kind]} (HQ at ${km}k)  ` +
+        `·  [T] change selection (${this.taxiSel + 1}/${this.taxiOpts.length})  ·  [Y] call (2× speed)`;
     }
 
     const prodLine = anchoredInHq
       ? `\n${mark(ore >= p3.cost)}${hint3}   ${mark(ore >= p4.cost)}${hint4}   ${mark(ore >= p5.cost)}${hint5}   ${mark(ore >= p6.cost)}${hint6}`
       : "";
-    const landHint = canAnchor ? " · [F] pousar" : "";
+    const landHint = canAnchor ? " · [F] land" : "";
 
     const shipData: HudShipData = {
       kind: activeKind,

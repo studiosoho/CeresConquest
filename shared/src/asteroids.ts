@@ -47,7 +47,7 @@ export const ASTEROID_CLASSES: Record<AsteroidClass, AsteroidClassSpec> = {
     label: "Médio (M)",
     minRadius: SIZE_CLASS.asteroidMedium,
     maxRadius: SIZE_CLASS.asteroidLarge,
-    color: "#D4AF37",
+    color: "#29a1de",
     oreAmount: 15000,
   },
   large: {

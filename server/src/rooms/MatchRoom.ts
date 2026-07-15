@@ -1,4 +1,4 @@
-import { Room, type Client } from "colyseus";
+import { Room, updateLobby, type Client } from "colyseus";
 import {
   MSG_INPUT,
   MSG_BUILD,
@@ -8,7 +8,7 @@ import {
   MSG_AUTOMINE,
   MSG_TAXI,
   MSG_LAND_ACTION,
-  MSG_EXPAND,
+  // MSG_EXPAND,
   MSG_CARGO,
   MSG_FIRE,
   TICK_RATE,
@@ -78,6 +78,19 @@ export interface MatchOptions {
   spawnStrategy?: SpawnStrategy;
   mapSize?: string;
   bots?: number;
+  /** título exibido no lobby (definido por quem cria a sala) */
+  title?: string;
+  /** nome de jogador de quem entra (usado no onJoin) */
+  name?: string;
+}
+
+/** Sanitiza um texto livre vindo do cliente (nome/título) para exibição. */
+function sanitizeLabel(raw: unknown, fallback: string, max: number): string {
+  if (typeof raw !== "string") return fallback;
+  const clean = Array.from(raw)
+    .filter((ch) => { const c = ch.codePointAt(0); return c !== undefined && c >= 0x20 && c !== 0x7f; })
+    .join("").trim().slice(0, max);
+  return clean.length > 0 ? clean : fallback;
 }
 
 /**
@@ -176,7 +189,7 @@ export class MatchRoom extends Room<MatchState> {
       this.tryLandAction(client.sessionId, cmd?.action);
     });
 
-    this.onMessage(MSG_EXPAND, () => this.expandMap());
+    // this.onMessage(MSG_EXPAND, () => this.expandMap());
 
     this.onMessage(MSG_CARGO, (client: Client) => {
       this.tryCargo(client.sessionId);
@@ -186,6 +199,11 @@ export class MatchRoom extends Room<MatchState> {
       this.tryFire(client.sessionId, cmd?.kind);
     });
 
+    // metadata exibida na lista do lobby (título da sala)
+    void this.setMetadata({
+      title: sanitizeLabel(options.title, `Arena ${seed.toString(16).slice(0, 4)}`, 24),
+    });
+
     this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
     console.log(
       `[room] match criada — seed=${seed} raio=${radiusSectors}s ` +
@@ -193,7 +211,7 @@ export class MatchRoom extends Room<MatchState> {
     );
   }
 
-  onJoin(client: Client) {
+  onJoin(client: Client, options: MatchOptions = {}) {
     const base = this.spawns[this.spawnIndex++ % this.spawns.length];
     const id = `p${this.shipSeq++}`;
     const ship = this.spawnShip(id, base, client.sessionId, "builder"); // default: builder
@@ -203,11 +221,14 @@ export class MatchRoom extends Room<MatchState> {
     this.state.ships.set(id, this.mirrorSpawn(ship));
     const p = new PlayerSchema();
     p.activeShip = id;
+    p.name = sanitizeLabel(options.name, "Piloto", 20);
     this.state.players.set(client.sessionId, p);
     this.sim.playerOre.set(client.sessionId, 0);
     // o jogador RECEBE a Base Inicial no asteroide livre mais próximo do spawn
     this.grantInitialBase(client.sessionId, ship);
-    console.log(`[room] ${client.sessionId} entrou — nave ${id} setor (${ship.sx}, ${ship.sy})`);
+    // atualiza a contagem de jogadores exibida no lobby
+    void updateLobby(this);
+    console.log(`[room] ${p.name} (${client.sessionId}) entrou — nave ${id} setor (${ship.sx}, ${ship.sy})`);
   }
 
   /**
@@ -273,6 +294,8 @@ export class MatchRoom extends Room<MatchState> {
     this.activeShip.delete(client.sessionId);
     this.state.players.delete(client.sessionId);
     this.sim.playerOre.delete(client.sessionId);
+    // atualiza a contagem de jogadores exibida no lobby
+    void updateLobby(this);
     console.log(`[room] ${client.sessionId} saiu`);
   }
 
@@ -508,7 +531,7 @@ export class MatchRoom extends Room<MatchState> {
       return;
     }
 
-    if (action === "build" && ship.kind === "builder") {
+    if (action === "buildmine" && ship.kind === "builder") {
       // constrói estação de mineração no asteroide pousado
       const spec = STRUCTURE_SPECS["miningStation"];
       if (this.sim.getOre(sessionId) < spec.cost) return;

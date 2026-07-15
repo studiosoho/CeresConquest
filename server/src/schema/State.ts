@@ -56,6 +56,8 @@ export class PlayerSchema extends Schema {
   @type("float32") ore = 0;
   /** id da nave que o jogador pilota */
   @type("string") activeShip = "";
+  /** nome de jogador informado no lobby (join option) */
+  @type("string") name = "";
 }
 
 export class StructureSchema extends Schema {

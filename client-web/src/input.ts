@@ -14,7 +14,7 @@
 export type KeyName =
   | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS"
   | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX"
-  | "E" | "F" | "C" | "G" | "T" | "Y" | "N" | "M";
+  | "E" | "F" | "C" | "G" | "T" | "Y" | "M";
 
 const CODE_MAP: Record<KeyName, string[]> = {
   W: ["KeyW"], A: ["KeyA"], S: ["KeyS"], D: ["KeyD"],
@@ -25,7 +25,7 @@ const CODE_MAP: Record<KeyName, string[]> = {
   ONE: ["Digit1"], TWO: ["Digit2"], THREE: ["Digit3"],
   FOUR: ["Digit4"], FIVE: ["Digit5"], SIX: ["Digit6"],
   E: ["KeyE"], F: ["KeyF"], C: ["KeyC"], G: ["KeyG"],
-  T: ["KeyT"], Y: ["KeyY"], N: ["KeyN"], M: ["KeyM"],
+  T: ["KeyT"], Y: ["KeyY"], /*N: ["KeyN"],*/ M: ["KeyM"],
 };
 
 /** code → nome (invertido uma vez no módulo) */

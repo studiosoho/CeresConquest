@@ -35,7 +35,7 @@ export class ShipMeshInstance {
 
   constructor(
     private mesh: GreasedLineBaseMesh,
-    private glow: GlowLayer,
+    //private glow: GlowLayer,
   ) {
     this.root = mesh;
   }
@@ -62,7 +62,7 @@ export class ShipMeshInstance {
 
   dispose(): void {
     // disciplina de dispose: glow, malha E material — senão vaza GPU
-    this.glow.unReferenceMeshFromUsingItsOwnMaterial(this.mesh);
+    //this.glow.unReferenceMeshFromUsingItsOwnMaterial(this.mesh);
     this.mesh.dispose(false, true);
   }
 }
@@ -88,7 +88,7 @@ export class MeshFactory {
     ) as GreasedLineBaseMesh;
     this.glow.referenceMeshToUseItsOwnMaterial(mesh);
 
-    const instance = new ShipMeshInstance(mesh, this.glow);
+    const instance = new ShipMeshInstance(mesh/*, this.glow*/);
     instance.setTint(tint);
     return instance;
   }
