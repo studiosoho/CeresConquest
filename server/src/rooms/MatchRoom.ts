@@ -1068,15 +1068,16 @@ export class MatchRoom extends Room<MatchState> {
   }
 
   /** Expande a arena para o próximo tamanho: 8 → 20 → 50 setores. */
-  private expandMap(): void {
-    const cur = Math.round(this.state.mapRadius / SECTOR_SIZE);
-    const next = cur < 20 ? 20 : cur < 50 ? 50 : 0;
-    if (!next) return;
-    const radiusUnits = next * SECTOR_SIZE;
-    this.sim.setBoundary(this.arenaCenter, radiusUnits);
-    this.state.mapRadius = radiusUnits;
-    console.log(`[room] arena expandida: ${cur} → ${next} setores`);
-  }
+  // TODO: esta função vai para a configuração ao criar a sala
+  // private expandMap(): void {
+  //   const cur = Math.round(this.state.mapRadius / SECTOR_SIZE);
+  //   const next = cur < 20 ? 20 : cur < 50 ? 50 : 0;
+  //   if (!next) return;
+  //   const radiusUnits = next * SECTOR_SIZE;
+  //   this.sim.setBoundary(this.arenaCenter, radiusUnits);
+  //   this.state.mapRadius = radiusUnits;
+  //   console.log(`[room] arena expandida: ${cur} → ${next} setores`);
+  // }
 
   /** Destrói uma nave (remove do mundo; se for do jogador, transfere controle). */
   private destroyShip(shipId: string): void {
