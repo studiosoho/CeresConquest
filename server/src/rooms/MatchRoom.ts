@@ -12,6 +12,7 @@ import {
   MSG_CARGO,
   MSG_FIRE,
   TICK_RATE,
+  SIM_MAX_DT,
   SECTOR_SIZE,
   STRUCTURE_SPECS,
   SHIP_PRODUCTION,
@@ -108,8 +109,13 @@ export class MatchRoom extends Room<MatchState> {
   private activeShip = new Map<string, string>();
   /** estado das aranhas mineradoras (shipId → SpiderState) */
   private spiders = new Map<string, SpiderState>();
-  /** centro da arena (para expandir a fronteira) */
-  private arenaCenter = { sx: 0, sy: 0, x: 0, y: 0 };
+  /**
+   * Centro da arena (para expandir a fronteira). Não é `private` de propósito:
+   * o único leitor é o `expandMap()` desativado logo abaixo, guardado para a
+   * configuração na criação da sala — e `noUnusedLocals` reprova campo privado
+   * que ninguém lê.
+   */
+  arenaCenter = { sx: 0, sy: 0, x: 0, y: 0 };
   /** tempo total acumulado (s) — usado para calcular ângulo atual dos asteroides */
   private elapsed = 0;
   /** projéteis ativos (id → estado) */
@@ -204,7 +210,16 @@ export class MatchRoom extends Room<MatchState> {
       title: sanitizeLabel(options.title, `Arena ${seed.toString(16).slice(0, 4)}`, 24),
     });
 
-    this.setSimulationInterval((deltaMs) => this.tick(deltaMs / 1000), 1000 / TICK_RATE);
+    // dt CLAMPADO em SIM_MAX_DT, exatamente como o render loop do cliente
+    // (main.ts). O servidor usava o deltaMs cru: um engasgo de tick (GC, IO,
+    // instância dormindo no PaaS gratuito) entregava dt = 1 s ou mais à física
+    // e ressuscitava o tunelamento — 22,8% da seção de choque atravessando a
+    // rocha a dt = 1 s, 100% a dt = 3 s — além de fazer servidor e cliente
+    // integrarem com h diferentes e dessincronizarem justo no frame ruim.
+    this.setSimulationInterval(
+      (deltaMs) => this.tick(Math.min(deltaMs / 1000, SIM_MAX_DT)),
+      1000 / TICK_RATE,
+    );
     console.log(
       `[room] match criada — seed=${seed} raio=${radiusSectors}s ` +
       `maxPlayers=${this.maxClients} bots=${botCount}`,
@@ -1109,6 +1124,7 @@ export class MatchRoom extends Room<MatchState> {
     s.hqId = ship.hqId;
     s.autoMining = ship.autoMining;
     s.stationId = ship.stationId;
+    s.taxiTo = ship.taxiTo;
     s.bay = ship.bay;
     s.landingPhase = ship.landingPhase;
     s.landingProgress = ship.landingProgress;
@@ -1326,6 +1342,7 @@ export class MatchRoom extends Room<MatchState> {
       s.vx = ship.vx;
       s.vy = ship.vy;
       s.angle = ship.angle;
+      s.av = ship.av;
       s.mining = ship.mining;
       s.anchored = ship.anchored;
       s.stored = ship.stored;
@@ -1333,6 +1350,7 @@ export class MatchRoom extends Room<MatchState> {
       s.anchoredAsteroidId = ship.anchoredAsteroidId;
       s.autoMining = ship.autoMining;
       s.stationId = ship.stationId;
+      s.taxiTo = ship.taxiTo;
       s.bay = ship.bay;
       s.landingPhase = ship.landingPhase;
       s.landingProgress = ship.landingProgress;

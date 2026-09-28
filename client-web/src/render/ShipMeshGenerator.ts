@@ -1,42 +1,72 @@
 /**
- * ShipMeshGenerator — malha 3D wireframe por classe de nave, montada a
- * partir de MÓDULOS COMUNS (cabine, spine leve/pesada, motores 2×/4×,
- * broca, guindaste, braços mecânicos, asas armadas, carga, containers,
- * deck, radar). Formas e layout capturados do protótipo de arte
- * (docs/visualizador_de_naves_modulares.html — modo holograma); as chamas
- * de motor do protótipo ficam de fora (o jato é do EffectsRenderer).
+ * ShipMeshGenerator — casco SÓLIDO low poly por classe de nave, em DUAS
+ * camadas que se desenham como dois draws instanciados por classe
+ * (MeshFactory), mais a posição dos BOCAIS para os jatos (ShipTrails):
+ *   - `hull`   — peças CONVEXAS de faceta chapada, iluminadas pelo rig global
+ *                (chave quente, rim frio, hemisférica). Fora do glow.
+ *   - `livery` — a MARCA DO DONO: uma divisa (chevron) PINTADA no dorso,
+ *                iluminada como o casco, na cor do dono (buffer por instância).
+ *   - `nozzles`— onde nasce cada jato; o ponto quente do motor é a cabeça do
+ *                jato (ShipTrails), não geometria do casco.
  *
- * Cada classe é um MANIFESTO DE MONTAGEM: módulos + offsets. Os módulos
- * são montados como triângulos e o resultado é reduzido às ARESTAS DE
- * FEIÇÃO (bordas abertas + vincos, via ângulo diedro — wireframe de
- * triângulos puro satura em borrão com o glow), fundidas numa lista única
- * de segmentos por classe: o MeshFactory desenha tudo numa só GreasedLine —
- * uma malha, um draw call por nave.
+ * ── HISTÓRICO DA PEÇA (o que cada rodada do cego derrubou) ─────────────
+ * R1 "ponto branco de 15 px": wireframe puro não tem plano para a luz talhar
+ *    → casco sólido + piso de tamanho em tela (ShipRenderer).
+ * R2 "retângulo branco chapado": o shader padrão faz `clamp(luz·difuso)·
+ *    corDeVértice`; com o albedo na cor de vértice e difuso branco, toda
+ *    faceta acima de 1,0 de luz saturava no MESMO valor. O difuso agora É o
+ *    albedo de referência (Palette.ship.hull) e a cor de vértice só leva a
+ *    RAZÃO de cada peça sobre ele. Casco neutro para todo dono.
+ * R3 "ícone visto de cima": a câmera ortográfica vê o TOPO, e topo chato é
+ *    valor médio por construção → telhados de duas águas.
+ * R4 "grampo sem nariz; luzes vermelha/verde leem como interface": cunha
+ *    fechada com proa em ponta; a camada emissiva inteira saiu (~1,1 ms
+ *    medidos devolvidos); direção e movimento passaram aos jatos.
+ * R5 "brasão de duas cores cortado por uma linha reta; contorno de 1 px é
+ *    adesivo; cápsula de bala sem asa nem ressalto":
+ *    - o telhado ganhou CHANFRO: topo estreito + ombro a ~37° + flanco a
+ *      ~60°, três facetas por bordo → a transição claro→escuro vira DEGRAUS
+ *      (volume), não uma aresta de bandeira;
+ *    - os flancos íngremes (|nz| pequeno) recebem albedo mais alto
+ *      (EDGE_BOOST): é neles que a chave (do lado aceso) e o rim frio (do
+ *      lado de sombra) batem quase de frente, então a borda do casco se
+ *      separa do fundo POR LUZ, e só onde há luz — o oposto de um contorno,
+ *      que é igual em volta toda;
+ *    - a cumeeira é interrompida por uma cabine maior de vidro escuro, e a
+ *      silhueta ganhou asas curtas em flecha e deriva — cara de aeronave;
+ *    - a fita-contorno de dono saiu; o dono é a divisa pintada no dorso.
  *
- * VOLUME 3D: como o cockpit (câmera de primeira pessoa, render/layers.ts)
- * vê as outras naves em perspectiva, a geometria mantém as três dimensões.
- * A escala é UNIFORME nos três eixos — preserva a proporção real do
- * protótipo (altura de cabine, motores, guindaste) e a invariante de
- * colisão (silhueta XY máxima = raio). Não há mais achatamento de
- * profundidade nem poda de arestas por projeção de planta (isso existia
- * para a câmera top-down e apagava o volume).
+ * PEÇAS CONVEXAS: cada peça é o casco convexo de uma nuvem de pontos autorada
+ * (estações de casco, caixas, prismas); coplanares saem com a MESMA normal —
+ * um plano chapado só, que é o que low poly quer.
+ *
+ * FORMA COMUNICA MASSA (shared/ships.ts): caça (0,8) dardo de asa em flecha;
+ * construtora (1,0) cunha de trabalho de asa curta; mineradora (1,4) corpo
+ * alto e pesado com broca e tremonhas; cargueiro (2,6) tijolo comprido de
+ * contêineres com quatro motores. No regime de tela o tamanho mínimo também
+ * escala com ∛massa (`shipFloorPx`), e há um jato por motor (2, 2, 2, 4).
  *
  * Espaços de coordenadas:
- *   - Os módulos são descritos no quadro do PROTÓTIPO (x lateral, y para
- *     cima, z para a frente), com os números originais preservados.
- *   - `finalize` converte ao quadro local de cena da nave (+X = nariz,
- *     Y lateral, −Z = cima na cabine / em direção à câmera principal) e
- *     normaliza o alcance radial máximo em planta para `planR × SHIP_RADIUS`.
+ *   - Autoria no quadro de PROJETO: x = nariz, y = bombordo (esquerda do
+ *     piloto), z = para cima (dorso).
+ *   - `finalize` converte ao quadro local de cena da nave (+X nariz, +Y
+ *     bombordo, −Z = dorso, voltado para a câmera principal) e normaliza o
+ *     alcance radial máximo em planta para `planR × SHIP_RADIUS` — em escala
+ *     de mundo a nave não cresce um milímetro. A conversão espelha Z, o que
+ *     inverte o enrolamento; as normais são espelhadas junto (continuam para
+ *     fora) e os materiais não fazem culling.
  *
  * Geometria puramente visual e determinística por classe — sem engine,
  * entidades, multiplayer ou lógica de jogo.
  */
 
-import { SHIP_RADIUS } from "@ceres/shared";
+import { SHIP_RADIUS, SHIP_PHYSICS } from "@ceres/shared";
 import type { ShipKind } from "@ceres/shared";
+import { Palette } from "./Palette";
 
-/** alcance radial em planta por classe, em múltiplos de SHIP_RADIUS —
- *  mesmos valores máximos das silhuetas 2D anteriores (broca estica a mining) */
+/** alcance radial em planta por classe, em múltiplos de SHIP_RADIUS — os
+ *  mesmos máximos de antes (a broca estica a mineradora). NÃO subir: é a
+ *  escala de MUNDO, e a colisão é um círculo de SHIP_RADIUS */
 const PLAN_RADIUS: Record<ShipKind, number> = {
   builder: 1.0,
   mining: 1.35,
@@ -44,364 +74,486 @@ const PLAN_RADIUS: Record<ShipKind, number> = {
   transport: 1.12,
 };
 
+/** piso de comprimento em tela (px) para a massa de referência — a
+ *  justificativa do número está no cabeçalho de ShipRenderer */
+export const MIN_SHIP_PX = 44;
+
+/** piso de comprimento em tela da classe: MIN_SHIP_PX · ∛massa */
+export function shipFloorPx(kind: ShipKind): number {
+  return MIN_SHIP_PX * Math.cbrt(SHIP_PHYSICS[kind].mass);
+}
+
+/**
+ * Albedo extra dos FLANCOS íngremes (faces com |nz| < EDGE_NZ no quadro de
+ * projeto), FRIO: metal em ângulo rasante devolve o ambiente, e o nosso é
+ * azul. A 45 px o flanco é a faixa de 2–3 px na borda da silhueta.
+ *   - Com o albedo de referência, o lado de sombra (rim 0,5 efetivo + fill
+ *     hemisférico, os dois vindos de baixo-direita) saía em ~(18,31,47) —
+ *     o valor do céu (~(22,52,78)): "a metade escura some no fundo".
+ *   - Um realce CINZA grande (1,8–2,4×, testado na sonda) resolvia a sombra
+ *     mas estourava o flanco do lado da CHAVE em branco puro — o fio claro de
+ *     contorno de novo, e acima do limiar de bloom.
+ *   - Realce por canal (1,1 / 1,35 / 1,8): do lado da chave (luz âmbar,
+ *     pobre em azul) o flanco fecha em ~(210,230,220), sem clampar; do lado
+ *     do rim/fill (luz azul) ele sobe a ~(28,66,160) — uma borda de luz fria
+ *     ACIMA do céu, só onde a luz de recorte bate. É luz, não traço.
+ */
+const EDGE_BOOST: RGB = [1.1, 1.35, 1.8];
+const EDGE_NZ = 0.6;
+
+/** malha de faceta chapada: 3 vértices exclusivos por triângulo */
+export interface SolidData {
+  positions: number[];
+  normals: number[];
+  /** RGBA por vértice */
+  colors: number[];
+  indices: number[];
+}
+
+/** bocal de motor no quadro local de CENA (escala de mundo) */
+export interface Nozzle {
+  x: number;
+  y: number;
+  /** raio do bocal (u) — dá a largura do jato e da cabeça quente */
+  r: number;
+}
+
 export interface ShipMeshData {
-  /** segmentos de ARESTA (x1,y1,z1,x2,y2,z2 por segmento), espaço de cena */
-  segments: number[];
+  /** casco iluminado; cor de vértice = RAZÃO do albedo sobre Palette.ship.hull */
+  hull: SolidData;
+  /** divisa do dono (cor de vértice branca; o dono entra por instância) */
+  livery: SolidData;
+  /** bocais (onde cada jato nasce) */
+  nozzles: Nozzle[];
   /** ponto de vista do cockpit (dentro da cabine), no quadro local da nave */
   eye: { x: number; y: number; z: number };
+  /** comprimento em planta (unidades de mundo) — base do piso de tela */
+  length: number;
+  /** maior +Z de cena (o ventre, lado oposto à câmera) — ShipRenderer segura
+   *  esse ponto no lugar quando infla a malha, para ela crescer PARA A
+   *  CÂMERA e nunca afundar na camada das rochas (layers.ts) */
+  belly: number;
 }
 
-/** olho do piloto por classe, no quadro do PROTÓTIPO (dentro do vidro da
- *  cabine: offset do módulo + altura de olho) — convertido em `finalize` */
-const CABIN_EYE: Record<ShipKind, { x: number; y: number; z: number }> = {
-  builder: { x: 0, y: 0.45, z: 2.8 },
-  mining: { x: 0, y: 0.45, z: 1.6 },
-  attack: { x: 0, y: 0.55, z: 2.6 },
-  transport: { x: 0, y: 0.45, z: 2.8 },
+// ── cores (albedo) ─────────────────────────────────────────────────────
+
+type RGB = readonly [number, number, number];
+const rgb = (hex: number, k = 1): RGB => [
+  (((hex >> 16) & 0xff) / 255) * k,
+  (((hex >> 8) & 0xff) / 255) * k,
+  ((hex & 0xff) / 255) * k,
+];
+
+/** albedo de referência (vira o difuso do material) */
+const REF = rgb(Palette.ship.hull);
+/** albedo absoluto → razão sobre a referência (a cor de vértice do casco) */
+const ratio = (hex: number): RGB => {
+  const a = rgb(hex);
+  return [a[0] / REF[0], a[1] / REF[1], a[2] / REF[2]];
 };
 
-// ── acumulador de geometria ────────────────────────────────────────────
+const C = {
+  hull: ratio(Palette.ship.hull),
+  dark: ratio(Palette.ship.hullDark),
+  trim: ratio(Palette.ship.trim),
+  hazard: ratio(Palette.ship.hazard),
+  glass: ratio(Palette.ship.glass),
+  cargo: Palette.ship.cargo.map((h) => ratio(h)),
+  white: [1, 1, 1] as RGB,
+};
 
-/** rotação Euler aplicada como no Babylon (roll Z, depois pitch X, depois yaw Y) */
-type Rot = { x?: number; y?: number; z?: number };
+// ── casco convexo 3D ───────────────────────────────────────────────────
 
-class Acc {
+type V = [number, number, number];
+
+const sub = (a: V, b: V): V => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const cross = (a: V, b: V): V => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const dot = (a: V, b: V) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+interface Face { a: number; b: number; c: number; n: V; d: number }
+
+/**
+ * Casco convexo incremental. As nuvens aqui têm ≤ ~40 pontos, então o O(n²)
+ * direto é irrelevante (roda uma vez por classe) e a simplicidade vale mais.
+ * Pontos coplanares a uma face existente são ignorados — a face continua
+ * triangulada, mas todos os triângulos dela têm a mesma normal.
+ */
+function convexHull(raw: V[]): { pts: V[]; faces: Face[] } {
+  const pts: V[] = [];
+  for (const q of raw) {
+    if (!pts.some((p) => Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) + Math.abs(p[2] - q[2]) < 1e-7)) pts.push(q);
+  }
+  const eps = 1e-6;
+
+  // tetraedro inicial: extremos sucessivos
+  const i0 = 0;
+  let i1 = 0, best = -1;
+  for (let i = 1; i < pts.length; i++) {
+    const v = sub(pts[i], pts[i0]);
+    const m = dot(v, v);
+    if (m > best) { best = m; i1 = i; }
+  }
+  let i2 = 0; best = -1;
+  const e01 = sub(pts[i1], pts[i0]);
+  for (let i = 0; i < pts.length; i++) {
+    const c = cross(e01, sub(pts[i], pts[i0]));
+    const m = dot(c, c);
+    if (m > best) { best = m; i2 = i; }
+  }
+  let i3 = 0; best = -1;
+  const n012 = cross(e01, sub(pts[i2], pts[i0]));
+  for (let i = 0; i < pts.length; i++) {
+    const m = Math.abs(dot(n012, sub(pts[i], pts[i0])));
+    if (m > best) { best = m; i3 = i; }
+  }
+  const inner: V = [0, 1, 2].map((k) => (pts[i0][k] + pts[i1][k] + pts[i2][k] + pts[i3][k]) / 4) as V;
+
+  const make = (a: number, b: number, c: number): Face | null => {
+    let n = cross(sub(pts[b], pts[a]), sub(pts[c], pts[a]));
+    const len = Math.hypot(n[0], n[1], n[2]);
+    if (len < 1e-12) return null;
+    n = [n[0] / len, n[1] / len, n[2] / len];
+    // orienta para FORA: o ponto interior do tetraedro inicial continua
+    // dentro do casco para sempre (o casco só cresce)
+    if (dot(n, sub(inner, pts[a])) > 0) return { a, b: c, c: b, n: [-n[0], -n[1], -n[2]], d: -dot(n, pts[a]) };
+    return { a, b, c, n, d: dot(n, pts[a]) };
+  };
+
+  let faces = [make(i0, i1, i2), make(i0, i1, i3), make(i0, i2, i3), make(i1, i2, i3)].filter(
+    (f): f is Face => f !== null,
+  );
+  const used = new Set([i0, i1, i2, i3]);
+
+  for (let i = 0; i < pts.length; i++) {
+    if (used.has(i)) continue;
+    const p = pts[i];
+    const visible = faces.filter((f) => dot(f.n, p) - f.d > eps);
+    if (visible.length === 0) continue;
+    // horizonte: arestas dirigidas das faces visíveis cuja reversa não é visível
+    const edges = new Set<string>();
+    for (const f of visible) for (const [u, v] of [[f.a, f.b], [f.b, f.c], [f.c, f.a]]) edges.add(`${u},${v}`);
+    faces = faces.filter((f) => !visible.includes(f));
+    for (const f of visible) {
+      for (const [u, v] of [[f.a, f.b], [f.b, f.c], [f.c, f.a]]) {
+        if (edges.has(`${v},${u}`)) continue;
+        const nf = make(u, v, i);
+        if (nf) faces.push(nf);
+      }
+    }
+  }
+  return { pts, faces };
+}
+
+// ── acumuladores ───────────────────────────────────────────────────────
+
+const ONE: RGB = [1, 1, 1];
+
+class Solid {
   positions: number[] = [];
+  normals: number[] = [];
+  colors: number[] = [];
   indices: number[] = [];
 
-  /** adiciona vértices/índices com rotação + translação (quadro do protótipo) */
-  push(verts: number[], idx: number[], px: number, py: number, pz: number, rot?: Rot): void {
-    const base = this.positions.length / 3;
-    const { sx, cx, sy, cy, sz, cz } = {
-      sx: Math.sin(rot?.x ?? 0), cx: Math.cos(rot?.x ?? 0),
-      sy: Math.sin(rot?.y ?? 0), cy: Math.cos(rot?.y ?? 0),
-      sz: Math.sin(rot?.z ?? 0), cz: Math.cos(rot?.z ?? 0),
+  /**
+   * Peça convexa (casco dos pontos), faceta chapada, cor única. Com `edges`,
+   * as faces íngremes (|nz| < EDGE_NZ) recebem EDGE_BOOST — ver a nota da
+   * constante: a borda da silhueta separada do fundo pela LUZ.
+   */
+  add(points: V[], c: RGB, edges = false): void {
+    const { pts, faces } = convexHull(points);
+    for (const f of faces) {
+      const k = edges && Math.abs(f.n[2]) < EDGE_NZ ? EDGE_BOOST : ONE;
+      const base = this.positions.length / 3;
+      for (const i of [f.a, f.b, f.c]) {
+        const q = pts[i];
+        this.positions.push(q[0], q[1], q[2]);
+        this.normals.push(f.n[0], f.n[1], f.n[2]);
+        this.colors.push(c[0] * k[0], c[1] * k[1], c[2] * k[2], 1);
+      }
+      this.indices.push(base, base + 1, base + 2);
+    }
+  }
+}
+
+class Build {
+  hull = new Solid();
+  livery = new Solid();
+  /** bocais em quadro de projeto: [x, y, raio] */
+  nozzles: [number, number, number][] = [];
+  eye: V = [0, 0, 0];
+}
+
+// ── primitivas (quadro de projeto) ─────────────────────────────────────
+
+/** espelha em Y (bombordo/estibordo); pontos na linha de centro não duplicam */
+const sym = (pts: V[]): V[] => {
+  const out: V[] = [];
+  for (const q of pts) {
+    out.push(q);
+    if (Math.abs(q[1]) > 1e-6) out.push([q[0], -q[1], q[2]]);
+  }
+  return out;
+};
+
+/** estação de casco: pares (y, z) do lado de bombordo, espelhados */
+const station = (x: number, yz: [number, number][]): V[] => sym(yz.map(([y, z]) => [x, y, z] as V));
+
+/** caixa alinhada aos eixos */
+const box = (x0: number, x1: number, y0: number, y1: number, z0: number, z1: number): V[] => {
+  const out: V[] = [];
+  for (const x of [x0, x1]) for (const y of [y0, y1]) for (const z of [z0, z1]) out.push([x, y, z]);
+  return out;
+};
+
+/** o mesmo conjunto de pontos com Y invertido (peça do outro bordo) */
+const flipY = (pts: V[]): V[] => pts.map(([x, y, z]) => [x, -y, z] as V);
+
+/**
+ * Prisma poligonal ao longo de X (nacelas, colares, broca): raio r0 em x0 e
+ * r1 em x1 (r1 = 0 → cone). Fase escolhida para deixar uma ARESTA para cima
+ * (R3): de cima, um prisma de topo chato mostrava um plano de valor médio;
+ * com a aresta no alto ele mostra duas águas, uma acesa e outra na sombra.
+ */
+const prismX = (x0: number, x1: number, cy: number, cz: number, r0: number, r1: number, n: number): V[] => {
+  const off = (n / 4) % 1;
+  const out: V[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = ((i + off) / n) * Math.PI * 2;
+    const c = Math.cos(a), s = Math.sin(a);
+    out.push([x0, cy + c * r0, cz + s * r0], [x1, cy + c * r1, cz + s * r1]);
+  }
+  return out;
+};
+
+/** nacela de motor (prisma escuro) + bocal registrado para o jato */
+function engine(b: Build, x0: number, x1: number, y: number, z: number, rBack: number, rFront: number, n: number): void {
+  b.hull.add(prismX(x0, x1, y, z, rBack, rFront, n), C.dark);
+  b.nozzles.push([x0, y, rBack]);
+}
+
+/**
+ * DIVISA DO DONO (R5, no lugar da fita-contorno): um V pintado sobre as
+ * águas do dorso, com o vértice para a PROA. Por que esta forma e este lugar:
+ *   - é pintura, não traço: iluminada pelo rig como o casco (acende na água
+ *     da chave, apaga na de sombra), então pertence ao volume em vez de
+ *     recortá-lo — o "adesivo" do veredito era o contorno, que é igual em
+ *     volta toda e independe da luz;
+ *   - fica DENTRO da silhueta, no dorso (o que a câmera de cima vê), e não
+ *     desenha a borda;
+ *   - o V aponta o nariz: reforça a direção em vez de competir com ela;
+ *   - cor do dono pura no albedo: branca na nave própria, verde-fósforo na
+ *     frota, cinza-azulado nas alheias — o jogador separa a própria frota
+ *     pela divisa acesa, como separaria pintura de esquadrão.
+ * Uma lâmina por bordo, entre `y0` (junto da cumeeira) e `y1` (no ombro),
+ * assentada na altura do telhado dada por `zAt(y)` e erguida LIVERY_LIFT.
+ */
+const LIVERY_LIFT = 0.035;
+const LIVERY_TH = 0.03;
+function chevron(b: Build, xi: number, d: number, w: number, y0: number, y1: number, zAt: (y: number) => number): void {
+  for (const s of [1, -1]) {
+    const pts: V[] = [];
+    for (const [x, y] of [[xi, y0], [xi - w, y0], [xi - d, y1], [xi - d - w, y1]] as const) {
+      const z = zAt(y) + LIVERY_LIFT;
+      pts.push([x, s * y, z], [x, s * y, z + LIVERY_TH]);
+    }
+    b.livery.add(pts, C.white);
+  }
+}
+
+// ── manifestos por classe ──────────────────────────────────────────────
+// Números em unidades de projeto (a normalização de `finalize` reescala);
+// a construtora tem ~4,3 de comprimento como referência.
+
+const ASSEMBLE: Record<ShipKind, (b: Build) => void> = {
+  // CONSTRUTORA — cunha fechada de proa em ponta (R4) com TELHADO
+  // CHANFRADO (R5): topo estreito, ombro a ~37°, flanco a ~60° — três
+  // facetas por bordo, a sombra chega em degraus. Cabine grande de vidro
+  // escuro que QUEBRA a cumeeira no terço dianteiro, toco de guindaste e
+  // deriva que a quebram de novo atrás, asas curtas em flecha que tiram a
+  // silhueta de "cápsula de bala", pods de motor abertos na popa.
+  builder: (b) => {
+    b.hull.add([
+      [2.25, 0, 0.12],
+      ...station(1.40, [[0.10, 0.62], [0.34, 0.46], [0.50, 0.10], [0.30, -0.24]]),
+      ...station(0.30, [[0.14, 0.84], [0.46, 0.60], [0.74, 0.12], [0.52, -0.32]]),
+      ...station(-1.20, [[0.14, 0.82], [0.48, 0.58], [0.78, 0.10], [0.54, -0.30]]),
+      ...station(-1.65, [[0.12, 0.64], [0.42, 0.44], [0.70, 0.06], [0.48, -0.24]]),
+    ], C.hull, true);
+    // cabine: bloco claro com teto em empena + para-brisa escuro inclinado
+    b.hull.add([
+      ...station(0.45, [[0.30, 0.76], [0.14, 1.04]]),
+      ...station(1.02, [[0.28, 0.76], [0.12, 1.04]]),
+    ], C.trim);
+    b.hull.add([
+      ...station(1.02, [[0.12, 1.02], [0.28, 0.76]]),
+      ...station(1.40, [[0.10, 0.64], [0.22, 0.60]]),
+    ], C.glass);
+    // asas curtas em flecha, com vinco (duas águas)
+    const wing: V[] = [
+      [-0.25, 0.66, 0.14], [-0.25, 0.66, -0.06], [-1.35, 0.70, 0.12], [-1.35, 0.70, -0.06],
+      [-0.75, 0.68, 0.30],
+      [-1.05, 1.12, 0.22], [-1.45, 1.12, 0.20], [-1.25, 1.12, 0.28], [-1.05, 1.12, 0.12], [-1.45, 1.12, 0.12],
+    ];
+    b.hull.add(wing, C.hull, true);
+    b.hull.add(flipY(wing), C.hull, true);
+    // toco de guindaste (empena escura) e deriva dorsal
+    b.hull.add([...station(-0.20, [[0.12, 0.74]]), [-0.20, 0, 1.00], ...station(-0.45, [[0.12, 0.74]]), [-0.45, 0, 1.00]], C.dark);
+    b.hull.add([[-1.00, 0.03, 0.80], [-1.00, -0.03, 0.80], [-1.55, 0.03, 1.14], [-1.55, -0.03, 1.14], [-1.65, 0.04, 0.62], [-1.65, -0.04, 0.62]], C.dark);
+    for (const s of [1, -1]) engine(b, -2.05, -1.15, 0.56 * s, 0.02, 0.24, 0.27, 6);
+    chevron(b, 0.22, 0.30, 0.16, 0.15, 0.44, (y) => (y <= 0.14 ? 0.83 : 0.83 - (y - 0.14) * 0.75));
+    b.eye = [1.00, 0, 0.92];
+  },
+
+  // CAÇA — dardo: casco de CUMEEIRA central (duas águas a ~50°), asa em
+  // flecha com VINCO ao longo da envergadura, canhões longos passando do
+  // bordo de ataque, deriva dorsal na cauda e dois motores colados — os dois
+  // jatos paralelos do caça de referência.
+  attack: (b) => {
+    b.hull.add([
+      [2.10, 0, 0.02],
+      ...station(1.20, [[0, 0.30], [0.20, 0.04], [0.12, -0.14]]),
+      ...station(-0.40, [[0, 0.42], [0.32, 0.04], [0.20, -0.20]]),
+      ...station(-1.45, [[0, 0.34], [0.30, 0.02], [0.20, -0.16]]),
+    ], C.hull, true);
+    // canopy em gota sobre a cumeeira
+    b.hull.add([
+      [1.35, 0, 0.27], [0.95, 0, 0.50], [0.30, 0, 0.50],
+      ...station(1.05, [[0.10, 0.33]]), ...station(0.45, [[0.14, 0.40]]),
+    ], C.glass);
+    // deriva dorsal (a cauda "alta" diz de que lado é a popa)
+    b.hull.add([[-0.40, 0.04, 0.42], [-0.40, -0.04, 0.42], [-1.35, 0.04, 0.72], [-1.35, -0.04, 0.72], [-1.45, 0.05, 0.34], [-1.45, -0.05, 0.34]], C.dark);
+    const wing: V[] = [
+      [0.35, 0.22, 0.02], [0.35, 0.22, -0.06],
+      [-1.25, 0.26, 0.02], [-1.25, 0.26, -0.06],
+      [-0.45, 0.24, 0.30],
+      [-0.95, 1.40, 0.08], [-1.45, 1.40, 0.08], [-1.20, 1.40, 0.20],
+      [-0.95, 1.40, 0.02], [-1.45, 1.40, 0.02],
+    ];
+    b.hull.add(wing, C.hull, true);
+    b.hull.add(flipY(wing), C.hull, true);
+    for (const s of [1, -1]) {
+      b.hull.add(box(-0.70, 0.20, 0.64 * s, 0.84 * s, 0.10, 0.28), C.dark);
+      b.hull.add(box(0.20, 1.30, 0.70 * s, 0.78 * s, 0.15, 0.23), C.dark);
+      engine(b, -1.85, -1.00, 0.20 * s, 0.08, 0.17, 0.20, 6);
+    }
+    chevron(b, 0.12, 0.26, 0.14, 0.03, 0.22, (y) => 0.40 - y * 1.19);
+    b.eye = [0.80, 0, 0.42];
+  },
+
+  // MINERADORA — corpo pesado em TELHADO CHANFRADO alto (topo, ombro,
+  // flanco e ventre por bordo), broca cônica em faixa de segurança na proa
+  // (a broca É o nariz), tremonhas de minério nos flancos e cabine em empena
+  // deslocada para bombordo (assimetria de nave de serviço).
+  mining: (b) => {
+    b.hull.add([
+      ...station(1.25, [[0.10, 0.62], [0.30, 0.48], [0.52, 0.18], [0.46, -0.22], [0.20, -0.36]]),
+      ...station(0.75, [[0.16, 0.92], [0.46, 0.66], [0.80, 0.22], [0.70, -0.30], [0.30, -0.46]]),
+      ...station(-1.00, [[0.18, 0.96], [0.50, 0.70], [0.86, 0.22], [0.74, -0.30], [0.32, -0.48]]),
+      ...station(-1.55, [[0.14, 0.74], [0.40, 0.54], [0.74, 0.14], [0.62, -0.22], [0.28, -0.36]]),
+    ], C.hull, true);
+    b.hull.add(prismX(1.15, 1.50, 0, 0.06, 0.50, 0.50, 8), C.dark);
+    b.hull.add(prismX(1.50, 2.75, 0, 0.06, 0.44, 0, 6), C.hazard);
+    const hopper: V[] = [];
+    for (const x of [0.55, -1.15]) {
+      for (const [y, z] of [[0.78, 0.34], [1.02, 0.18], [1.02, -0.22], [0.78, -0.32]] as const) hopper.push([x, y, z]);
+    }
+    hopper.push([0.72, 0.80, 0.20], [0.72, 0.80, -0.20]); // chanfro de proa
+    b.hull.add(hopper, C.cargo[0], true);
+    b.hull.add(flipY(hopper), C.cargo[0], true);
+    // cabine a bombordo, empena assimétrica
+    const cab: V[] = [];
+    for (const x of [0.30, 0.80]) cab.push([x, 0.12, 0.84], [x, 0.50, 0.60], [x, 0.31, 1.04]);
+    cab.push([0.98, 0.14, 0.78], [0.98, 0.48, 0.60], [0.98, 0.31, 0.86]);
+    b.hull.add(cab, C.trim);
+    for (const s of [1, -1]) engine(b, -2.05, -1.20, 0.42 * s, 0.00, 0.30, 0.34, 8);
+    chevron(b, 0.00, 0.28, 0.16, 0.18, 0.46, (y) => (y <= 0.17 ? 0.945 : 0.945 - (y - 0.17) * 0.8));
+    b.eye = [0.62, 0.30, 0.86];
+  },
+
+  // CARGUEIRO — tijolo comprido (a maior área em planta do jogo) com PROA EM
+  // CUNHA e casco em telhado chanfrado; os oito contêineres têm TAMPA
+  // INCLINADA para o próprio bordo (~35°), então o convés inteiro vira um
+  // telhado de duas águas. Ponte em empena de dois andares com mastro na
+  // proa e QUATRO motores (quatro jatos).
+  transport: (b) => {
+    b.hull.add([
+      ...station(2.45, [[0, 0.36], [0.26, 0.04], [0.18, -0.20]]),
+      ...station(1.85, [[0.14, 0.66], [0.44, 0.46], [0.74, 0.06], [0.58, -0.36]]),
+      ...station(-2.00, [[0.14, 0.66], [0.46, 0.46], [0.78, 0.06], [0.62, -0.40]]),
+      ...station(-2.45, [[0.12, 0.56], [0.42, 0.40], [0.74, 0.02], [0.56, -0.32]]),
+    ], C.hull, true);
+    // ponte em empena, dois andares, + mastro
+    b.hull.add([
+      ...station(1.95, [[0.28, 0.58]]), [1.95, 0, 0.74],
+      [1.70, 0, 0.98], [1.25, 0, 0.98],
+      ...station(1.25, [[0.34, 0.62]]), ...station(1.70, [[0.34, 0.64]]),
+    ], C.trim);
+    b.hull.add([...station(1.60, [[0.16, 0.92]]), [1.60, 0, 1.12], ...station(1.32, [[0.16, 0.92]]), [1.32, 0, 1.12]], C.trim);
+    b.hull.add(box(1.40, 1.46, -0.03, 0.03, 1.10, 1.30), C.dark);
+    const rows: [number, number][] = [[1.05, 0.32], [0.22, -0.55], [-0.65, -1.40], [-1.50, -1.95]];
+    const lid = (x0: number, x1: number): V[] => {
+      const out: V[] = [];
+      for (const x of [x0, x1]) out.push([x, 0.06, 0.40], [x, 0.70, 0.40], [x, 0.06, 1.00], [x, 0.70, 0.56]);
+      return out;
     };
-    for (let i = 0; i < verts.length; i += 3) {
-      let x = verts[i], y = verts[i + 1], z = verts[i + 2];
-      // roll (Z)
-      let t = x; x = t * cz - y * sz; y = t * sz + y * cz;
-      // pitch (X)
-      t = y; y = t * cx - z * sx; z = t * sx + z * cx;
-      // yaw (Y)
-      t = z; z = t * cy - x * sy; x = t * sy + x * cy;
-      this.positions.push(x + px, y + py, z + pz);
-    }
-    for (const i of idx) this.indices.push(base + i);
-  }
-}
-
-// ── primitivas (locais, centradas na origem, eixo Y = altura) ──────────
-
-const boxGeo = (w: number, h: number, d: number): [number[], number[]] => {
-  const x = w / 2, y = h / 2, z = d / 2;
-  return [
-    [-x, -y, -z, x, -y, -z, x, y, -z, -x, y, -z, -x, -y, z, x, -y, z, x, y, z, -x, y, z],
-    [0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1, 3, 2, 6, 3, 6, 7, 0, 3, 7, 0, 7, 4, 1, 5, 6, 1, 6, 2],
-  ];
-};
-
-/** cilindro/cone sem tampas (rims lêem bem de cima; tampas só poluem) */
-const cylGeo = (dTop: number, dBottom: number, h: number, tess: number): [number[], number[]] => {
-  const verts: number[] = [];
-  const idx: number[] = [];
-  const rt = dTop / 2, rb = dBottom / 2, y = h / 2;
-  if (rt <= 0) {
-    // cone: ápice + anel inferior
-    verts.push(0, y, 0);
-    for (let i = 0; i < tess; i++) {
-      const a = (i / tess) * Math.PI * 2;
-      verts.push(Math.cos(a) * rb, -y, Math.sin(a) * rb);
-    }
-    for (let i = 0; i < tess; i++) idx.push(0, 1 + i, 1 + ((i + 1) % tess));
-  } else {
-    for (let i = 0; i < tess; i++) {
-      const a = (i / tess) * Math.PI * 2;
-      const c = Math.cos(a), s = Math.sin(a);
-      verts.push(c * rt, y, s * rt, c * rb, -y, s * rb);
-    }
-    for (let i = 0; i < tess; i++) {
-      const t0 = i * 2, b0 = i * 2 + 1;
-      const t1 = ((i + 1) % tess) * 2, b1 = ((i + 1) % tess) * 2 + 1;
-      idx.push(t0, b0, b1, t0, b1, t1);
-    }
-  }
-  return [verts, idx];
-};
-
-/** esfera UV low-poly (juntas pequenas — não precisa de mais) */
-const sphereGeo = (d: number, slices = 6, stacks = 4): [number[], number[]] => {
-  const r = d / 2;
-  const verts: number[] = [0, r, 0];
-  const idx: number[] = [];
-  for (let st = 1; st < stacks; st++) {
-    const phi = (st / stacks) * Math.PI;
-    for (let sl = 0; sl < slices; sl++) {
-      const th = (sl / slices) * Math.PI * 2;
-      verts.push(Math.sin(phi) * Math.cos(th) * r, Math.cos(phi) * r, Math.sin(phi) * Math.sin(th) * r);
-    }
-  }
-  verts.push(0, -r, 0);
-  const bottom = verts.length / 3 - 1;
-  const ring = (st: number, sl: number) => 1 + (st - 1) * slices + (sl % slices);
-  for (let sl = 0; sl < slices; sl++) idx.push(0, ring(1, sl), ring(1, sl + 1));
-  for (let st = 1; st < stacks - 1; st++)
-    for (let sl = 0; sl < slices; sl++)
-      idx.push(ring(st, sl), ring(st + 1, sl), ring(st + 1, sl + 1), ring(st, sl), ring(st + 1, sl + 1), ring(st, sl + 1));
-  for (let sl = 0; sl < slices; sl++) idx.push(bottom, ring(stacks - 1, sl + 1), ring(stacks - 1, sl));
-  return [verts, idx];
-};
-
-// ── biblioteca de módulos comuns (números do protótipo) ────────────────
-
-type Off = { x: number; y: number; z: number };
-const at = (x: number, y: number, z: number): Off => ({ x, y, z });
-
-/** Cabine: corpo + vidro cônico inclinado. */
-function modCabin(a: Acc, o: Off): void {
-  a.push(...boxGeo(1.2, 1.0, 1.8), o.x, o.y, o.z);
-  a.push(...cylGeo(0.1, 1.2, 1.2, 4), o.x, o.y + 0.1, o.z + 0.4, { x: Math.PI / 2 });
-}
-
-/** Espinha dorsal treliçada (chassi), leve ou pesada. */
-function modSpine(a: Acc, o: Off, heavy: boolean): void {
-  const length = heavy ? 4.5 : 3.5;
-  const h = heavy ? 0.6 : 0.4;
-  const w = heavy ? 0.8 : 0.6;
-  a.push(...boxGeo(w, 0.1, length), o.x, o.y + h / 2, o.z);
-  a.push(...boxGeo(w, 0.1, length), o.x, o.y - h / 2, o.z);
-  const steps = heavy ? 6 : 4;
-  for (let i = 0; i <= steps; i++) {
-    const zPos = -length / 2 + (length / steps) * i;
-    a.push(...boxGeo(w + 0.1, h, 0.1), o.x, o.y, o.z + zPos);
-    if (i < steps) {
-      a.push(...boxGeo(0.05, h * 1.3, 0.05), o.x, o.y, o.z + zPos + length / steps / 2, { x: Math.PI / 4 });
-    }
-  }
-}
-
-/** Motores duplos leves (2 nacelas + bocais). */
-function modEngineSmall(a: Acc, o: Off): void {
-  for (const side of [-0.4, 0.4]) {
-    a.push(...cylGeo(0.35, 0.5, 1.5, 8), o.x + side, o.y, o.z, { x: Math.PI / 2 });
-    a.push(...cylGeo(0.5, 0.3, 0.4, 8), o.x + side, o.y, o.z - 0.8, { x: Math.PI / 2 });
-  }
-}
-
-/** Motores quadruplos pesados (arranjo 2×2 + bocais). */
-function modEngineLarge(a: Acc, o: Off): void {
-  for (const p of [{ x: -0.5, y: 0.4 }, { x: 0.5, y: 0.4 }, { x: -0.5, y: -0.4 }, { x: 0.5, y: -0.4 }]) {
-    a.push(...cylGeo(0.45, 0.7, 1.8, 8), o.x + p.x, o.y + p.y, o.z, { x: Math.PI / 2 });
-    a.push(...cylGeo(0.6, 0.4, 0.5, 8), o.x + p.x, o.y + p.y, o.z - 1.0, { x: Math.PI / 2 });
-  }
-}
-
-/** Broca de mineração: corpo, cone helicoidal e anéis escalonados. */
-function modDrill(a: Acc, o: Off): void {
-  a.push(...cylGeo(1.2, 1.2, 0.4, 8), o.x, o.y, o.z, { x: Math.PI / 2 });
-  a.push(...cylGeo(0, 1.0, 2.2, 6), o.x, o.y, o.z + 1.1, { x: Math.PI / 2 });
-  for (let i = 1; i <= 4; i++) {
-    const ringSize = 1.0 - i * 0.2;
-    a.push(...cylGeo(ringSize, ringSize + 0.1, 0.15, 6), o.x, o.y, o.z + 0.2 + i * 0.45, { x: Math.PI / 2 });
-  }
-}
-
-/** Guindaste articulado superior. */
-function modCrane(a: Acc, o: Off): void {
-  a.push(...cylGeo(0.8, 0.8, 0.3, 12), o.x, o.y, o.z);
-  a.push(...boxGeo(0.2, 1.5, 0.2), o.x, o.y + 0.75, o.z, { x: -Math.PI / 6 });
-  a.push(...boxGeo(0.15, 0.15, 2.2), o.x, o.y + 1.6, o.z + 0.7);
-  a.push(...cylGeo(0.03, 0.03, 1.0, 4), o.x, o.y + 1.1, o.z + 1.6);
-  a.push(...boxGeo(0.3, 0.2, 0.3), o.x, o.y + 0.6, o.z + 1.6);
-}
-
-/** Braço mecânico lateral com garra (side = ±1). */
-function modMechanicalArm(a: Acc, o: Off, side: number): void {
-  a.push(...cylGeo(0.4, 0.4, 0.4, 8), o.x, o.y, o.z, { z: Math.PI / 2 });
-  const a1x = 0.1 * side, a1z = 0.5;
-  a.push(...boxGeo(0.15, 0.15, 1.2), o.x + a1x, o.y, o.z + a1z, { y: 0.3 * side });
-  const ex = a1x + Math.sin(0.3 * side) * 0.6, ez = a1z + Math.cos(0.3 * side) * 0.6;
-  a.push(...sphereGeo(0.3), o.x + ex, o.y, o.z + ez);
-  const a2x = ex - 0.1 * side, a2z = ez + 0.4;
-  a.push(...boxGeo(0.12, 0.12, 0.8), o.x + a2x, o.y, o.z + a2z, { y: -0.15 * side });
-  a.push(...boxGeo(0.4, 0.1, 0.3), o.x + a2x, o.y, o.z + a2z + 0.4);
-}
-
-/** Asa de ataque com canhão e canos duplos (side = ±1). */
-function modWingWeapon(a: Acc, o: Off, side: number): void {
-  a.push(...boxGeo(1.8, 0.1, 1.5), o.x + 1.0 * side, o.y, o.z, { y: 0.2 * side, z: -0.15 * side });
-  a.push(...cylGeo(0.2, 0.2, 1.6, 8), o.x + 1.7 * side, o.y, o.z + 0.4, { x: Math.PI / 2 });
-  for (const off of [-0.07, 0.07]) {
-    a.push(...cylGeo(0.05, 0.05, 0.8, 4), o.x + (1.7 + off) * side, o.y, o.z + 1.2, { x: Math.PI / 2 });
-  }
-}
-
-/** Gaiola de carga com blocos internos. */
-function modCargo(a: Acc, o: Off): void {
-  a.push(...boxGeo(1.8, 1.1, 3.2), o.x, o.y, o.z);
-  for (const z of [-0.9, 0, 0.9]) a.push(...boxGeo(1.4, 0.8, 0.7), o.x, o.y, o.z + z);
-}
-
-/** Bloco triplo de containers com frisos em X. */
-function modContainers(a: Acc, o: Off): void {
-  for (const pos of [-1.0, 0, 1.0]) {
-    a.push(...boxGeo(1.6, 1.1, 0.85), o.x, o.y, o.z + pos);
-    a.push(...boxGeo(1.62, 0.05, 0.05), o.x, o.y, o.z + pos, { y: 0.5 });
-    a.push(...boxGeo(1.62, 0.05, 0.05), o.x, o.y, o.z + pos, { y: -0.5 });
-  }
-}
-
-/** Deck de placas com pinos de amarração. */
-function modDeck(a: Acc, o: Off): void {
-  a.push(...boxGeo(2.2, 0.15, 3.0), o.x, o.y, o.z);
-  for (const z of [-1.0, 0, 1.0])
-    for (const x of [-0.8, 0.8]) a.push(...boxGeo(0.15, 0.5, 0.15), o.x + x, o.y + 0.25, o.z + z);
-}
-
-/** Radar: mastro, domo e placa rotativa. */
-function modRadar(a: Acc, o: Off): void {
-  a.push(...cylGeo(0.1, 0.1, 1.2, 4), o.x, o.y + 0.6, o.z);
-  a.push(...boxGeo(0.6, 0.1, 0.6), o.x, o.y + 1.2, o.z);
-  a.push(...boxGeo(0.1, 0.4, 0.4), o.x, o.y + 1.45, o.z);
-}
-
-// ── manifestos de montagem por classe (presets do protótipo) ───────────
-
-const ASSEMBLE: Record<ShipKind, (a: Acc) => void> = {
-  // Construtora: spine leve + cabine + motores leves + guindaste + braços + deck
-  builder: (a) => {
-    modSpine(a, at(0, 0, 0), false);
-    modCabin(a, at(0, 0, 2.5));
-    modEngineSmall(a, at(0, 0, -2.4));
-    modCrane(a, at(0, 0.4, 0.2));
-    modMechanicalArm(a, at(-0.5, 0, 0.8), -1);
-    modMechanicalArm(a, at(0.5, 0, 0.8), 1);
-    modDeck(a, at(0, -0.5, -0.2));
-  },
-  // Mineradora: spine pesada + cabine + broca + carga + garras + motores pesados
-  mining: (a) => {
-    modSpine(a, at(0, 0, 0), true);
-    modCabin(a, at(0, 0, 1.3));
-    modDrill(a, at(0, 0, 2.8));
-    modCargo(a, at(0, 0.1, -1.1));
-    modMechanicalArm(a, at(-0.6, -0.2, 1.0), -1);
-    modMechanicalArm(a, at(0.6, -0.2, 1.0), 1);
-    modEngineLarge(a, at(0, 0, -2.8));
-  },
-  // Ataque: spine leve + cabine + radar + asas armadas + motores pesados
-  attack: (a) => {
-    modSpine(a, at(0, 0, 0), false);
-    modCabin(a, at(0, 0.1, 2.3));
-    modRadar(a, at(0, 0.5, 0.2));
-    modWingWeapon(a, at(-0.6, 0, 0.2), -1);
-    modWingWeapon(a, at(0.6, 0, 0.2), 1);
-    modEngineLarge(a, at(0, 0, -2.4));
-  },
-  // Transporte: spine pesada + cabine + containers + deck + motores pesados
-  transport: (a) => {
-    modSpine(a, at(0, 0, 0), true);
-    modCabin(a, at(0, 0, 2.5));
-    modContainers(a, at(0, 0.2, -0.2));
-    modDeck(a, at(0, -0.4, -0.2));
-    modEngineLarge(a, at(0, 0, -2.6));
+    rows.forEach(([x1, x0], r) => {
+      b.hull.add(lid(x0, x1), C.cargo[(r * 2) % 3], true);
+      b.hull.add(flipY(lid(x0, x1)), C.cargo[(r * 2 + 1) % 3], true);
+    });
+    for (const y of [0.22, 0.60, -0.22, -0.60]) engine(b, -2.95, -2.10, y, 0.00, 0.19, 0.22, 6);
+    chevron(b, 2.28, 0.20, 0.12, 0.04, 0.26, (y) => 0.52 - y * 0.7);
+    b.eye = [1.50, 0, 0.80];
   },
 };
 
 // ── conversão de quadro + normalização de escala ───────────────────────
 
-function finalize(a: Acc, kind: ShipKind): ShipMeshData {
-  const p = a.positions;
-  let maxPlan = 0;
-  for (let i = 0; i < p.length; i += 3) {
-    maxPlan = Math.max(maxPlan, Math.hypot(p[i], p[i + 2]));
+function finalize(b: Build, kind: ShipKind): ShipMeshData {
+  let maxPlan = 0, minX = Infinity, maxX = -Infinity, minZ = Infinity;
+  const hp = b.hull.positions;
+  for (let i = 0; i < hp.length; i += 3) {
+    maxPlan = Math.max(maxPlan, Math.hypot(hp[i], hp[i + 1]));
+    minX = Math.min(minX, hp[i]);
+    maxX = Math.max(maxX, hp[i]);
+    minZ = Math.min(minZ, hp[i + 2]);
   }
-  // escala UNIFORME: normaliza a planta ao raio (colisão) e mantém a altura
-  // do protótipo na mesma proporção — a nave ganha volume real
-  const s = (PLAN_RADIUS[kind] * SHIP_RADIUS) / maxPlan;
-  const out = new Array<number>(p.length);
-  for (let i = 0; i < p.length; i += 3) {
-    // protótipo (x lateral, y cima, z frente) → cena (x nariz, y lateral, −z câmera)
-    out[i] = p[i + 2] * s;
-    out[i + 1] = p[i] * s;
-    out[i + 2] = -p[i + 1] * s;
-  }
-  const e = CABIN_EYE[kind];
-  return {
-    segments: extractEdges(out, a.indices),
-    eye: { x: e.z * s, y: e.x * s, z: -e.y * s },
-  };
-}
+  const k = (PLAN_RADIUS[kind] * SHIP_RADIUS) / maxPlan;
 
-/**
- * Extrai as ARESTAS DE FEIÇÃO da malha de triângulos: bordas abertas e
- * vincos (ângulo diedro acentuado). Diagonais coplanares das faces caem
- * fora — sem isso o wireframe de triângulos satura em borrão com o glow.
- */
-function extractEdges(positions: number[], indices: number[]): number[] {
-  // solda vértices por quantização (primitivas vizinhas não se tocam por índice)
-  const weld = new Map<string, number>();
-  const rep = new Array<number>(positions.length / 3);
-  for (let i = 0; i < positions.length / 3; i++) {
-    const k = `${Math.round(positions[i * 3] * 100)},${Math.round(positions[i * 3 + 1] * 100)},${Math.round(positions[i * 3 + 2] * 100)}`;
-    const r = weld.get(k);
-    if (r === undefined) {
-      weld.set(k, i);
-      rep[i] = i;
-    } else rep[i] = r;
-  }
-
-  interface EdgeInfo { a: number; b: number; count: number; nx: number; ny: number; nz: number; sharp: boolean }
-  const edges = new Map<string, EdgeInfo>();
-  const FLAT_COS = Math.cos((30 * Math.PI) / 180);
-
-  for (let t = 0; t < indices.length; t += 3) {
-    const i0 = rep[indices[t]], i1 = rep[indices[t + 1]], i2 = rep[indices[t + 2]];
-    // normal da face
-    const ax = positions[i1 * 3] - positions[i0 * 3], ay = positions[i1 * 3 + 1] - positions[i0 * 3 + 1], az = positions[i1 * 3 + 2] - positions[i0 * 3 + 2];
-    const bx = positions[i2 * 3] - positions[i0 * 3], by = positions[i2 * 3 + 1] - positions[i0 * 3 + 1], bz = positions[i2 * 3 + 2] - positions[i0 * 3 + 2];
-    let nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
-    const len = Math.hypot(nx, ny, nz);
-    if (len < 1e-9) continue; // triângulo degenerado
-    nx /= len; ny /= len; nz /= len;
-
-    for (const [a, b] of [[i0, i1], [i1, i2], [i2, i0]] as const) {
-      const lo = Math.min(a, b), hi = Math.max(a, b);
-      if (lo === hi) continue;
-      const key = `${lo}_${hi}`;
-      const e = edges.get(key);
-      if (!e) {
-        edges.set(key, { a: lo, b: hi, count: 1, nx, ny, nz, sharp: false });
-      } else {
-        e.count++;
-        // |dot| trata enrolamento inconsistente e faces coplanares opostas
-        if (Math.abs(e.nx * nx + e.ny * ny + e.nz * nz) < FLAT_COS) e.sharp = true;
-      }
+  // projeto (x nariz, y bombordo, z dorso) → cena (x, y, −z); normais idem
+  const conv = (s: Solid): SolidData => {
+    const positions = new Array<number>(s.positions.length);
+    const normals = new Array<number>(s.normals.length);
+    for (let i = 0; i < s.positions.length; i += 3) {
+      positions[i] = s.positions[i] * k;
+      positions[i + 1] = s.positions[i + 1] * k;
+      positions[i + 2] = -s.positions[i + 2] * k;
+      normals[i] = s.normals[i];
+      normals[i + 1] = s.normals[i + 1];
+      normals[i + 2] = -s.normals[i + 2];
     }
-  }
+    return { positions, normals, colors: s.colors, indices: s.indices };
+  };
 
-  // Mantém TODAS as arestas de feição em 3D (o cockpit vê o volume). Só as
-  // diagonais coplanares das faces caem fora — pela regra do vinco abaixo.
-  const segments: number[] = [];
-  for (const e of edges.values()) {
-    // borda aberta (1 face), junção múltipla (>2) ou vinco acentuado
-    if (e.count === 2 && !e.sharp) continue;
-    segments.push(
-      positions[e.a * 3], positions[e.a * 3 + 1], positions[e.a * 3 + 2],
-      positions[e.b * 3], positions[e.b * 3 + 1], positions[e.b * 3 + 2],
-    );
-  }
-  return segments;
+  return {
+    hull: conv(b.hull),
+    livery: conv(b.livery),
+    nozzles: b.nozzles.map(([x, y, r]) => ({ x: x * k, y: y * k, r: r * k })),
+    eye: { x: b.eye[0] * k, y: b.eye[1] * k, z: -b.eye[2] * k },
+    length: (maxX - minX) * k,
+    belly: -minZ * k,
+  };
 }
 
 const cache = new Map<ShipKind, ShipMeshData>();
 
-/** Geometria fundida da nave conforme a classe — computada uma vez. */
+/** Geometria da nave conforme a classe — computada uma vez e compartilhada
+ *  por TODAS as naves daquela classe (ver MeshFactory). */
 export function shipMeshData(kind: ShipKind): ShipMeshData {
   let data = cache.get(kind);
   if (!data) {
-    const a = new Acc();
-    ASSEMBLE[kind](a);
-    data = finalize(a, kind);
+    const b = new Build();
+    ASSEMBLE[kind](b);
+    data = finalize(b, kind);
     cache.set(kind, data);
   }
   return data;

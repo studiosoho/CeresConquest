@@ -1,5 +1,12 @@
-import { relVec, MINING_RANGE, type ShipInput, type WorldPos } from "@ceres/shared";
-import type { SimWorld, ShipState } from "@ceres/sim-core";
+import {
+  relVec,
+  MINING_RANGE,
+  DOCK_RANGE,
+  TAXI_SPEED_MULT,
+  type ShipInput,
+  type WorldPos,
+} from "@ceres/shared";
+import { seekInput, faceInput, type SimWorld, type ShipState } from "@ceres/sim-core";
 
 /**
  * Jogadores-teste autônomos: naves pilotadas por IA simples no servidor.
@@ -18,7 +25,6 @@ export function makeBotState(): BotState {
 
 /** Vira para longe se a borda do asteroide está a menos disto. */
 const AVOID_EDGE = 150;
-const TURN_DEADZONE = 0.08;
 
 export function computeBotInput(
   ship: ShipState,
@@ -61,8 +67,11 @@ export function computeBotInput(
 
     } else {
       // ESTADO: APROXIMAÇÃO (Alvo avistado, mas longe)
-      desiredAngle = angleToAsteroid;
-      thrust = true;
+      // Voando por inércia, "acelerar até chegar" acaba em espatifada na
+      // rocha: o piloto automático planeja a frenagem e estaciona à distância
+      // de mineração.
+      bot.heading = angleToAsteroid;
+      return seekInput(ship, near, { arriveRadius: near.radius + MINING_RANGE * 0.6 });
     }
 
     // Salva o último rumo conhecido do asteroide caso perca o alvo de vista
@@ -79,12 +88,10 @@ export function computeBotInput(
     thrust = true; // Mantém movimento de busca
   }
 
-  // 2. Controle de Rotação (Sua lógica original com Deadzone)
+  // 2. Controle de Rotação — via faceInput, que compensa a INÉRCIA angular.
+  // Com momento de inércia, um leme liga/desliga puro passa do rumo e volta,
+  // oscilando; faceInput desconta a sobra de giro e assenta no rumo.
   const da = Math.atan2(Math.sin(desiredAngle - ship.angle), Math.cos(desiredAngle - ship.angle));
-  let turn: ShipInput["turn"] = 0;
-
-  if (da > TURN_DEADZONE) turn = 1;
-  else if (da < -TURN_DEADZONE) turn = -1;
 
   // 3. Otimização de Impulso (Evita gastar combustível/energia girando no próprio eixo)
   // Se o bot precisar fazer uma curva muito fechada (maior que ~45 graus ou 0.8 radianos),
@@ -93,16 +100,21 @@ export function computeBotInput(
     thrust = false;
   }
 
+  const { turn } = faceInput(ship, desiredAngle);
   return { thrust, turn, mine };
 }
 
-/** IA do táxi: menor caminho — linha reta até o destino (voa sem colisão). */
+/**
+ * IA do táxi: linha reta até o destino (voa sem colisão), mas com FRENAGEM.
+ * Sem isto a nave passaria reto pela janela de atracação a alguns milhares de
+ * u/s e orbitaria a estrutura para sempre — a inércia não perdoa piloto que
+ * só sabe acelerar. Chega devagar, dentro do DOCK_RANGE.
+ */
 export function computeTaxiInput(ship: ShipState, dest: WorldPos): ShipInput {
-  const { dx, dy } = relVec(ship, dest);
-  const desired = Math.atan2(dy, dx);
-  const da = Math.atan2(Math.sin(desired - ship.angle), Math.cos(desired - ship.angle));
-  const turn: ShipInput["turn"] = da > TURN_DEADZONE ? 1 : da < -TURN_DEADZONE ? -1 : 0;
-  return { thrust: Math.abs(da) < 1.2, turn, mine: false };
+  return seekInput(ship, dest, {
+    speedMult: TAXI_SPEED_MULT,
+    arriveRadius: DOCK_RANGE * 0.5,
+  });
 }
 
 /**
@@ -113,9 +125,6 @@ export function computeMinerInput(ship: ShipState, world: SimWorld, station: Wor
   if (world.nearestAsteroid(ship)) {
     return { thrust: false, turn: 0, mine: true };
   }
-  const { dx, dy } = relVec(ship, station);
-  const desired = Math.atan2(dy, dx);
-  const da = Math.atan2(Math.sin(desired - ship.angle), Math.cos(desired - ship.angle));
-  const turn: ShipInput["turn"] = da > TURN_DEADZONE ? 1 : da < -TURN_DEADZONE ? -1 : 0;
-  return { thrust: Math.abs(da) < 1.2, turn, mine: false };
+  // navega até a estação e PARA lá (frenagem retrógrada inclusa)
+  return seekInput(ship, station, { arriveRadius: MINING_RANGE * 0.5 });
 }

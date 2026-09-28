@@ -14,7 +14,7 @@
 export type KeyName =
   | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS"
   | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX"
-  | "E" | "F" | "C" | "G" | "T" | "Y" | "M";
+  | "E" | "F" | "C" | "G" | "T" | "Y" | "M" | "Q" | "X";
 
 const CODE_MAP: Record<KeyName, string[]> = {
   W: ["KeyW"], A: ["KeyA"], S: ["KeyS"], D: ["KeyD"],
@@ -26,6 +26,8 @@ const CODE_MAP: Record<KeyName, string[]> = {
   FOUR: ["Digit4"], FIVE: ["Digit5"], SIX: ["Digit6"],
   E: ["KeyE"], F: ["KeyF"], C: ["KeyC"], G: ["KeyG"],
   T: ["KeyT"], Y: ["KeyY"], /*N: ["KeyN"],*/ M: ["KeyM"],
+  // RCS de translação (Q/E lateral, S de ré) e flight assist off (X)
+  Q: ["KeyQ"], X: ["KeyX"],
 };
 
 /** code → nome (invertido uma vez no módulo) */

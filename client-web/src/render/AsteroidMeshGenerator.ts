@@ -6,7 +6,9 @@
  * Algoritmo:
  *   1. icosfera low-poly (subdivisões conforme a classe do asteroide);
  *   2. achatamento em Z + alongamento elipsoidal + ruído radial determinístico
- *      (soma de lóbulos cossenoidais por direção — suave e sem lib de noise);
+ *      (soma de lóbulos cossenoidais por direção — suave e sem lib de noise)
+ *      + CRATERAS côncavas com lábio erguido, que são o que dá à luz alguma
+ *      forma para descrever (ver a nota longa junto do código);
  *   3. direção da plataforma derivada da seed — azimute livre, inclinação
  *      LIMITADA em relação ao eixo da câmera (ver nota abaixo);
  *   4. a região correspondente é rebaixada para um plano, formando uma
@@ -212,17 +214,44 @@ export function generateAsteroidMesh(
   // orçamento de profundidade (z atrás do plano de jogo, à frente das estrelas)
   const fz = 0.76 + rng() * 0.1;
 
-  // 4 lóbulos cossenoidais por direção — a "lombada" 3D da batata
+  // lóbulos cossenoidais por direção — a "lombada" 3D da batata. Subiram de
+  // 4 para 6 e ganharam faixa de frequência mais larga: a silhueta precisava
+  // de quebra em duas escalas (massa grande + recorte), senão o contorno lê
+  // como icosfera crua por mais craterada que a superfície esteja.
   const lobes: Array<{ dir: Vector3; freq: number; amp: number; phase: number }> = [];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 6; i++) {
     const z = rng() * 2 - 1;
     const a = rng() * Math.PI * 2;
     const r = Math.sqrt(Math.max(0, 1 - z * z));
     lobes.push({
       dir: new Vector3(Math.cos(a) * r, Math.sin(a) * r, z),
-      freq: 1.5 + rng() * 3,
-      amp: (0.05 + rng() * 0.12) * ampScale,
+      freq: 1.2 + rng() * 5,
+      amp: (0.045 + rng() * 0.135) * ampScale,
       phase: rng() * Math.PI * 2,
+    });
+  }
+
+  // CRATERAS — a única fonte de CONCAVIDADE do corpo. Sem elas a rocha é
+  // convexa, e sobre um corpo convexo qualquer luz produz o mesmo terminador
+  // liso sem informação nenhuma: era isto que fazia 250 rochas lerem como o
+  // mesmo decalque repetido em várias escalas. Cada cratera é uma bacia com
+  // LÁBIO ERGUIDO — a borda pega a chave, o fundo cai na sombra, e é esse par
+  // que faz a luz DESCREVER forma em low poly, sem normal map e sem um
+  // triângulo a mais. Só cavam para dentro, então a normalização da silhueta
+  // XY (invariante de colisão) não é afetada.
+  const craterCount = asteroidClass === "small" ? 2 : asteroidClass === "medium" ? 4 : 6;
+  const craters: Array<{ dir: Vector3; radius: number; cosR: number; depth: number }> = [];
+  for (let i = 0; i < craterCount; i++) {
+    const z = rng() * 2 - 1;
+    const a = rng() * Math.PI * 2;
+    const r = Math.sqrt(Math.max(0, 1 - z * z));
+    // raio em radianos de ângulo esférico: 0.30–0.62 rad ≈ 17°–36° de abertura
+    const radius = 0.30 + rng() * 0.32;
+    craters.push({
+      dir: new Vector3(Math.cos(a) * r, Math.sin(a) * r, z),
+      radius,
+      cosR: Math.cos(radius),
+      depth: (0.05 + rng() * 0.07) * ampScale,
     });
   }
 
@@ -242,6 +271,19 @@ export function generateAsteroidMesh(
     let rr = 1;
     for (const lobe of lobes) {
       rr += lobe.amp * Math.cos(lobe.freq * Vector3.Dot(d, lobe.dir) + lobe.phase);
+    }
+    for (const cr of craters) {
+      const cosA = Vector3.Dot(d, cr.dir);
+      if (cosA <= cr.cosR) continue; // fora da cratera — descarta cedo
+      // `t` normalizado (0 no centro, 1 na borda) pela CORDA em vez de acos:
+      // até 0.62 rad a corda erra <2 % do ângulo e economiza ~1M de acos na
+      // reconstrução do grid 3×3
+      const t = Math.sqrt(2 * (1 - Math.min(1, cosA))) / cr.radius;
+      if (t >= 1) continue;
+      const bowl = -(1 - t * t) * cr.depth;
+      const lipT = (t - 0.74) / 0.26;
+      const lip = lipT > 0 ? Math.sin(lipT * Math.PI) * cr.depth * 0.60 : 0;
+      rr += bowl + lip;
     }
     // alongamento no eixo `rot`: rotaciona, escala, desfaz a rotação
     const u = (cosR * d.x + sinR * d.y) * sx;

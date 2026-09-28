@@ -1,11 +1,34 @@
 /** Contrato de mensagens cliente ↔ servidor. Neutro de engine. */
 
-/** Intenção de pilotagem enviada pelo cliente a cada ~33ms. */
+/**
+ * Intenção de pilotagem enviada pelo cliente a cada ~33ms.
+ *
+ * Os três primeiros campos são o contrato antigo e continuam obrigatórios. Os
+ * três novos são OPCIONAIS de propósito: `undefined` significa exatamente o
+ * comportamento que o jogo sempre teve (sem RCS, com auxílio ligado), então
+ * nenhum emissor de input existente — bots, piloto automático, testes, clientes
+ * de versão anterior — precisa mudar, e desfazer a mudança é apagar três linhas.
+ */
 export interface ShipInput {
   thrust: boolean;
   /** -1 = anti-horário, 0 = reto, 1 = horário */
   turn: -1 | 0 | 1;
   mine: boolean;
+  /**
+   * RCS de translação lateral: -1 = bombordo, 0 = nada, +1 = boreste. "Boreste"
+   * é o lado para onde `turn: 1` varre o nariz (ângulo + 90°), para que os dois
+   * comandos tenham o mesmo sentido na cabeça do piloto.
+   */
+  strafe?: -1 | 0 | 1;
+  /** RCS retrógrado: empurra na direção OPOSTA ao nariz, sem girar o casco. */
+  retro?: boolean;
+  /**
+   * "Flight assist off": desliga os AUXÍLIOS automáticos (o trim linear do RCS
+   * e a retenção de atitude). Não mexe no RCS de translação — aquilo é empuxo
+   * pedido pelo piloto, não auxílio. Ausente/false = auxílio ligado, que é o
+   * padrão e o que bots e piloto automático usam.
+   */
+  assistOff?: boolean;
 }
 
 export const MSG_INPUT = "input";

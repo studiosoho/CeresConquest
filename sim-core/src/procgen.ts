@@ -47,10 +47,41 @@ const PLACEMENT_TRIES = 12;
 const MIN_GAP = 2 * SHIP_RADIUS;
 
 /**
- * Conteúdo determinístico de um setor: mesmo (worldSeed, sx, sy) → mesmos
- * asteroides, em qualquer máquina. Fora do cinturão, vazio.
+ * Memo dos setores já gerados. `sectorAsteroids` é função pura de
+ * (semente, sx, sy), então guardar o resultado não muda nada do que sai — só
+ * evita regerar. Importa porque a colisão passou a rodar uma vez por SUB-PASSO
+ * (6× por tick a 20 Hz), varrendo 9 setores de cada vez: sem memo, seriam ~54
+ * gerações de setor por nave por tick.
+ *
+ * Os arrays devolvidos são COMPARTILHADOS — trate-os como somente leitura.
+ */
+const sectorCache = new Map<string, Asteroid[]>();
+const SECTOR_CACHE_MAX = 512;
+
+/** Esvazia o memo (troca de partida/semente, e testes que medem regeração). */
+export function clearSectorCache(): void {
+  sectorCache.clear();
+}
+
+/**
+ * Conteúdo de um setor: mesmo (worldSeed, sx, sy) → mesmos asteroides, sempre.
+ * Fora do cinturão, vazio.
  */
 export function sectorAsteroids(worldSeed: number, sx: number, sy: number): Asteroid[] {
+  const key = `${worldSeed}:${sx}:${sy}`;
+  const hit = sectorCache.get(key);
+  if (hit) return hit;
+  const built = buildSector(worldSeed, sx, sy);
+  // despejo FIFO: o Map itera na ordem de inserção, então a 1ª chave é a mais velha
+  if (sectorCache.size >= SECTOR_CACHE_MAX) {
+    const oldest = sectorCache.keys().next();
+    if (!oldest.done) sectorCache.delete(oldest.value);
+  }
+  sectorCache.set(key, built);
+  return built;
+}
+
+function buildSector(worldSeed: number, sx: number, sy: number): Asteroid[] {
   if (!sectorInBelt(sx, sy)) return [];
 
   // dentro de Ceres não há asteroides — o planeta anão ocupa o espaço

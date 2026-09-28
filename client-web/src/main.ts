@@ -2,7 +2,7 @@ import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
 import { Color4 } from "@babylonjs/core/Maths/math.color";
 import { Client } from "colyseus.js";
-import { SERVER_LOCATION_PROD } from "@ceres/shared";
+import { SERVER_LOCATION_PROD, SIM_MAX_DT } from "@ceres/shared";
 import { GameScene } from "./scenes/GameScene";
 import { Lobby } from "./lobby/Lobby";
 
@@ -59,7 +59,9 @@ async function boot(): Promise<void> {
   await gameScene.create(room);
   // agora há cena + câmeras: seguro iniciar o render loop
   engine.runRenderLoop(() => {
-    const dt = Math.min(engine.getDeltaTime() / 1000, 0.1);
+    // mesmo teto do servidor (SIM_MAX_DT, ver MatchRoom): o número mora numa
+    // constante só para que os dois lados não possam divergir por edição
+    const dt = Math.min(engine.getDeltaTime() / 1000, SIM_MAX_DT);
     gameScene?.update(dt);
     scene.render();
   });

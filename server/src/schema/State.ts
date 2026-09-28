@@ -13,6 +13,13 @@ export class ShipSchema extends Schema {
   @type("float32") vx = 0;
   @type("float32") vy = 0;
   @type("float32") angle = 0;
+  /**
+   * Velocidade angular (rad/s). Sincronizada porque o contato DEPENDE dela: o
+   * atrito age sobre a velocidade da casca, que leva ω×r junto (ver
+   * collision.ts). Sem este campo a predição do cliente resolveria um raspão
+   * contra uma nave que ele acha parada de rotação.
+   */
+  @type("float32") av = 0;
   @type("boolean") mining = false;
   @type("boolean") anchored = false;
   @type("boolean") stored = false;
@@ -22,6 +29,13 @@ export class ShipSchema extends Schema {
   @type("string") hqId = "";
   @type("string") stationId = "";
   @type("string") anchoredAsteroidId = "";
+  /**
+   * Estrutura de destino em taxiamento ("" = não está taxiando). Sincronizado
+   * porque a PREDIÇÃO precisa: o servidor deixa naves em táxi fora dos contatos
+   * nave × nave (corredor de trânsito, ver SimWorld.tick), e o cliente só
+   * consegue repetir essa regra se souber quem está taxiando.
+   */
+  @type("string") taxiTo = "";
   @type("int8") bay = -1;
   @type("string") landingPhase = "";
   @type("float32") landingProgress = 0;

@@ -1,5 +1,5 @@
 /**
- * EffectsRenderer — jatos de propulsão, feixe de mineração, projéteis, zona
+ * EffectsRenderer — rastros de motor, feixe de mineração, projéteis, zona
  * de pouso e fronteira da arena. Estilo retrô vetorial: linhas e pontos,
  * sem preenchimentos — o halo de fósforo do Phaser (passada dupla
  * translúcida) morreu, o GlowLayer da cena dá o brilho de graça.
@@ -13,7 +13,13 @@
  *
  * Simplificações deliberadas ao portar do Phaser: pulsos de ALPHA (brilho)
  * viraram pulsos de RAIO/geometria (compatíveis com retained-mode sem tocar
- * cor por frame); o flicker binário do jato virou `setEnabled()`.
+ * cor por frame).
+ *
+ * RODADA 3 DAS NAVES: o "V" de chama (uma GreasedLine por nave em movimento,
+ * material próprio, no glow, a partir do centro de MUNDO) sumia inteiro sob o
+ * casco ampliado pelo piso de tela e custava um draw por nave em cada passe.
+ * Virou o rastro de ShipTrails: histórico da popa do casco AMPLIADO, uma
+ * malha só para todas as naves.
  */
 
 import type { Scene } from "@babylonjs/core/scene";
@@ -22,13 +28,15 @@ import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { CreateGreasedLine } from "@babylonjs/core/Meshes/Builders/greasedLineBuilder";
 import type { GreasedLineBaseMesh } from "@babylonjs/core/Meshes/GreasedLine/greasedLineBaseMesh";
-import { SHIP_RADIUS, SHIP_MAX_SPEED } from "@ceres/shared";
+import type { ShipKind } from "@ceres/shared";
 import { Palette } from "./Palette";
 import { createLineBundle, disposeLineBundle, circlePts, c3, type LinePart } from "./lineUtils";
 import { toScene, toSceneAngle } from "./coords";
 import { EFFECTS_LAYER_Z } from "./layers";
+import { ShipTrails } from "./ShipTrails";
+import { shipMeshData } from "./ShipMeshGenerator";
+import { ShipAB } from "./shipAB";
 
-const JET_PX = 1.6;
 const BEAM_PX = 2.6;
 const BULLET_PX = 2.2;
 const GRENADE_PX = 2.2;
@@ -104,7 +112,9 @@ export class EffectsRenderer {
   private scene: Scene;
   private glow: GlowLayer;
 
-  private jetPool: LinePool;
+  private trails: ShipTrails;
+  /** tempo do último drawJet — o rastro é reconstruído no endFrame */
+  private lastT = 0;
   private bulletPool: LinePool;
   private grenadePool: LinePool;
 
@@ -130,13 +140,12 @@ export class EffectsRenderer {
     this.glow = glow;
     this.layerRoot = new TransformNode("fxLayer", scene);
     this.layerRoot.position.z = EFFECTS_LAYER_Z;
-    this.jetPool = new LinePool(scene, glow, "jet", Palette.fx.jet, JET_PX, this.layerRoot);
+    this.trails = new ShipTrails(scene, glow, this.layerRoot);
     this.bulletPool = new LinePool(scene, glow, "bullet", Palette.fx.bullet, BULLET_PX, this.layerRoot);
     this.grenadePool = new LinePool(scene, glow, "grenade", Palette.fx.grenade, GRENADE_PX, this.layerRoot);
   }
 
   beginFrame(): void {
-    this.jetPool.begin();
     this.bulletPool.begin();
     this.grenadePool.begin();
     this.beamUsedThisFrame = false;
@@ -145,44 +154,28 @@ export class EffectsRenderer {
 
   /** Esconde os slots/singletons não usados neste frame. Chamar ao final do draw(). */
   endFrame(): void {
-    this.jetPool.end();
+    this.trails.setEnabled(ShipAB.trails);
+    this.trails.heads = ShipAB.trailHeads;
+    this.trails.flush(this.lastT);
     this.bulletPool.end();
     this.grenadePool.end();
     if (!this.beamUsedThisFrame) this.beamMesh?.setEnabled(false);
     if (!this.landZoneUsedThisFrame) this.landZoneRoot?.setEnabled(false);
   }
 
-  // ── jato de propulsão ─────────────────────────────────────────────
+  // ── rastro de motor ───────────────────────────────────────────────
 
   /**
-   * Chama do motor à la Asteroids: um "V" de linhas saindo da traseira,
-   * que pisca rápido (binário — `setEnabled`) e cresce com a velocidade.
-   * Chamar para cada nave em movimento. `tt` = tempo em segundos.
+   * Registra os jatos da nave neste frame (ver ShipTrails): um por bocal da
+   * classe. Chamar para TODA nave visível, parada ou não — o histórico precisa
+   * da continuidade para o jato recolher quando ela para, e a cabeça quente
+   * fica acesa em marcha lenta. `scale` = escala de tela da classe
+   * (ShipRenderer.screenScale): os jatos nascem nos bocais do casco AMPLIADO.
    */
-  drawJet(x: number, y: number, angle: number, speed: number, tt: number): void {
-    const k = Math.min(speed / (SHIP_MAX_SPEED * 2), 1);
-    if (k < 0.03) return;
-    // cintilação: a chama some ~1/3 do tempo, dessincronizada por nave
-    if (Math.sin(tt * 42 + x * 0.011 + y * 0.007) < -0.45) return;
-
-    const R = SHIP_RADIUS;
-    const back = angle + Math.PI;
-    const bx = Math.cos(back);
-    const by = Math.sin(back);
-    const px_ = -by;
-    const py_ = bx;
-
-    const rootX = x + bx * R * 0.55;
-    const rootY = y + by * R * 0.55;
-    const half = R * 0.3;
-    const len = R * (0.7 + 1.9 * k) * (0.85 + 0.25 * Math.sin(tt * 57 + x * 0.017));
-
-    const pts: Vector3[] = [
-      toScene(rootX + px_ * half, rootY + py_ * half),
-      toScene(rootX + bx * len, rootY + by * len),
-      toScene(rootX - px_ * half, rootY - py_ * half),
-    ];
-    this.jetPool.next([pts]);
+  drawJet(x: number, y: number, angle: number, speed: number, tt: number, id: string, kind: ShipKind, scale: number): void {
+    const d = shipMeshData(kind);
+    this.lastT = tt;
+    this.trails.record(id, x, y, angle, speed, tt, d.nozzles, scale);
   }
 
   // ── feixe de mineração ────────────────────────────────────────────
@@ -288,7 +281,7 @@ export class EffectsRenderer {
   }
 
   destroy(): void {
-    this.jetPool.dispose();
+    this.trails.dispose();
     this.bulletPool.dispose();
     this.grenadePool.dispose();
     if (this.beamMesh) disposeLineBundle(this.beamMesh, this.glow);
