@@ -50,6 +50,15 @@ export class ShipSchema extends Schema {
   @type("float32") hp = 100;
   @type("uint8") ammo = 0;
   @type("uint8") grenadeAmmo = 0;
+  /**
+   * Camada de voo (shared/layers.ts): "cruise" | "surface" | "attack". Em
+   * transição, `layerTo` é o destino e `layerProgress` vai de 0 a 1; parada
+   * numa camada, `layerTo` é "". A predição do cliente precisa dos três para
+   * saber contra o que a nave colide.
+   */
+  @type("string") layer = "cruise";
+  @type("string") layerTo = "";
+  @type("float32") layerProgress = 0;
 }
 
 export class ProjectileSchema extends Schema {

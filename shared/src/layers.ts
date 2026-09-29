@@ -23,3 +23,10 @@ export type ShipLayer = "cruise" | "surface" | "attack";
 
 /** Duração (s) de uma transição entre camadas — subida ou descida. */
 export const LAYER_TRANSITION_TIME = 1.0;
+
+/**
+ * Folga (u) além do raio do asteroide da estação atacada: a nave em modo
+ * ataque que se afasta mais que isso do centro dele sobe sozinha ao cruzeiro —
+ * o modo ataque não colide com nada, e solto pelo mapa atravessaria rochas.
+ */
+export const ATTACK_ZONE_MARGIN = 200;

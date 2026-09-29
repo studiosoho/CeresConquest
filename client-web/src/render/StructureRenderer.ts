@@ -12,6 +12,12 @@
  * de 7 segmentos, cantoneiras amarelas nas expandidas e silhueta da nave
  * guardada quando ocupada — reconstruídas só quando a ocupação muda.
  *
+ * ONDE fica cada vaga não é decisão do render: vem de shared/bays.ts, a mesma
+ * conta com que o servidor pousa a nave na vaga. O prédio assenta sobre o
+ * centro do asteroide, virado para `angle` da estrutura, e cada placa vai para
+ * o ponto da plataforma cuja projeção no plano do jogo é o centro exato da
+ * vaga (o asteroide com estrutura não gira no plano — ver AsteroidRenderer).
+ *
  * A altura do prédio é comprimida (scaling.z) quando a plataforma fica perto
  * do plano de jogo: prédios nunca cruzam z=0, então naves/efeitos continuam
  * desenhados por cima sem mudança de layer.
@@ -27,7 +33,7 @@ import type { GreasedLineBaseMesh } from "@babylonjs/core/Meshes/GreasedLine/gre
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Vector3, Quaternion, Matrix } from "@babylonjs/core/Maths/math.vector";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { SHIP_RADIUS, STRUCTURE_SPECS } from "@ceres/shared";
+import { STRUCTURE_SPECS, bayLayout, bayFrameAngle } from "@ceres/shared";
 import type { StructureType, ShipKind } from "@ceres/shared";
 import { shipVerts } from "../shapes";
 import { Palette } from "./Palette";
@@ -43,6 +49,8 @@ export interface StructureRenderData {
   own: boolean;
   shipBays: number;
   expandedBays: number;
+  /** direção da frente da estrutura (rad, do jogo) — orienta prédio e vagas */
+  angle: number;
 }
 
 /** Plataforma hospedeira: root do asteroide + quadro da face. */
@@ -79,6 +87,9 @@ interface StructEntry {
   height: number;
   shipBays: number;
   expandedBays: number;
+  angle: number;
+  /** quadro da plataforma em que o prédio assentou (para achar as vagas nela) */
+  face: AsteroidBuildFace | null;
 }
 
 export class StructureRenderer {
@@ -107,7 +118,7 @@ export class StructureRenderer {
   }
 
   /** Cria/atualiza a estrutura e a assenta na plataforma do asteroide. */
-  upsert(data: StructureRenderData, occupants: ShipKind[], attach: StructureAttach | null): void {
+  upsert(data: StructureRenderData, occupants: ReadonlyArray<ShipKind | null>, attach: StructureAttach | null): void {
     let entry = this.entries.get(data.id);
     if (!entry) {
       entry = this.createEntry(data);
@@ -127,11 +138,12 @@ export class StructureRenderer {
         entry.attachedTo = attach.root;
         entry.root.parent = attach.root;
         this.placeOnFace(entry, attach);
+        entry.lastSig = "!"; // as vagas dependem da plataforma: refaz
       }
       entry.root.setEnabled(true);
     }
 
-    const sig = occupants.join(",");
+    const sig = occupants.map((k) => k ?? "").join(",");
     if (sig !== entry.lastSig) {
       entry.lastSig = sig;
       this.rebuildBays(entry, occupants);
@@ -189,17 +201,30 @@ export class StructureRenderer {
       radius: STRUCTURE_SPECS[data.stype].radius,
       height: gen.height,
       shipBays: data.shipBays, expandedBays: data.expandedBays,
+      angle: data.angle, face: null,
     };
   }
 
-  /** Posição/orientação/altura a partir do quadro da plataforma. */
+  /**
+   * Assenta o prédio na plataforma: sobre o CENTRO do asteroide — o ponto do
+   * plano da plataforma cuja projeção no plano do jogo é a origem da rocha,
+   * onde o servidor põe a estrutura — e virado para a frente dela. A base
+   * {t, b, n} tem n = normal da plataforma e t = o eixo +x do quadro das vagas
+   * (shared/bays.ts) projetado nela, então a fileira de vagas cai à frente do
+   * prédio, do lado das aberturas (−Y local).
+   */
   private placeOnFace(entry: StructEntry, attach: StructureAttach): void {
     const face = attach.face;
-    const t = face.tangent;
-    const b = face.bitangent;
     const n = face.normal;
-    entry.root.position = face.center.add(n.scale(0.5));
+    const phi = bayFrameAngle(entry.angle);
+    // eixo +x do quadro das vagas, do jogo para a cena (y negado)
+    const dir = new Vector3(Math.cos(phi), -Math.sin(phi), 0);
+    const t = dir.subtract(n.scale(Vector3.Dot(dir, n))).normalize();
     // base ortonormal {t, b, n} com det +1 (b = n×t) → rotação própria
+    const b = Vector3.Cross(n, t).normalize();
+    const origin = new Vector3(0, 0, Vector3.Dot(face.center, n) / n.z);
+    entry.face = face;
+    entry.root.position = origin.add(n.scale(0.5));
     const m = Matrix.FromValues(
       t.x, t.y, t.z, 0,
       b.x, b.y, b.z, 0,
@@ -209,17 +234,49 @@ export class StructureRenderer {
     entry.root.rotationQuaternion = Quaternion.FromRotationMatrix(m);
     // headroom: em pose plana (rocha travada — sempre o caso com estrutura),
     // o topo do prédio não pode cruzar a camada de voo. A malha do asteroide
-    // é centrada e o root dele é recuado, então a altura de mundo da face é
-    // rootZ + center.z
-    const worldFaceZ = attach.root.position.z + face.center.z;
+    // é centrada e o root dele é recuado, então a altura de mundo da base do
+    // prédio é rootZ + origin.z
+    const worldFaceZ = attach.root.position.z + origin.z;
     const headroom = worldFaceZ - (SHIP_LAYER_Z + 20);
     const squash = Math.min(1, Math.max(MIN_SQUASH, headroom / entry.height));
     entry.root.scaling.z = squash;
   }
 
+  /**
+   * Centro de uma vaga no quadro LOCAL do prédio. O quadro local é a
+   * plataforma, inclinada até MAX_TILT: pôr a placa em (x, y) do quadro das
+   * vagas a deixaria até ~2% fora do lugar quando projetada no plano do jogo.
+   * Resolve-se então o ponto (u, v) cuja projeção é o centro EXATO da vaga no
+   * mundo — o ponto onde o servidor pousa a nave —, na altura `z` local em
+   * que a placa é vista de cima (o contorno): na plataforma inclinada, até a
+   * altura da placa desloca a projeção.
+   */
+  private bayCenterLocal(entry: StructEntry, lx: number, ly: number, z: number): { u: number; v: number } {
+    const face = entry.face;
+    const rot = entry.root.rotationQuaternion;
+    if (!face || !rot) return { u: lx, v: ly };
+    // alvo no plano do jogo, relativo ao centro da rocha, em coordenadas de cena
+    const phi = bayFrameAngle(entry.angle);
+    const gx = Math.cos(phi) * lx - Math.sin(phi) * ly;
+    const gy = Math.sin(phi) * lx + Math.cos(phi) * ly;
+    // eixos locais do prédio, na cena da rocha (o z local vem achatado)
+    const m = new Matrix();
+    rot.toRotationMatrix(m);
+    const ax = Vector3.TransformNormal(new Vector3(1, 0, 0), m);
+    const ay = Vector3.TransformNormal(new Vector3(0, 1, 0), m);
+    const az = Vector3.TransformNormal(new Vector3(0, 0, z * entry.root.scaling.z), m);
+    const tx = gx - entry.root.position.x - az.x;
+    const ty = -gy - entry.root.position.y - az.y;
+    // [ax.xy ay.xy]·(u, v) = alvo — a plataforma inclina no máximo MAX_TILT,
+    // então o determinante fica longe de zero
+    const det = ax.x * ay.y - ay.x * ax.y;
+    return { u: (tx * ay.y - ay.x * ty) / det, v: (ax.x * ty - tx * ax.y) / det };
+  }
+
   // ── vagas de hangar (placas 3D, reconstruídas quando a ocupação muda) ──
 
-  private rebuildBays(entry: StructEntry, occupants: ShipKind[]): void {
+  /** `occupants[i]`: classe da nave GUARDADA na vaga i (null = vaga sem nave guardada). */
+  private rebuildBays(entry: StructEntry, occupants: ReadonlyArray<ShipKind | null>): void {
     for (const m of entry.bayLines) disposeLineBundle(m, this.glow);
     for (const m of entry.bayMeshes) m.dispose(false, false);
     entry.bayLines = [];
@@ -227,27 +284,12 @@ export class StructureRenderer {
     entry.bayNode?.dispose();
     entry.bayNode = null;
 
-    const cap = entry.shipBays;
-    if (cap <= 0) return;
+    const slots = bayLayout({ type: entry.type, shipBays: entry.shipBays, expandedBays: entry.expandedBays });
+    if (slots.length === 0) return;
 
     const bayNode = new TransformNode(`${entry.root.name}_bays`, this.scene);
     bayNode.parent = entry.root;
     entry.bayNode = bayNode;
-
-    const R = entry.radius;
-    const expandedBays = entry.expandedBays;
-    const slotN = SHIP_RADIUS * 2.0;
-    const slotEW = SHIP_RADIUS * 3.2;
-    const slotEH = SHIP_RADIUS * 2.4;
-    const gap = SHIP_RADIUS * 0.5;
-    // fileira à FRENTE do prédio (−Y local, o lado das aberturas)
-    const y0 = -(R + slotEH * 0.6);
-
-    let totalW = 0;
-    for (let i = 0; i < cap; i++) {
-      totalW += (i < expandedBays ? slotEW : slotN) + (i > 0 ? gap : 0);
-    }
-    let curX = -totalW / 2;
 
     const slabVerts: Vector3[] = [];
     const slabNormals: Vector3[] = [];
@@ -258,37 +300,34 @@ export class StructureRenderer {
     const shipColor = c3(entry.own ? Palette.structure.fleet : 0x8899aa);
     const zTop = SLAB_H + SLAB_LINE_LIFT;
 
-    for (let i = 0; i < cap; i++) {
-      const isExp = i < expandedBays;
-      const sw = isExp ? slotEW : slotN;
-      const sh = isExp ? slotEH : slotN;
-      const cx = curX + sw / 2;
+    slots.forEach((slot, i) => {
+      const { u: cx, v: cy } = this.bayCenterLocal(entry, slot.x, slot.y, zTop);
+      const sw = slot.w;
+      const sh = slot.h;
 
-      this.pushSlab(slabVerts, slabNormals, slabTris, cx, y0, sw, sh);
-      lineParts.push({ pts: rectLoop(cx, y0, sw * 0.92, sh * 0.86, zTop), color: outlineColor });
+      this.pushSlab(slabVerts, slabNormals, slabTris, cx, cy, sw, sh);
+      lineParts.push({ pts: rectLoop(cx, cy, sw * 0.92, sh * 0.86, zTop), color: outlineColor });
 
       // número da vaga no canto superior esquerdo da placa
       const digitH = sh * 0.28;
-      lineParts.push(...digitLines(i + 1, cx - sw * 0.4, y0 + sh * 0.12, digitH, zTop)
+      lineParts.push(...digitLines(i + 1, cx - sw * 0.4, cy + sh * 0.12, digitH, zTop)
         .map((pts) => ({ pts, color: outlineColor })));
 
-      if (isExp) {
+      if (slot.expanded) {
         // cantoneiras âmbar (vaga expandida, como no protótipo)
-        for (const pts of cornerBrackets(cx, y0, sw * 0.92, sh * 0.86, zTop)) {
+        for (const pts of cornerBrackets(cx, cy, sw * 0.92, sh * 0.86, zTop)) {
           lineParts.push({ pts, color: bracketColor });
         }
       }
 
       const kind = occupants[i];
       if (kind) {
-        const scale = isExp ? 0.9 : 0.7;
+        const scale = slot.expanded ? 0.9 : 0.7;
         // shapeVerts em coordenadas do jogo (y para baixo) → y local negado
-        const mini = shipVerts(kind).map((v) => new Vector3(cx + v.x * scale, y0 - v.y * scale, zTop));
+        const mini = shipVerts(kind).map((v) => new Vector3(cx + v.x * scale, cy - v.y * scale, zTop));
         lineParts.push({ pts: [...mini, mini[0]], color: shipColor });
       }
-
-      curX += sw + gap;
-    }
+    });
 
     const slabs = this.makeSolid(`${entry.root.name}_slabs`, slabVerts, slabNormals, slabTris, this.structMat);
     slabs.parent = bayNode;

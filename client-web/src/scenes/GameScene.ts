@@ -29,6 +29,7 @@ import {
   SECTOR_SIZE,
   SHIP_PRODUCTION,
   DOCK_RANGE,
+  ATTACK_ZONE_MARGIN,
   STATION_ORE_STORE,
   CERES_RADIUS,
   SNAPSHOT_AGE_FIXED_GUESS,
@@ -40,6 +41,7 @@ import {
   type ShipInput,
   type StructureType,
   type ShipKind,
+  type ShipLayer,
   type WorldPos,
 } from "@ceres/shared";
 import {
@@ -213,6 +215,15 @@ interface ServerShip extends WorldPos {
   hp: number;
   ammo: number;
   grenadeAmmo: number;
+  /** vaga ocupada na estrutura `hqId` (guardada ou pousada); −1 = nenhuma */
+  bay: number;
+  /**
+   * Camada de voo e destino da transição em curso ("" = parada) —
+   * shared/layers.ts. Entram na predição: o fantasma de outra nave só colide
+   * com a própria se estiverem na mesma camada.
+   */
+  layer: ShipLayer;
+  layerTo: ShipLayer | "";
 }
 
 /** Projétil sincronizado do servidor. */
@@ -606,6 +617,9 @@ export class GameScene {
         hp: s.hp ?? 100,
         ammo: s.ammo ?? 0,
         grenadeAmmo: s.grenadeAmmo ?? 0,
+        bay: s.bay ?? -1,
+        layer: (s.layer ?? "cruise") as ShipLayer,
+        layerTo: (s.layerTo ?? "") as ShipLayer | "",
       });
     });
     for (const id of [...this.serverShips.keys()]) {
@@ -669,6 +683,22 @@ export class GameScene {
   }
 
   /** Naves próprias guardadas em QGs — candidatas a táxi (destino: estação). */
+  /**
+   * A nave própria está na zona de ataque de alguma estação inimiga (raio do
+   * asteroide + ATTACK_ZONE_MARGIN)? É a zona em que o [F] a põe em modo
+   * ataque no servidor — aqui só decide a dica do HUD.
+   */
+  private nearEnemyStation(): boolean {
+    const me = this.localShip;
+    if (!me) return false;
+    for (const st of this.serverStructures.values()) {
+      if (st.owner === this.room.sessionId) continue;
+      const rock = sectorAsteroids(this.worldSeed, st.sx, st.sy).find((a) => a.id === st.asteroidId);
+      if (rock && dist(me, st) <= rock.radius + ATTACK_ZONE_MARGIN) return true;
+    }
+    return false;
+  }
+
   private computeTaxiOptions() {
     const opts: GameScene["taxiOpts"] = [];
     for (const [id, s] of this.serverShips) {
@@ -1195,16 +1225,18 @@ export class GameScene {
     // estruturas: assentadas na plataforma do asteroide hospedeiro — o
     // parent do Babylon dá posição/inclinação/spin; sem transform por frame
     for (const [id, st] of this.serverStructures) {
-      const occupants: ShipKind[] = [];
-      for (const [sid_, s] of [...this.serverShips].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
-        void sid_;
-        if (s.stored && s.hqId === id) occupants.push(s.kind);
+      // silhueta na placa: só a nave GUARDADA, na vaga que ela ocupa — a
+      // pousada é desenhada de verdade, em cima da placa
+      const occupants: Array<ShipKind | null> = new Array(st.shipBays).fill(null);
+      for (const s of this.serverShips.values()) {
+        if (s.stored && s.hqId === id && s.bay >= 0 && s.bay < occupants.length) occupants[s.bay] = s.kind;
       }
       const attach = st.asteroidId ? this.asteroidRenderer.getBuildFace(st.asteroidId) : null;
       this.structureRenderer.upsert({
         id, stype: st.stype,
         shipBays: st.shipBays, expandedBays: st.expandedBays,
         own: st.owner === this.room.sessionId,
+        angle: st.angle,
       }, occupants, attach);
     }
 
@@ -1266,7 +1298,9 @@ export class GameScene {
     // luz" — é barato porque `setFocus` só reescreve as duas rochas que
     // trocaram de estado, e não roda nada quando o alvo não muda.
     this.asteroidRenderer.setFocus(landZoneAst ? landZoneAst.id : null);
-    this.asteroidRenderer.tick(tt, dt, lockedAsteroids);
+    // rocha que hospeda estrutura não gira no plano: as vagas ficam no ponto
+    // fixo onde o servidor pousa as naves (shared/bays.ts)
+    this.asteroidRenderer.tick(tt, dt, lockedAsteroids, this.passthrough);
 
     this.effectsRenderer.endFrame();
 
@@ -1290,8 +1324,9 @@ export class GameScene {
     }
     const nearStructOccupied = nearOwnStruct
       ? [...this.serverShips.values()].filter(
+        // ocupa a vaga quem está guardado nela, pousado sobre ela ou a caminho
         (s) => s.hqId === [...this.serverStructures.entries()].find(([, v]) => v === nearOwnStruct)?.[0]
-          && s.stored,
+          && s.bay >= 0 && (s.stored || s.anchored || s.landingPhase === "landing"),
       ).length
       : 0;
     const nearStructFree = nearOwnStruct ? Math.max(0, nearOwnStruct.shipBays - nearStructOccupied) : 0;
@@ -1320,7 +1355,14 @@ export class GameScene {
           ? `  » [F] land (${nearStructFree} free slot${nearStructFree !== 1 ? "s" : ""})`
           : "  ⚓ hangar full"
         : "  » [F] land"
-      : "";
+      // longe de pouso, o mesmo [F] troca de camada de voo (o servidor recusa
+      // descer sobre rocha sólida ou sobre Ceres)
+      : this.isFlying && !(mineAuth?.layerTo)
+        ? mineAuth?.layer === "attack" ? "  » [F] leave attack"
+          : mineAuth?.layer === "surface" ? "  » [F] climb to cruise"
+          : activeKind === "attack" && this.nearEnemyStation() ? "  » [F] attack station"
+          : "  » [F] descend"
+        : "";
     const swapHint = anchored && !this.isFlying && hangarTotal > 0 ? `  » [C] switch (hangar: ${hangarTotal})` : "";
     const canAuto = activeKind === "mining" && anchored && !this.isFlying && nearOwnStation;
     const autoHint = canAuto ? "  » [G] auto-mine in this station" : "";

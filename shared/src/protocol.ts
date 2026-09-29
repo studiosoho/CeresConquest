@@ -55,7 +55,12 @@ export interface ProduceCommand {
 
 export const MSG_PRODUCE = "produce";
 
-/** Alterna ancoragem no QG (sem payload). */
+/**
+ * [F] (sem payload): o único comando de pouso e de camada de voo — pousa na
+ * vaga livre da estação própria ou num asteroide vazio, decola, desce do
+ * cruzeiro à superfície, entra no modo ataque sobre estação inimiga e sobe de
+ * volta. O servidor decide qual pelo contexto (ver MatchRoom.tryToggleAnchor).
+ */
 export const MSG_ANCHOR = "anchor";
 
 /** Troca a nave ativa por outra do hangar da estrutura ancorada (sem payload). */
@@ -78,7 +83,7 @@ export interface TaxiCommand {
 export const MSG_TAXI = "taxi";
 
 /**
- * Carga/descarga da nave de transporte na vaga de pouso (sem payload — o
+ * Carga/descarga da nave de transporte pousada numa vaga (sem payload — o
  * contexto decide): na estação carrega minério ou descarrega rações; na
  * base inicial descarrega minério (credita a carteira / envia à Terra) ou
  * carrega rações; no QG descarrega rações.

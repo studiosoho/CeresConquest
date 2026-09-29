@@ -205,6 +205,11 @@ interface AsteroidEntry {
   zone: number;
   buildFace: AsteroidBuildFace;
   spin: number;
+  /**
+   * Ângulo Z aplicado (rad, do jogo). Livre, é spin·tt; com estrutura, decai
+   * a zero — ver `tick`.
+   */
+  spinAngle: number;
   tumble: Tumble;
   /** primeira atualização: se já nascer travado, começa plano (sem pop) */
   fresh: boolean;
@@ -323,8 +328,12 @@ export class AsteroidRenderer {
   /**
    * Rotação nos 3 eixos a cada frame (tt = tempo absoluto em segundos, dt =
    * passo do frame):
-   * - Z: spin contínuo, SINCRONIZADO com o servidor (naves pousadas e
-   *   estruturas giram junto) — ângulo absoluto, intocável;
+   * - Z: spin contínuo pelo relógio LOCAL (tt), igual para toda rocha livre.
+   *   Rochas em `still` — as que hospedam estrutura — NÃO giram: o ângulo Z
+   *   decai a zero, a orientação canônica. É o que deixa as vagas de hangar
+   *   num lugar fixo do mundo, o mesmo que o servidor usa para pousar a nave
+   *   na vaga (shared/bays.ts). Rocha que deixa de hospedar volta ao spin·tt
+   *   de uma vez;
    * - X/Y: velocidade angular contínua por seed, INTEGRADA por frame. Rochas
    *   em `locked` (com estrutura, pouso em andamento/pousado, ou alvo da
    *   zona de pouso) têm os ângulos X/Y decaídos suavemente a zero — o
@@ -335,7 +344,7 @@ export class AsteroidRenderer {
    * roda primeiro e o tombo inclina o conjunto por cima, em eixos do mundo —
    * a projeção XY continua girando rigidamente com o servidor.
    */
-  tick(tt: number, dt: number, locked: ReadonlySet<string>): void {
+  tick(tt: number, dt: number, locked: ReadonlySet<string>, still: ReadonlySet<string>): void {
     for (const [id, e] of this.entries) {
       const t = e.tumble;
       if (locked.has(id)) {
@@ -353,11 +362,19 @@ export class AsteroidRenderer {
         t.angleX += t.rateX * dt;
         t.angleY += t.rateY * dt;
       }
+      if (still.has(id)) {
+        // decai pelo caminho curto e ENCOSTA no zero: a vaga tem de parar no
+        // ponto exato que o servidor calcula, não a um resíduo dele
+        const a = e.fresh ? 0 : wrapAngle(e.spinAngle) * (1 - Math.min(1, dt * LOCK_DECAY));
+        e.spinAngle = Math.abs(a) < 1e-6 ? 0 : a;
+      } else {
+        e.spinAngle = e.spin * tt;
+      }
       e.fresh = false;
       const r = e.root.rotation;
       r.x = t.angleX;
       r.y = t.angleY;
-      r.z = toSceneAngle(e.spin * tt);
+      r.z = toSceneAngle(e.spinAngle);
 
       this.updateZone(e);
     }
@@ -460,7 +477,7 @@ export class AsteroidRenderer {
 
     const entry: AsteroidEntry = {
       root, solid, t, tier: tierOf(t), zone: -1, buildFace: f,
-      spin: asteroidSpinRate(a.shapeSeed), tumble, fresh: true,
+      spin: asteroidSpinRate(a.shapeSeed), spinAngle: 0, tumble, fresh: true,
     };
     // uma rocha pode NASCER em foco (o grid 3×3 é reconstruído com a zona de
     // pouso já escolhida) — sem isto ela entraria em cena no degrau errado e
