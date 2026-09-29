@@ -403,6 +403,18 @@ export class AsteroidRenderer {
    * Anexar qualquer nó é `node.parent = root` + transformar pelo buildFace —
    * o spin do asteroide passa a valer de graça para o nó anexado.
    */
+  /**
+   * Altura de cena (z de mundo) da plataforma sobre o CENTRO da rocha — onde a
+   * nave pousa num asteroide vazio. Supõe a rocha em pose plana (travada: é o
+   * caso de toda rocha com pouso). null se a rocha não está em cena.
+   */
+  platformZ(id: string): number | null {
+    const entry = this.entries.get(id);
+    if (!entry) return null;
+    const f = entry.buildFace;
+    return entry.root.position.z + (f.center.x * f.normal.x + f.center.y * f.normal.y + f.center.z * f.normal.z) / f.normal.z;
+  }
+
   getBuildFace(id: string): { root: TransformNode; face: AsteroidBuildFace } | null {
     const entry = this.entries.get(id);
     return entry ? { root: entry.root, face: entry.buildFace } : null;

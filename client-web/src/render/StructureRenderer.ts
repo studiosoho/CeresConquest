@@ -150,6 +150,16 @@ export class StructureRenderer {
     }
   }
 
+  /**
+   * Altura de cena (z de mundo) da BASE do prédio — o chão da plataforma onde
+   * as vagas ficam. null se a estrutura não está assentada (fora do grid).
+   */
+  platformZ(id: string): number | null {
+    const entry = this.entries.get(id);
+    if (!entry || !entry.attachedTo) return null;
+    return entry.root.getAbsolutePosition().z;
+  }
+
   remove(id: string): void {
     const entry = this.entries.get(id);
     if (!entry) return;

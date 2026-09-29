@@ -123,18 +123,23 @@ const FP_VIEW = { left: 0.344, bottom: 0.02, width: 0.312, height: 0.27 };
  * O cockpit MUDA COM A CAMADA DE VOO (shared/layers.ts). A nave voa no plano
  * da camada de naves, rente ao topo das rochas (layers.ts); o olho é deslocado
  * dali pela altitude aparente da nave (shipPresence.ts, a mesma que comanda
- * sombra e tamanho — então a transição e o pouso interpolam juntos):
+ * o tamanho — então a transição e o pouso interpolam juntos):
  *  - CRUZEIRO (altitude 1): o olho sobe FP_CRUISE_LIFT acima do campo e
  *    inclina FP_CRUISE_PITCH para baixo — vê as rochas passando lá embaixo;
  *  - SUPERFÍCIE e MODO ATAQUE (altitude 0): o olho desce FP_SURFACE_DROP, até o
  *    meio da altura das rochas, com o horizonte quase nivelado — elas passam
  *    ao lado, na altura dos olhos.
+ *  - ATRACADA (dock 1): a nave está sobre a plataforma do asteroide, não entre
+ *    as rochas — o olho fica no plano das naves, rente à plataforma, e a nave
+ *    pousa de nariz para a estação, que aparece à frente no visor.
  * Cena: −Z é "para cima" (em direção à câmera principal).
  */
 const FP_CRUISE_LIFT = 900;
 const FP_SURFACE_DROP = 300;
 /** pitch do olho (rad, positivo = para cima) em cruzeiro e na superfície */
 const FP_CRUISE_PITCH = -0.3;
+/** altura do olho da nave atracada acima do chão da plataforma */
+const FP_DOCK_EYE_HEIGHT = 25;
 const FP_SURFACE_PITCH = 0.05;
 
 // ── farol (spotlight) da nave própria ──
@@ -239,6 +244,8 @@ interface ServerShip extends WorldPos {
   anchored: boolean;
   stored: boolean;
   hqId: string;
+  /** asteroide vazio em que a nave está pousada ("" = nenhum) */
+  anchoredAsteroidId: string;
   /** aranha mineradora: movida pela estação, fora da física */
   autoMining: boolean;
   /** estrutura de destino em taxiamento ("" = não taxia) — fora dos contatos */
@@ -596,7 +603,7 @@ export class GameScene {
     this.meshFactory = new MeshFactory(this.bScene, this.glow);
     // a câmera principal entra pelo piso de tamanho em tela das naves (ver
     // ShipRenderer): só ela vê o casco inflado, o cockpit vê o tamanho real
-    this.shipRenderer = new ShipRenderer(this.meshFactory, this.camera, this.glow);
+    this.shipRenderer = new ShipRenderer(this.meshFactory, this.camera);
     // a câmera entra porque a névoa das rochas tem cor LOCAL: o renderer
     // projeta cada rocha em coordenada de tela para amostrar o céu no ponto
     // em que ela está (ver AsteroidRenderer/Aerial)
@@ -665,6 +672,7 @@ export class GameScene {
         mining: s.mining,
         owner: s.owner, kind: s.kind, anchored: s.anchored,
         stored: s.stored, hqId: s.hqId,
+        anchoredAsteroidId: s.anchoredAsteroidId ?? "",
         autoMining: s.autoMining ?? false,
         taxiTo: s.taxiTo ?? "",
         landingPhase: s.landingPhase ?? "",
@@ -1214,6 +1222,16 @@ export class GameScene {
   }
 
   /**
+   * z de cena do chão em que a nave própria está atracada (ou pousando): a
+   * base do prédio da estrutura, ou a plataforma do asteroide vazio.
+   */
+  private dockFloorZ(s: ServerShip): number | null {
+    if (s.hqId) return this.structureRenderer.platformZ(s.hqId);
+    if (s.anchoredAsteroidId) return this.asteroidRenderer.platformZ(s.anchoredAsteroidId);
+    return null;
+  }
+
+  /**
    * Rotação do olho do cockpit no quadro local da nave: visada (+Z da câmera)
    * → nariz (+X) e topo da câmera (+Y) → −Z (em direção à câmera principal),
    * com `pitch` (rad, positivo = para cima) em torno do eixo direito local.
@@ -1263,7 +1281,7 @@ export class GameScene {
     this.shipRenderer.update(this.myShipId, {
       x: own.x, y: own.y, angle: ownAngle,
       kind: this.localShip!.kind, tint: COLOR_OWN, visible: true,
-      scale: ownPresence?.scale, altitude: ownPresence?.altitude,
+      scale: ownPresence?.scale,
     });
     // câmera segue a nave (substitui cameras.main.centerOn)
     const camPos = toScene(own.x, own.y);
@@ -1281,7 +1299,15 @@ export class GameScene {
       if (this.fpCamera.parent !== cockpit.root) this.fpCamera.parent = cockpit.root;
       // altura e inclinação do olho pela altitude aparente (cruzeiro ↔ superfície)
       const alt = ownPresence?.altitude ?? 1;
-      const dz = -FP_CRUISE_LIFT * alt + FP_SURFACE_DROP * (1 - alt);
+      const dock = ownPresence?.dock ?? 0;
+      let dz = -FP_CRUISE_LIFT * alt + FP_SURFACE_DROP * (1 - alt);
+      // atracada: o olho desce até a altura REAL da plataforma — ela fica bem
+      // abaixo do plano das naves, e dali o prédio passaria por baixo do visor
+      const floor = mineAuth ? this.dockFloorZ(mineAuth) : null;
+      if (floor !== null && dock > 0) {
+        const dockDz = floor - FP_DOCK_EYE_HEIGHT - cockpit.root.position.z - cockpit.eye.z;
+        dz += (dockDz - dz) * dock;
+      }
       this.fpCamera.position.copyFromFloats(cockpit.eye.x, cockpit.eye.y, cockpit.eye.z + dz);
       this.fpCamera.rotationQuaternion = this.fpRotation(FP_SURFACE_PITCH + (FP_CRUISE_PITCH - FP_SURFACE_PITCH) * alt);
       // farol na mesma cabine, emitindo pelo nariz (direção +X já fixada)
@@ -1343,7 +1369,7 @@ export class GameScene {
       this.shipRenderer.update(id, {
         x: view.rx, y: view.ry, angle: view.angle,
         kind: view.kind, tint: view.tint, visible: true,
-        scale: pres.scale, altitude: pres.altitude,
+        scale: pres.scale,
       });
       this.effectsRenderer.drawJet(view.rx, view.ry, view.angle, Math.hypot(server.vx, server.vy), tt,
         id, view.kind, this.shipRenderer.displayScale(id, view.kind));

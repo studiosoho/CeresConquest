@@ -211,7 +211,9 @@ describe("pouso na vaga livre", () => {
     expect(s.landingPhase).toBe("");
     expect(s.layer).toBe("surface");
     expect(s.layerTo).toBe("");
-    expect(s.angle).toBe(st.angle);
+    // de nariz para o centro da estação
+    const toBase = relVec(s, st);
+    expect(s.angle).toBeCloseTo(Math.atan2(toBase.dy, toBase.dx), 12);
     samePos(s, bayWorldPos(st, 0)!);
   });
 

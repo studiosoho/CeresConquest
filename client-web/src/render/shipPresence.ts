@@ -7,13 +7,15 @@ import { BAY_SLOT_EXPANDED_H, bayLayout, type BayHost, type ShipLayer } from "@c
  * cruzeiro e nave na superfície são indistinguíveis, e o jogador não sabe se
  * vai bater na rocha que está sob ela.
  *
- *  - CRUZEIRO: tamanho de exibição cheio e sombra projetada (altitude 1).
- *  - SUPERFÍCIE e MODO ATAQUE: menor (SURFACE_SIZE) e sem sombra — mais longe
- *    da câmera, rente às rochas (altitude 0).
+ *  - CRUZEIRO: tamanho de exibição cheio (altitude 1).
+ *  - SUPERFÍCIE e MODO ATAQUE: menor (SURFACE_SIZE) — mais longe da câmera,
+ *    rente às rochas (altitude 0).
  *  - POUSADA (na vaga ou num asteroide): encolhe até caber na vaga, num tamanho
  *    perto do real da nave — a nave "estaciona" na placa.
  *  - TRANSIÇÃO: interpola entre as duas camadas pelo progresso sincronizado;
  *    o POUSO interpola até o tamanho da vaga pelo progresso do pouso.
+ *
+ * A altitude e o `dock` movem o olho do cockpit (GameScene, FP_CRUISE_LIFT).
  *
  * Tudo aqui é ALVO; quem suaviza os saltos (decolar da vaga começa uma subida
  * que parte do tamanho de superfície, não do da vaga) é `easePresence`.
@@ -41,8 +43,14 @@ export interface PresenceShip {
 export interface Presence {
   /** escala de exibição na câmera principal (1 = tamanho de mundo) */
   scale: number;
-  /** 1 = cruzeiro (sombra cheia), 0 = rente à superfície */
+  /** 1 = cruzeiro, 0 = rente à superfície — comanda o olho do cockpit */
   altitude: number;
+  /**
+   * 1 = atracada (pousando, pousada na vaga ou num asteroide), 0 = voando. A
+   * nave pousada está SOBRE a plataforma, não entre as rochas: o olho do
+   * cockpit fica na altura dela, de frente para o prédio.
+   */
+  dock: number;
   /** em modo ataque (ou descendo para ele) */
   attack: boolean;
 }
@@ -70,22 +78,22 @@ export function presenceTarget(ship: PresenceShip, cruiseScale: number, docked: 
   const attack = ship.layer === "attack" || ship.layerTo === "attack";
 
   if (ship.anchored || ship.landingPhase === "landed") {
-    return { scale: docked, altitude: 0, attack: false };
+    return { scale: docked, altitude: 0, dock: 1, attack: false };
   }
   if (ship.landingPhase === "landing") {
     // desce do cruzeiro até a placa; já na superfície (o builder que acabou
     // de construir e taxia do centro do asteroide para a vaga), fica no
     // tamanho da vaga o caminho todo
     const s = smooth(ship.landingProgress);
-    if (ship.layer !== "cruise") return { scale: docked, altitude: 0, attack: false };
-    return { scale: flying(1) + (docked - flying(1)) * s, altitude: 1 - s, attack: false };
+    if (ship.layer !== "cruise") return { scale: docked, altitude: 0, dock: 1, attack: false };
+    return { scale: flying(1) + (docked - flying(1)) * s, altitude: 1 - s, dock: s, attack: false };
   }
   let alt = altitudeOf(ship.layer);
   if (ship.layerTo) {
     const s = smooth(ship.layerProgress);
     alt = alt + (altitudeOf(ship.layerTo) - alt) * s;
   }
-  return { scale: flying(alt), altitude: alt, attack };
+  return { scale: flying(alt), altitude: alt, dock: 0, attack };
 }
 
 /** Aproxima a presença mostrada do alvo, sem saltos (decolagem, troca de alvo). */
@@ -95,6 +103,7 @@ export function easePresence(shown: Presence | undefined, target: Presence, dt: 
   return {
     scale: shown.scale + (target.scale - shown.scale) * k,
     altitude: shown.altitude + (target.altitude - shown.altitude) * k,
+    dock: shown.dock + (target.dock - shown.dock) * k,
     attack: target.attack,
   };
 }

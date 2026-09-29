@@ -44,12 +44,6 @@
 
 import type { ShipKind } from "@ceres/shared";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
-import type { Mesh } from "@babylonjs/core/Meshes/mesh";
-import type { GlowLayer } from "@babylonjs/core/Layers/glowLayer";
-import { CreateDisc } from "@babylonjs/core/Meshes/Builders/discBuilder";
-import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
-import { Color3 } from "@babylonjs/core/Maths/math.color";
-import "@babylonjs/core/Meshes/thinInstanceMesh";
 import type { Camera } from "@babylonjs/core/Cameras/camera";
 import type { Observer } from "@babylonjs/core/Misc/observable";
 import { MeshFactory, type ShipMeshInstance } from "./MeshFactory";
@@ -74,22 +68,7 @@ export interface ShipRenderData {
    * menor na superfície, do tamanho da vaga pousada). Ausente = a da classe.
    */
   scale?: number;
-  /** altitude aparente, 0..1: 1 = cruzeiro, com sombra; 0 = sem sombra */
-  altitude?: number;
 }
-
-/** Opacidade da sombra de uma nave em cruzeiro. */
-const SHADOW_ALPHA = 0.42;
-/** Raio da sombra, em comprimentos do casco exibido. */
-const SHADOW_RADIUS = 0.42;
-/**
- * Deslocamento da sombra em altitude cheia, em comprimentos do casco exibido,
- * para baixo e à direita da tela (a luz-chave fica no alto, à esquerda): é o
- * afastamento entre nave e sombra que lê como altura.
- */
-const SHADOW_OFFSET = 0.55;
-/** Sombra atrás do casco e à frente das rochas (ver layers.ts). */
-const SHADOW_Z = SHIP_LAYER_Z + 3;
 
 interface MeshEntry {
   instance: ShipMeshInstance;
@@ -97,7 +76,6 @@ interface MeshEntry {
   visible: boolean;
   /** escala de exibição desta nave (ver ShipRenderData.scale) */
   scale: number | undefined;
-  altitude: number;
 }
 
 export class ShipRenderer {
@@ -111,28 +89,11 @@ export class ShipRenderer {
   private scaleByKind = {} as Record<ShipKind, number>;
   /** última versão das chaves de A/B aplicada (shipAB.ts) */
   private abVersion = 0;
-  /** sombras de todas as naves: um disco, uma thin instance por nave no ar */
-  private shadow: Mesh;
-  private shadowMatrices = new Float32Array(16 * 64);
 
   /** `camera` = a câmera PRINCIPAL ortográfica (a de cockpit fica em escala 1) */
-  constructor(factory: MeshFactory, camera: Camera, glow: GlowLayer) {
+  constructor(factory: MeshFactory, camera: Camera) {
     this.factory = factory;
     this.camera = camera;
-    const scene = camera.getScene();
-    this.shadow = CreateDisc("shipShadows", { radius: 1, tessellation: 28 }, scene);
-    const mat = new StandardMaterial("shipShadowMat", scene);
-    mat.disableLighting = true;
-    mat.emissiveColor = Color3.Black();
-    mat.alpha = SHADOW_ALPHA;
-    mat.backFaceCulling = false;
-    this.shadow.material = mat;
-    this.shadow.isPickable = false;
-    this.shadow.layerMask = MASK_MAIN_ONLY;
-    this.shadow.alwaysSelectAsActiveMesh = true;
-    glow.addExcludedMesh(this.shadow);
-    this.shadow.thinInstanceSetBuffer("matrix", this.shadowMatrices, 16, false);
-    this.shadow.thinInstanceCount = 0;
     // px por unidade é o próprio zoom (o frustum ortográfico é tela ÷ zoom)
     for (const k of KINDS) {
       this.scaleByKind[k] = Math.max(1, shipFloorPx(k) / (shipMeshData(k).length * SHIP_DISPLAY_REF_ZOOM));
@@ -155,7 +116,7 @@ export class ShipRenderer {
     const instance = this.factory.createShip(data.kind, data.tint);
     // camada de voo: à frente do pior avanço de uma rocha em balanço
     instance.setDepthBias(SHIP_LAYER_Z);
-    const entry: MeshEntry = { instance, kind: data.kind, visible: true, scale: undefined, altitude: 0 };
+    const entry: MeshEntry = { instance, kind: data.kind, visible: true, scale: undefined };
     this.entries.set(id, entry);
     // troca de classe recria a malha — o destaque de nave própria persiste
     if (id === this.topId) this.applyTop(instance);
@@ -231,8 +192,6 @@ export class ShipRenderer {
     }
     for (const { instance } of this.entries.values()) instance.dispose();
     this.entries.clear();
-    this.shadow.material?.dispose();
-    this.shadow.dispose();
   }
 
   /**
@@ -246,7 +205,6 @@ export class ShipRenderer {
         for (const e of this.entries.values()) e.instance.setPartsVisible(ShipAB.hull, ShipAB.livery);
       }
       for (const e of this.entries.values()) e.instance.setScreenScale(e.scale ?? this.scaleByKind[e.kind]);
-      this.updateShadows();
     } else if (ShipAB.perCameraScale) {
       for (const e of this.entries.values()) e.instance.setScreenScale(1);
     }
@@ -260,49 +218,9 @@ export class ShipRenderer {
     instance.root.rotation.z = toSceneAngle(data.angle);
     instance.setTint(data.tint);
     entry.scale = data.scale;
-    entry.altitude = data.altitude ?? 0;
     if (entry.visible !== data.visible) {
       entry.visible = data.visible;
       instance.setVisible(data.visible);
     }
-  }
-
-  /**
-   * Uma sombra por nave visível com altitude: disco escuro sob o casco,
-   * deslocado para baixo e à direita tanto mais quanto mais alto ela voa, e
-   * encolhendo junto na descida — some quando ela chega à superfície.
-   */
-  private updateShadows(): void {
-    let n = 0;
-    let grew = false;
-    for (const e of this.entries.values()) {
-      if (!e.visible || e.altitude <= 0.01) continue;
-      if ((n + 1) * 16 > this.shadowMatrices.length) {
-        const grown = new Float32Array(this.shadowMatrices.length * 2);
-        grown.set(this.shadowMatrices);
-        this.shadowMatrices = grown;
-        grew = true;
-      }
-      const len = shipMeshData(e.kind).length * (e.scale ?? this.scaleByKind[e.kind]);
-      const r = SHADOW_RADIUS * len * (0.6 + 0.4 * e.altitude);
-      const off = SHADOW_OFFSET * len * e.altitude;
-      const p = e.instance.root.position;
-      const m = this.shadowMatrices;
-      const o = n * 16;
-      m.fill(0, o, o + 16);
-      m[o] = r;
-      m[o + 5] = r;
-      m[o + 10] = 1;
-      // para baixo e à direita da tela: +x e −y de cena
-      m[o + 12] = p.x + off;
-      m[o + 13] = p.y - off;
-      m[o + 14] = SHADOW_Z;
-      m[o + 15] = 1;
-      n++;
-    }
-    // o buffer só é recriado quando cresce; no mais, atualizado no lugar
-    if (grew) this.shadow.thinInstanceSetBuffer("matrix", this.shadowMatrices, 16, false);
-    else this.shadow.thinInstanceBufferUpdated("matrix");
-    this.shadow.thinInstanceCount = n;
   }
 }

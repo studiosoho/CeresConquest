@@ -432,3 +432,24 @@ describe("explosões anunciadas aos clientes (MSG_FX)", () => {
 
 /** alcance de acerto do perfurante: o raio dele mais o do casco */
 const BULLET_RADIUS_REACH = 30 + 20;
+
+describe("bots", () => {
+  it("são imunes a dano de colisão, mas o choque acontece", () => {
+    const room = new MatchRoom();
+    (room as unknown as { listing: object }).listing = { metadata: {}, save: async () => {} };
+    room.onCreate({ worldSeed: SEED, bots: 2, maxPlayers: 4 });
+    rooms.push(room);
+    const r = room as unknown as R;
+    // a 4000 u/s cada e 400 u de distância, o choque vem em ~0,05 s — antes de
+    // a IA dos bots mudar o rumo
+    const [a, b] = [...r.sim.ships.values()];
+    const p = openSpace();
+    Object.assign(a, p, { vx: 4000, vy: 0, angle: 0 });
+    Object.assign(b, { ...p, x: p.x + 400 }, { vx: -4000, vy: 0, angle: Math.PI });
+    const va = a.vx;
+    run(r, 1);
+    expect(a.vx).not.toBe(va); // bateu e ricocheteou
+    expect(a.hp).toBe(SHIP_HP_MAX);
+    expect(b.hp).toBe(SHIP_HP_MAX);
+  });
+});

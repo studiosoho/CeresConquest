@@ -1050,8 +1050,8 @@ export class MatchRoom extends Room<MatchState> {
   }
 
   /**
-   * Assenta a nave, parada, no centro da sua vaga (`ship.bay`), de nariz para
-   * a frente da estrutura, na superfície. Sem vaga válida, fica no centro da
+   * Assenta a nave, parada, no centro da sua vaga (`ship.bay`), na superfície,
+   * de nariz para o CENTRO da estrutura — o prédio fica à frente do cockpit. Sem vaga válida, fica no centro da
    * estrutura — não deveria acontecer: toda estrutura tem vaga expandida.
    */
   private dockAtBay(ship: ShipState, struct: Structure): void {
@@ -1067,7 +1067,8 @@ export class MatchRoom extends Room<MatchState> {
     ship.vx = 0;
     ship.vy = 0;
     ship.av = 0;
-    ship.angle = struct.angle;
+    const { dx, dy } = relVec(p, struct);
+    ship.angle = dx === 0 && dy === 0 ? struct.angle + Math.PI : Math.atan2(dy, dx);
     ship.mining = false;
     setLayer(ship, "surface");
   }
@@ -1535,9 +1536,13 @@ export class MatchRoom extends Room<MatchState> {
     }
     this.sim.tick(dt);
     // DANO DE COLISÃO: o impulso que o solver acumulou neste tick vira dano
-    // (combat.ts) e zera — quem converte e zera é o servidor
+    // (combat.ts) e zera — quem converte e zera é o servidor. Os bots são
+    // imunes: sem desviar de outras naves, eles se chocavam de frente a
+    // milhares de u/s e 28 de 30 morriam em dois minutos. Continuam batendo e
+    // ricocheteando (a física é a mesma); só não perdem HP no choque — tiro
+    // ainda os atinge.
     for (const [id, s] of [...this.sim.ships]) {
-      const dmg = collisionDamage(s);
+      const dmg = this.bots.has(id) ? 0 : collisionDamage(s);
       s.hullImpulse = 0;
       if (dmg > 0) this.damageShip([id, s], dmg);
     }
