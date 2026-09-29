@@ -7,6 +7,7 @@ import {
   beginLayerChange,
   setLayer,
   inLayerTransition,
+  syncLayer,
   type ShipState,
 } from "../src";
 import {
@@ -256,5 +257,96 @@ describe("predição do cliente respeita a camada do snapshot", () => {
   it("camadas diferentes: a predição deixa passar", () => {
     expect(predict("cruise", "surface")).toBe(false);
     expect(predict("surface", "cruise")).toBe(false);
+  });
+});
+
+describe("predição da nave própria segue a camada do servidor (syncLayer)", () => {
+  const snap = (layer: ShipLayer, layerTo: ShipLayer | "" = "", layerProgress = 0) => ({ layer, layerTo, layerProgress });
+
+  it("o servidor começou uma transição: a predição adota, adiantada pela idade do snapshot", () => {
+    const c = shipIn("cruise", open);
+    expect(syncLayer(c, snap("cruise", "surface", 0.2), 0.05)).toBe(true);
+    expect(c.layer).toBe("cruise");
+    expect(c.layerTo).toBe("surface");
+    expect(c.layerProgress).toBeCloseTo(0.2 + 0.05 / LAYER_TRANSITION_TIME, 12);
+  });
+
+  it("idade que passa do fim da transição: a predição já chega", () => {
+    const c = shipIn("cruise", open);
+    syncLayer(c, snap("cruise", "surface", 0.98), 0.05);
+    expect(c.layer).toBe("surface");
+    expect(c.layerTo).toBe("");
+  });
+
+  it("o servidor já chegou e a predição não: chega junto", () => {
+    const c = shipIn("cruise", open);
+    beginLayerChange(c, "surface");
+    expect(syncLayer(c, snap("surface"), 0.05)).toBe(true);
+    expect(c.layer).toBe("surface");
+    expect(c.layerTo).toBe("");
+  });
+
+  it("os dois a caminho do mesmo destino: a predição mantém o próprio progresso", () => {
+    const c = shipIn("cruise", open);
+    beginLayerChange(c, "surface");
+    c.layerProgress = 0.6;
+    expect(syncLayer(c, snap("cruise", "surface", 0.5), 0.05)).toBe(false);
+    expect(c.layerProgress).toBe(0.6);
+  });
+
+  it("a predição já chegou e o servidor ainda não: mantém (ela está adiantada)", () => {
+    const c = shipIn("surface", open);
+    expect(syncLayer(c, snap("cruise", "surface", 0.97), 0.05)).toBe(false);
+    expect(c.layer).toBe("surface");
+  });
+
+  it("destino trocado no meio (ex.: saiu da zona de ataque): adota o novo", () => {
+    const c = shipIn("attack", open);
+    syncLayer(c, snap("attack", "cruise", 0), 0);
+    expect(c.layerTo).toBe("cruise");
+    expect(c.layerProgress).toBe(0);
+  });
+
+  /**
+   * Servidor a 20 Hz, predição a 60 Hz lendo snapshots de UM tick atrás (50 ms,
+   * a idade que o cliente supõe). A nave, em cruzeiro, recebe do servidor a
+   * descida à superfície e depois chega a uma rocha: o servidor bate nela.
+   * Devolve o erro final de posição da predição e se ela também bateu.
+   */
+  const parity = (sync: boolean) => {
+    const w = new SimWorld(seed);
+    const start = { sx: rock.sx, sy: rock.sy, x: rock.x - rock.radius - 2600, y: rock.y };
+    const s = w.addShip("s", start, "p1", "attack");
+    s.vx = 1500;
+    const c = makeShip(start, "p1", "attack");
+    c.vx = 1500;
+    const env = { seed, passthroughByOwner: w.passthroughByOwner() };
+    const history: ShipState[] = [];
+    let clientClosest = Infinity;
+    for (let tick = 0; tick < 60; tick++) {
+      if (tick === 4) beginLayerChange(s, "surface"); // o [F] chegou ao servidor
+      history.push({ ...s });
+      w.tick(1 / 20);
+      const old = history[Math.max(0, history.length - 2)];
+      for (let f = 0; f < 3; f++) {
+        if (sync) syncLayer(c, old, 0.05);
+        stepShipInWorld(c, COAST, 1 / 60, 1, env);
+        clientClosest = Math.min(clientClosest, dist(c, rock));
+      }
+    }
+    return { err: dist(c, s), clientBounced: clientClosest >= rock.radius, serverLayer: s.layer };
+  };
+
+  it("com a camada sincronizada a predição bate na rocha junto com o servidor", () => {
+    const r = parity(true);
+    expect(r.serverLayer).toBe("surface");
+    expect(r.clientBounced).toBe(true);
+    expect(r.err).toBeLessThan(5);
+  });
+
+  it("controle: sem sincronizar, a predição atravessa a rocha e diverge", () => {
+    const r = parity(false);
+    expect(r.clientBounced).toBe(false);
+    expect(r.err).toBeGreaterThan(500);
   });
 });

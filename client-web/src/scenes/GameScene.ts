@@ -51,6 +51,7 @@ import {
   stepShipInWorld,
   freezeShip,
   sectorAsteroids,
+  syncLayer,
   type ShipState,
   type Body,
 } from "@ceres/sim-core";
@@ -73,8 +74,11 @@ import { SpaceLightRig } from "../render/Lighting";
 const COLOR_OWN = 0xffffff;
 const COLOR_FLEET_OWN = Palette.structure.fleet;
 
-/** Zoom inicial: os asteroides agora são grandes; parte-se afastado para ver a escala. */
-const INITIAL_ZOOM = 0.3;
+/**
+ * Zoom inicial: o quadro de julgamento (0.12), em que as naves têm o tamanho
+ * aprovado (ShipMeshGenerator.SHIP_DISPLAY_REF_ZOOM). Dentro de [ZOOM_MIN, ZOOM_MAX].
+ */
+const INITIAL_ZOOM = 0.12;
 
 const INPUT_SEND_HZ = 30;
 /** fator de correção por frame em direção ao estado autoritativo */
@@ -82,8 +86,9 @@ const OWN_BLEND = 0.1;
 const REMOTE_BLEND = 0.3;
 
 // ── zoom ──
-const ZOOM_MIN = 0.08;
-const ZOOM_MAX = 3;
+/** faixa de zoom do jogo (px por unidade de mundo) */
+const ZOOM_MIN = 0.1;
+const ZOOM_MAX = 0.25;
 const ZOOM_WHEEL_STEP = 1.15;
 const ZOOM_KEY_STEP = 1.03;
 const ZOOM_SMOOTH = 0.15;
@@ -224,6 +229,8 @@ interface ServerShip extends WorldPos {
    */
   layer: ShipLayer;
   layerTo: ShipLayer | "";
+  /** progresso da transição em curso, 0..1 */
+  layerProgress: number;
 }
 
 /** Projétil sincronizado do servidor. */
@@ -295,6 +302,12 @@ export class GameScene {
   private serverStructures = new Map<string, ServerStructure>();
   private serverProjectiles = new Map<string, ServerProjectile>();
   private passthrough = new Set<string>();
+  /**
+   * Asteroides ocupados agrupados pelo DONO da estrutura — o mesmo ambiente do
+   * servidor (SimWorld.passthroughByOwner): na superfície, cada nave atravessa
+   * só os das estações do próprio dono; os de estação inimiga são sólidos.
+   */
+  private passthroughByOwner = new Map<string, Set<string>>();
   /** sistema de render */
   private meshFactory!: MeshFactory;
   private shipRenderer!: ShipRenderer;
@@ -620,6 +633,7 @@ export class GameScene {
         bay: s.bay ?? -1,
         layer: (s.layer ?? "cruise") as ShipLayer,
         layerTo: (s.layerTo ?? "") as ShipLayer | "",
+        layerProgress: s.layerProgress ?? 0,
       });
     });
     for (const id of [...this.serverShips.keys()]) {
@@ -659,6 +673,13 @@ export class GameScene {
     this.passthrough = new Set(
       [...this.serverStructures.values()].map((st) => st.asteroidId).filter(Boolean),
     );
+    this.passthroughByOwner = new Map();
+    for (const st of this.serverStructures.values()) {
+      if (!st.asteroidId) continue;
+      let set = this.passthroughByOwner.get(st.owner);
+      if (!set) this.passthroughByOwner.set(st.owner, (set = new Set()));
+      set.add(st.asteroidId);
+    }
 
     // a (re)inicialização da predição acontece em update(), conforme a nave
     // ativa (myShipId) aparecer ou mudar (troca no hangar)
@@ -747,6 +768,11 @@ export class GameScene {
     if (!mineServer) return;
     if (this.localShipId !== this.myShipId) this.initActiveShip(mineServer);
     if (!this.localShip) return;
+    // a camada da nave própria segue a do servidor (quem troca de camada é o
+    // servidor): sem isto a predição voava em cruzeiro atravessando a rocha
+    // que a nave de verdade, na superfície, encontrava — e o blend puxava a
+    // nave de volta de uma batida que a tela não mostrou
+    syncLayer(this.localShip, mineServer, SNAPSHOT_AGE_FIXED_GUESS);
 
     // zoom por teclas +/- e suavização em direção ao alvo
     if (this.keys.isDown("PLUS")) {
@@ -931,7 +957,7 @@ export class GameScene {
       // cliente (60 Hz) e o servidor (20 Hz) discordarem sobre o que bateu.
       stepShipInWorld(this.localShip, input, dt, 1, {
         seed: this.worldSeed,
-        passthrough: this.passthrough,
+        passthroughByOwner: this.passthroughByOwner,
         ceres: this.ceres,
         ceresRadius: CERES_RADIUS,
         boundaryCenter: this.mapCenter,
@@ -1022,6 +1048,9 @@ export class GameScene {
     this.localShip = makeShip(server, server.owner, server.kind);
     this.localShip.angle = server.angle;
     this.localShip.anchored = server.anchored;
+    this.localShip.layer = server.layer;
+    this.localShip.layerTo = server.layerTo;
+    this.localShip.layerProgress = server.layerProgress;
     this.localShipId = this.myShipId;
     this.setOrigin(server.sx, server.sy);
     // cria/atualiza a malha da nave própria via ShipRenderer

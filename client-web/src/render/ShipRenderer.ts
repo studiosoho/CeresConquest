@@ -1,18 +1,25 @@
 /**
- * ShipRenderer — gerencia as malhas de naves via MeshFactory e aplica o
- * TAMANHO MÍNIMO EM TELA. Sem lógica de jogo.
+ * ShipRenderer — gerencia as malhas de naves via MeshFactory e aplica a
+ * ESCALA DE EXIBIÇÃO. Sem lógica de jogo.
  * GameScene chama create() e update() — só isso (mesma API da era Phaser;
  * posições/ângulos chegam em coordenadas do JOGO e a conversão para cena
  * fica toda em render/coords.ts).
  *
- * ── PISO DE TELA ──────────────────────────────────────────────────────
+ * ── ESCALA DE EXIBIÇÃO ────────────────────────────────────────────────
  * A escala do mundo é honesta e impiedosa: rochas de 200–2000 u de raio,
  * naves de ~40 u de comprimento. Na zoom de RTS (0.12) a nave tem ~5 px, e
  * nenhuma luz talha plano em 5 px — foi o "ponto branco achado só pelo anel
  * tracejado" de três vereditos. Crescer o casco no MUNDO mentiria sobre a
- * colisão (o círculo de SHIP_RADIUS é de outro território). A prática de RTS
- * é um piso em ESPAÇO DE TELA: a malha escala para nunca ficar abaixo de N px
- * de comprimento, e a física não sabe disso.
+ * colisão (o círculo de SHIP_RADIUS é de outro território). Então só a MALHA
+ * é inflada, por um fator FIXO por classe, e a física não sabe disso.
+ *
+ * O fator é fixo — não um piso em pixels — para que a nave ACOMPANHE O ZOOM,
+ * como o resto do mundo: aproximar aumenta a nave na mesma proporção que as
+ * rochas, e a razão nave/rocha fica constante. (Até aqui era um piso de tela:
+ * na faixa de zoom do jogo ele sempre atuava, e a nave tinha o mesmo tamanho
+ * em pixels em qualquer zoom.) O fator é o que dá N px de comprimento no zoom
+ * de referência SHIP_DISPLAY_REF_ZOOM = 0.12, o quadro de julgamento — ali a
+ * nave é exatamente a que foi aprovada; na faixa 0.10–0.25, de 0,83× a 2,1×.
  *
  * N = MIN_SHIP_PX = 44 px (ShipMeshGenerator) para a massa de referência (construtora), vezes
  * ∛massa por classe (massa ∝ volume, comprimento ∝ ∛volume): caça 41,
@@ -24,8 +31,8 @@
  * 36 px (medido na sonda offline) o teto da construtora caía para ~5 px e as
  * naves liam como pílulas contornadas. E fica abaixo da menor rocha no quadro
  * de julgamento (raio 200 u → 48 px de diâmetro a 0.12): a nave ainda é MENOR
- * que qualquer asteroide, só não some.
- * Em zoom de perto (≥ ~1.1) o piso não atua e a nave é do tamanho de mundo.
+ * que qualquer asteroide, só não some — e, com o fator fixo, isso vale em
+ * qualquer zoom.
  *
  * POR CÂMERA: a escala é aplicada em `onBeforeCameraRenderObservable`, que o
  * Babylon dispara ANTES de avaliar as malhas ativas de cada câmera (o id de
@@ -40,7 +47,7 @@ import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { Camera } from "@babylonjs/core/Cameras/camera";
 import type { Observer } from "@babylonjs/core/Misc/observable";
 import { MeshFactory, type ShipMeshInstance } from "./MeshFactory";
-import { shipMeshData, shipFloorPx } from "./ShipMeshGenerator";
+import { shipMeshData, shipFloorPx, SHIP_DISPLAY_REF_ZOOM } from "./ShipMeshGenerator";
 import { toScene, toSceneAngle } from "./coords";
 import { SHIP_LAYER_Z, SHIP_TOP_LAYER_Z, MASK_MAIN_ONLY } from "./layers";
 import { ShipAB } from "./shipAB";
@@ -71,7 +78,7 @@ export class ShipRenderer {
   /** id da nave destacada (própria) — reaplicado quando a malha é recriada */
   private topId: string | null = null;
   private observer: Observer<Camera> | null;
-  /** escala de tela corrente por classe (recalculada a cada passe da principal) */
+  /** escala de exibição por classe na câmera principal (fixa: acompanha o zoom) */
   private scaleByKind = {} as Record<ShipKind, number>;
   /** última versão das chaves de A/B aplicada (shipAB.ts) */
   private abVersion = 0;
@@ -80,7 +87,10 @@ export class ShipRenderer {
   constructor(factory: MeshFactory, camera: Camera) {
     this.factory = factory;
     this.camera = camera;
-    for (const k of KINDS) this.scaleByKind[k] = 1;
+    // px por unidade é o próprio zoom (o frustum ortográfico é tela ÷ zoom)
+    for (const k of KINDS) {
+      this.scaleByKind[k] = Math.max(1, shipFloorPx(k) / (shipMeshData(k).length * SHIP_DISPLAY_REF_ZOOM));
+    }
     this.observer = camera.getScene().onBeforeCameraRenderObservable.add((cam) => this.applyScreenScale(cam));
   }
 
@@ -148,7 +158,7 @@ export class ShipRenderer {
   }
 
   /**
-   * Escala de tela corrente da classe na câmera principal (1 = mundo). Fica
+   * Escala de exibição da classe na câmera principal (1 = mundo). Fica
    * exposta para quem desenha preso ao casco (jato, feixe) poder acompanhar
    * a malha inflada em vez de sumir debaixo dela.
    */
@@ -173,24 +183,14 @@ export class ShipRenderer {
   }
 
   /**
-   * Piso de tela por passe de câmera. Px por unidade sai do próprio frustum
-   * ortográfico (altura do alvo ÷ altura do volume) — é o zoom efetivo, sem
-   * GameScene ter de repassá-lo. `getRenderHeight(true)`: neste ponto o alvo
-   * ligado é o RTT do pipeline, e o que interessa é a tela.
+   * Escala por passe de câmera: a principal vê a malha inflada pelo fator
+   * fixo da classe; a de cockpit, no tamanho de mundo.
    */
   private applyScreenScale(cam: Camera): void {
     if (cam === this.camera) {
       if (ShipAB.version !== this.abVersion) {
         this.abVersion = ShipAB.version;
         for (const e of this.entries.values()) e.instance.setPartsVisible(ShipAB.hull, ShipAB.livery);
-      }
-      const top = cam.orthoTop, bottom = cam.orthoBottom;
-      const span = top != null && bottom != null ? top - bottom : 0;
-      const ppu = span > 0 ? (cam.getEngine().getRenderHeight(true) * cam.viewport.height) / span : 0;
-      for (const k of KINDS) {
-        const floorPx = shipFloorPx(k);
-        const px = shipMeshData(k).length * ppu;
-        this.scaleByKind[k] = px > 0 ? Math.max(1, floorPx / px) : 1;
       }
       for (const e of this.entries.values()) e.instance.setScreenScale(this.scaleByKind[e.kind]);
     } else if (ShipAB.perCameraScale) {

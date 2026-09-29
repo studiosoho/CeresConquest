@@ -79,3 +79,44 @@ export function advanceLayer(s: ShipState, h: number): void {
   s.layerProgress += h / LAYER_TRANSITION_TIME;
   if (s.layerProgress >= 1 - 1e-9) setLayer(s, s.layerTo);
 }
+
+/** O estado de camada que o servidor sincroniza (ShipSchema). */
+export interface LayerSnapshot {
+  layer: ShipLayer;
+  layerTo: ShipLayer | "";
+  layerProgress: number;
+}
+
+/**
+ * Traz a camada da nave PREDITA para a do servidor. Quem troca de camada é
+ * sempre o servidor (o comando [F] vai para lá), então a predição só segue.
+ *
+ * Compara o DESTINO de cada lado (a camada para onde a nave vai, ou em que
+ * está parada):
+ *  - destinos diferentes: o servidor começou (ou trocou) uma transição que a
+ *    predição ainda não conhece — adota o estado dele, com o progresso
+ *    adiantado pela idade do snapshot (`age`, em segundos): o snapshot mostra o
+ *    servidor de uma latência atrás;
+ *  - mesmo destino, o servidor já chegou e a predição não: chega junto — ela
+ *    estava atrasada, e colidir com a camada errada é o que se quer evitar;
+ *  - mesmo destino e os dois a caminho, ou a predição já chegou: mantém a
+ *    predição, que avança no mesmo passo fixo do servidor (`advanceLayer`).
+ *
+ * Devolve true se mexeu na nave.
+ */
+export function syncLayer(local: ShipState, server: Readonly<LayerSnapshot>, age: number): boolean {
+  const localTarget = local.layerTo || local.layer;
+  const serverTarget = server.layerTo || server.layer;
+  if (localTarget !== serverTarget) {
+    local.layer = server.layer;
+    local.layerTo = server.layerTo;
+    local.layerProgress = server.layerProgress;
+    if (local.layerTo) advanceLayer(local, Math.max(0, age));
+    return true;
+  }
+  if (!server.layerTo && local.layerTo) {
+    setLayer(local, server.layer);
+    return true;
+  }
+  return false;
+}

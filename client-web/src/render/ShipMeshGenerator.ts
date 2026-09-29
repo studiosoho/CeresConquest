@@ -74,11 +74,17 @@ const PLAN_RADIUS: Record<ShipKind, number> = {
   transport: 1.12,
 };
 
-/** piso de comprimento em tela (px) para a massa de referência — a
- *  justificativa do número está no cabeçalho de ShipRenderer */
+/** comprimento em tela (px) da massa de referência NO ZOOM DE REFERÊNCIA —
+ *  a justificativa do número está no cabeçalho de ShipRenderer */
 export const MIN_SHIP_PX = 44;
 
-/** piso de comprimento em tela da classe: MIN_SHIP_PX · ∛massa */
+/**
+ * Zoom em que a nave tem MIN_SHIP_PX: o enquadramento de julgamento em que a
+ * peça das naves foi aprovada. Nos outros zooms ela escala junto com o mundo.
+ */
+export const SHIP_DISPLAY_REF_ZOOM = 0.12;
+
+/** comprimento em tela da classe no zoom de referência: MIN_SHIP_PX · ∛massa */
 export function shipFloorPx(kind: ShipKind): number {
   return MIN_SHIP_PX * Math.cbrt(SHIP_PHYSICS[kind].mass);
 }
