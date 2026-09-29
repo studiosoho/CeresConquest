@@ -18,4 +18,6 @@ export interface Structure extends WorldPos {
   oreStore: number;
   /** rações em estoque (base inicial recebe da Terra; transporte distribui) */
   rationStore: number;
+  /** pontos de vida; o máximo é STRUCTURE_SPECS[type].hp */
+  hp: number;
 }

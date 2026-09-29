@@ -72,7 +72,7 @@ function pilot(r: ReturnType<typeof makeRoom>["r"], owner: string, kind: ShipKin
 /** Estrutura de `owner` no asteroide `ast`, com a frente para `angle`. */
 function build(r: ReturnType<typeof makeRoom>["r"], owner: string, ast: Asteroid, type: StructureType = "miningStation", angle = 0.7): Structure {
   const hq = type === "hq";
-  const st: Structure = {
+  return r.sim.addStructure({
     id: `st-${ast.id}`, type, owner, angle,
     sx: ast.sx, sy: ast.sy, x: ast.x, y: ast.y,
     asteroidId: ast.id, asteroidClass: asteroidClassOf(ast.radius),
@@ -80,9 +80,7 @@ function build(r: ReturnType<typeof makeRoom>["r"], owner: string, ast: Asteroid
     expandedBays: hq ? HQ_EXPANDED_BAYS : STATION_EXPANDED_BAYS,
     spiderBays: hq ? 0 : STATION_SPIDER_BAYS[asteroidClassOf(ast.radius)],
     nextShipBay: 0, nextSpiderBay: 0, oreStore: 0, rationStore: 0,
-  };
-  r.sim.addStructure(st);
-  return st;
+  });
 }
 
 const run = (r: ReturnType<typeof makeRoom>["r"], seconds: number) => {

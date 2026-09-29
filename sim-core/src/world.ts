@@ -90,8 +90,14 @@ export class SimWorld {
     this.inputs.delete(id);
   }
 
-  addStructure(st: Structure): void {
-    this.structures.set(st.id, st);
+  /**
+   * Registra uma estrutura. Sem `hp`, ela nasce com o HP cheio do tipo
+   * (STRUCTURE_SPECS) — a fonte única do valor. Devolve a estrutura guardada.
+   */
+  addStructure(st: Omit<Structure, "hp"> & { hp?: number }): Structure {
+    const full: Structure = { ...st, hp: st.hp ?? STRUCTURE_SPECS[st.type].hp };
+    this.structures.set(full.id, full);
+    return full;
   }
 
   setInput(id: string, input: ShipInput): void {

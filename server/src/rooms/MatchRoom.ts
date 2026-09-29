@@ -49,6 +49,7 @@ import {
   SHIP_RADIUS,
   bayWorldPos,
   asteroidClassOf,
+  mulberry32,
   asteroidSpinRate,
   ceresPosition,
   relVec,
@@ -73,9 +74,20 @@ import {
   type Structure,
 } from "@ceres/sim-core";
 import { MatchState, ShipSchema, StructureSchema, PlayerSchema, ProjectileSchema } from "../schema/State";
+import { canFire, collisionDamage, hittableLevel, levelOfLayer, splitDamage, type CombatLevel } from "../combat";
 import { mapSpawns, type SpawnStrategy } from "../spawn";
 import { computeBotInput, computeTaxiInput, makeBotState, type BotState } from "../bots";
 import { makeSpiderState, stepSpider, type SpiderState } from "../spiders";
+
+/** Projétil em voo; `level` é o nível de combate em que foi disparado (combat.ts). */
+interface Projectile {
+  kind: "bullet" | "grenade";
+  owner: string;
+  level: CombatLevel;
+  sx: number; sy: number; x: number; y: number;
+  vx: number; vy: number;
+  traveled: number;
+}
 
 /** Nº de jogadores-teste autônomos (bots) por padrão. */
 const DEFAULT_BOTS = 30;
@@ -127,13 +139,12 @@ export class MatchRoom extends Room<MatchState> {
   private elapsed = 0;
   /** projéteis ativos (id → estado) */
   private projSeq = 0;
-  private projectiles = new Map<string, {
-    kind: "bullet" | "grenade";
-    owner: string;
-    sx: number; sy: number; x: number; y: number;
-    vx: number; vy: number;
-    traveled: number;
-  }>();
+  private projectiles = new Map<string, Projectile>();
+  /**
+   * Sorteios do combate (divisão do dano entre estação e hangar), semeados
+   * pela semente do mundo: a partida continua reproduzível.
+   */
+  private combatRng: () => number = Math.random;
   /** timer por centro de distribuição (structId → segundos até próximo drone) */
   private rationDroneTimers = new Map<string, number>();
   /**
@@ -150,6 +161,7 @@ export class MatchRoom extends Room<MatchState> {
     const seed = options.worldSeed ?? (Math.random() * 0xffffffff) >>> 0;
 
     this.sim = new SimWorld(seed);
+    this.combatRng = mulberry32((seed ^ 0x5eedc0b7) >>> 0);
     // spawns em setores distintos do cinturão dentro da arena do mapa
     this.spawns = mapSpawns(seed, radiusSectors, this.maxClients + botCount);
 
@@ -812,7 +824,8 @@ export class MatchRoom extends Room<MatchState> {
   /** Dispara um projétil da nave de ataque (perfurante ou granada). */
   private tryFire(sessionId: string, kind?: "bullet" | "grenade"): void {
     const ship = this.activeShipOf(sessionId);
-    if (!ship || ship.kind !== "attack" || ship.anchored || ship.stored) return;
+    // pousada, guardada ou em transição de camada não atira (combat.ts)
+    if (!ship || ship.kind !== "attack" || !canFire(ship)) return;
     if (!kind) return;
     if (kind === "bullet") {
       if (ship.ammo <= 0 || ship.fireCooldown > 0) return;
@@ -825,9 +838,10 @@ export class MatchRoom extends Room<MatchState> {
     }
     const speed = kind === "bullet" ? BULLET_SPEED : GRENADE_SPEED;
     const id = `pr-${this.projSeq++}`;
-    const proj = {
+    const proj: Projectile = {
       kind,
       owner: sessionId,
+      level: levelOfLayer(ship.layer),
       sx: ship.sx, sy: ship.sy,
       x: ship.x + Math.cos(ship.angle) * 30,
       y: ship.y + Math.sin(ship.angle) * 30,
@@ -842,6 +856,7 @@ export class MatchRoom extends Room<MatchState> {
     ps.x = proj.x; ps.y = proj.y;
     ps.vx = proj.vx; ps.vy = proj.vy;
     ps.traveled = 0;
+    ps.level = proj.level;
     this.state.projectiles.set(id, ps);
   }
 
@@ -1192,11 +1207,103 @@ export class MatchRoom extends Room<MatchState> {
   //   console.log(`[room] arena expandida: ${cur} → ${next} setores`);
   // }
 
-  /** Destrói uma nave (remove do mundo; se for do jogador, transfere controle). */
+  /**
+   * Nave inimiga que o projétil atinge (dentro de `reach`), no mesmo nível de
+   * combate dele. Em transição, guardada ou aranha: nada a atinge.
+   */
+  private shipHitBy(proj: Projectile, reach: number): [string, ShipState] | null {
+    for (const [id, s] of this.sim.ships) {
+      if (s.owner === proj.owner || hittableLevel(s) !== proj.level) continue;
+      if (dist(proj, s) <= reach) return [id, s];
+    }
+    return null;
+  }
+
+  /**
+   * Estrutura inimiga que o projétil atinge: só do nível das estações, e
+   * contra o corpo do prédio (raio do tipo), não contra o asteroide inteiro.
+   */
+  private structureHitBy(proj: Projectile, reach: number): Structure | null {
+    if (proj.level !== "surface") return null;
+    for (const st of this.sim.structures.values()) {
+      if (st.owner === proj.owner) continue;
+      if (dist(proj, st) <= STRUCTURE_SPECS[st.type].radius + reach) return st;
+    }
+    return null;
+  }
+
+  /** Explosão da granada: dano decrescente com a distância, no nível dela. */
+  private detonate(proj: Projectile): void {
+    const falloff = (d: number) => GRENADE_DAMAGE * (1 - d / GRENADE_BLAST_RADIUS);
+    for (const [id, s] of [...this.sim.ships]) {
+      if (s.owner === proj.owner || hittableLevel(s) !== proj.level) continue;
+      const d = dist(proj, s);
+      if (d <= GRENADE_BLAST_RADIUS) this.damageShip([id, s], falloff(d));
+    }
+    if (proj.level !== "surface") return;
+    for (const st of [...this.sim.structures.values()]) {
+      if (st.owner === proj.owner) continue;
+      const d = Math.max(0, dist(proj, st) - STRUCTURE_SPECS[st.type].radius);
+      if (d <= GRENADE_BLAST_RADIUS) this.damageStructure(st, falloff(d));
+    }
+  }
+
+  /** Tira HP da nave; em zero, ela explode. */
+  private damageShip([id, s]: [string, ShipState], damage: number): void {
+    if (!this.sim.ships.has(id) || !(damage > 0)) return;
+    s.hp = Math.max(0, s.hp - damage);
+    if (s.hp <= 0) this.destroyShip(id);
+  }
+
+  /**
+   * Dano de um projétil numa estrutura: sorteado entre ela e as naves
+   * GUARDADAS no hangar dela (`splitDamage`, com o gerador semeado da sala).
+   * Nave do hangar que zera explode sozinha; estrutura que zera explode com
+   * todas as que sobraram no hangar.
+   */
+  private damageStructure(st: Structure, damage: number): void {
+    if (!this.sim.structures.has(st.id) || !(damage > 0)) return;
+    const hangar = [...this.sim.ships]
+      .filter(([, s]) => s.stored && s.hqId === st.id)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const split = splitDamage(damage, hangar.length, this.combatRng);
+    hangar.forEach((entry, i) => this.damageShip(entry, split.ships[i]));
+    st.hp = Math.max(0, st.hp - split.station);
+    if (st.hp <= 0) this.destroyStructure(st.id);
+  }
+
+  /**
+   * Estrutura destruída: explodem junto as naves guardadas no hangar e as
+   * aranhas dela; as pousadas nas vagas (ou a caminho delas) decolam de volta
+   * ao cruzeiro. O asteroide fica livre — sólido na superfície para todos — e
+   * as naves em modo ataque sobre ele sobem sozinhas (superviseAttackMode).
+   */
+  private destroyStructure(id: string): void {
+    const st = this.sim.structures.get(id);
+    if (!st) return;
+    const doomed = new Set(
+      [...this.sim.ships]
+        .filter(([, s]) => (s.stored && s.hqId === id) || (s.autoMining && s.stationId === id))
+        .map(([sid]) => sid),
+    );
+    this.sim.structures.delete(id);
+    this.state.structures.delete(id);
+    this.rationDroneTimers.delete(id);
+    // a estrutura sai ANTES das naves: se o controle de um jogador passar a
+    // outra nave condenada, ela só sai do hangar (não há mais para onde
+    // atracar) e explode na volta seguinte, que o passa adiante de novo — ele
+    // termina numa nave que sobrevive, ou em nenhuma
+    for (const sid of doomed) this.destroyShip(sid);
+    for (const s of this.sim.ships.values()) {
+      if (s.hqId === id && !s.stored && (s.anchored || s.landingPhase === "landing")) this.liftOff(s);
+    }
+    console.log(`[room] estrutura ${id} (${st.type}) de ${st.owner} destruída — ${doomed.size} nave(s) junto`);
+  }
+
+  /** Destrói uma nave (remove do mundo; se for a nave ativa de um jogador, passa o controle a outra dele). */
   private destroyShip(shipId: string): void {
     const ship = this.sim.ships.get(shipId);
     if (!ship) return;
-    // transfere controle se for a nave ativa de algum jogador
     for (const [sid, active] of this.activeShip) {
       if (active === shipId) {
         this.transferControl(sid, shipId);
@@ -1205,6 +1312,7 @@ export class MatchRoom extends Room<MatchState> {
     }
     this.sim.removeShip(shipId);
     this.spiders.delete(shipId);
+    this.attackTargets.delete(shipId);
     this.state.ships.delete(shipId);
     console.log(`[room] nave ${shipId} destruída`);
   }
@@ -1336,8 +1444,10 @@ export class MatchRoom extends Room<MatchState> {
         this.sim.setInput(id, computeTaxiInput(ship, dest));
       }
     }
-    // PROJÉTEIS: move, colide, expira
-    for (const [id, proj] of this.projectiles) {
+    // PROJÉTEIS: move, colide, expira. Um tiro só atinge o que está no MESMO
+    // nível de combate em que foi disparado (combat.ts) — cruzeiro com
+    // cruzeiro; superfície e modo ataque com o nível das estações
+    for (const [id, proj] of [...this.projectiles]) {
       const step = Math.hypot(proj.vx, proj.vy) * dt;
       proj.x += proj.vx * dt;
       proj.y += proj.vy * dt;
@@ -1346,41 +1456,20 @@ export class MatchRoom extends Room<MatchState> {
 
       let hit = false;
       if (proj.kind === "bullet") {
-        // expira por distância
-        if (proj.traveled >= BULLET_RANGE) { hit = true; }
-        else {
-          // colide com naves inimigas
-          for (const [sid, target] of this.sim.ships) {
-            if (target.owner === proj.owner || target.stored || target.anchored) continue;
-            const { dx, dy } = relVec(proj, target);
-            if (Math.hypot(dx, dy) <= BULLET_RADIUS + 20) {
-              target.hp = Math.max(0, target.hp - BULLET_DAMAGE);
-              hit = true;
-              if (target.hp <= 0) this.destroyShip(sid);
-              break;
-            }
-          }
+        if (proj.traveled >= BULLET_RANGE) {
+          hit = true; // expira por distância
+        } else {
+          const ship = this.shipHitBy(proj, BULLET_RADIUS + SHIP_RADIUS);
+          const struct = ship ? null : this.structureHitBy(proj, BULLET_RADIUS);
+          if (ship) this.damageShip(ship, BULLET_DAMAGE);
+          else if (struct) this.damageStructure(struct, BULLET_DAMAGE);
+          hit = !!(ship || struct);
         }
       } else {
-        // granada: detona por proximidade com nave inimiga
-        for (const [, target] of this.sim.ships) {
-          if (target.owner === proj.owner || target.stored || target.anchored) continue;
-          const { dx, dy } = relVec(proj, target);
-          if (Math.hypot(dx, dy) <= GRENADE_PROX_RADIUS) {
-            // dano em área
-            for (const [sid2, t2] of this.sim.ships) {
-              if (t2.owner === proj.owner || t2.stored) continue;
-              const { dx: dx2, dy: dy2 } = relVec(proj, t2);
-              const d2 = Math.hypot(dx2, dy2);
-              if (d2 <= GRENADE_BLAST_RADIUS) {
-                const dmg = GRENADE_DAMAGE * (1 - d2 / GRENADE_BLAST_RADIUS);
-                t2.hp = Math.max(0, t2.hp - dmg);
-                if (t2.hp <= 0) this.destroyShip(sid2);
-              }
-            }
-            hit = true;
-            break;
-          }
+        // granada: detona por proximidade com nave ou estrutura inimiga
+        if (this.shipHitBy(proj, GRENADE_PROX_RADIUS) || this.structureHitBy(proj, GRENADE_PROX_RADIUS)) {
+          this.detonate(proj);
+          hit = true;
         }
         // expira por distância (2× alcance do perfurante)
         if (proj.traveled >= BULLET_RANGE * 2) hit = true;
@@ -1430,6 +1519,13 @@ export class MatchRoom extends Room<MatchState> {
       this.rationDroneTimers.set(id, timer);
     }
     this.sim.tick(dt);
+    // DANO DE COLISÃO: o impulso que o solver acumulou neste tick vira dano
+    // (combat.ts) e zera — quem converte e zera é o servidor
+    for (const [id, s] of [...this.sim.ships]) {
+      const dmg = collisionDamage(s);
+      s.hullImpulse = 0;
+      if (dmg > 0) this.damageShip([id, s], dmg);
+    }
     // espelha sim-core → schema
     for (const [id, ship] of this.sim.ships) {
       const s = this.state.ships.get(id);
@@ -1487,6 +1583,8 @@ export class MatchRoom extends Room<MatchState> {
       s.nextSpiderBay = st.nextSpiderBay;
       s.oreStore = st.oreStore;
       s.rationStore = st.rationStore;
+      s.hp = st.hp;
+      s.maxHp = STRUCTURE_SPECS[st.type].hp;
     }
     // minério e nave ativa por jogador
     for (const [sid, p] of this.state.players) {

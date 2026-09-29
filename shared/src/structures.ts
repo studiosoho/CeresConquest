@@ -16,6 +16,13 @@ export interface StructureSpec {
   requiresAsteroid: boolean;
   /** minério/s gerado passivamente para o dono (0 = nenhum) */
   productionRate: number;
+  /**
+   * Pontos de vida. Só naves de ataque no nível das estações (superfície ou
+   * modo ataque) a atingem; em zero, a estrutura explode com as naves
+   * guardadas no hangar dela. Referência: o perfurante tira 25, a granada até
+   * 120, e uma nave de ataque carrega 120 perfurantes.
+   */
+  hp: number;
 }
 
 export const STRUCTURE_SPECS: Record<StructureType, StructureSpec> = {
@@ -26,6 +33,7 @@ export const STRUCTURE_SPECS: Record<StructureType, StructureSpec> = {
     requiresAsteroid: true,
     // a estação sozinha NÃO minera — quem produz são as aranhas atreladas
     productionRate: 0,
+    hp: 600,
   },
   hq: {
     label: "Quartel-general",
@@ -33,6 +41,7 @@ export const STRUCTURE_SPECS: Record<StructureType, StructureSpec> = {
     radius: SHIP_RADIUS * 6,
     requiresAsteroid: true,
     productionRate: 0,
+    hp: 1500,
   },
   initialBase: {
     label: "Base inicial",
@@ -40,6 +49,7 @@ export const STRUCTURE_SPECS: Record<StructureType, StructureSpec> = {
     radius: SHIP_RADIUS * 5,
     requiresAsteroid: true,
     productionRate: 0,
+    hp: 1000,
   },
   rationCenter: {
     label: "Centro de distribuição de rações",
@@ -47,6 +57,7 @@ export const STRUCTURE_SPECS: Record<StructureType, StructureSpec> = {
     radius: SHIP_RADIUS * 4,
     requiresAsteroid: true,
     productionRate: 0,
+    hp: 600,
   },
 };
 

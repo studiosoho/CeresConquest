@@ -73,6 +73,8 @@ export class ProjectileSchema extends Schema {
   @type("float32") vy = 0;
   /** distância percorrida (para expirar o perfurante) */
   @type("float32") traveled = 0;
+  /** nível de combate: "cruise" ou "surface" (o das estações) — só atinge o mesmo */
+  @type("string") level = "cruise";
 }
 
 export class PlayerSchema extends Schema {
@@ -102,6 +104,9 @@ export class StructureSchema extends Schema {
   @type("float32") oreStore = 0;
   /** rações em estoque (base recebe da Terra; QG/estação recebem por transporte) */
   @type("float32") rationStore = 0;
+  /** pontos de vida e o máximo do tipo; em zero a estrutura é destruída */
+  @type("float32") hp = 0;
+  @type("float32") maxHp = 0;
 }
 
 export class MatchState extends Schema {

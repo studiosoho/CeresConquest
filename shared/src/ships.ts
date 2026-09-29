@@ -299,3 +299,18 @@ export const GRENADE_COOLDOWN = 2.0;
 export const GRENADE_AMMO_MAX = 10;
 /** HP máximo de qualquer nave. */
 export const SHIP_HP_MAX = 100;
+
+/**
+ * Dano de COLISÃO casco × casco (mesma camada). O solver acumula o impulso
+ * normal de cada choque; o servidor o converte, a cada tick, no Δv que ele
+ * impôs ao casco (impulso ÷ massa) — com o mesmo impulso nos dois, o casco
+ * mais leve sofre mais. Abaixo do limiar não há dano: empurrar outra nave com
+ * empuxo dá até ~60 u/s por tick, e roçar a poucas centenas de u/s, nada.
+ *
+ * Calibrado nas velocidades do jogo (máximas de 4000 a 6000 u/s), com Δv de
+ * caça × caça medido: frontal a 2000 u/s relativos ≈ 1490 → 14 HP; a 4000 ≈
+ * 2995 → 32 HP; os dois a toda velocidade (12 000) ≈ 9000 → ~104 HP, fatal.
+ */
+export const COLLISION_DAMAGE_DV_THRESHOLD = 300;
+/** HP por u/s de Δv acima do limiar. */
+export const COLLISION_DAMAGE_PER_DV = 0.012;
