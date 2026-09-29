@@ -98,7 +98,22 @@ export class SimWorld {
     this.inputs.set(id, input);
   }
 
-  /** Asteroides ocupados por estruturas — atravessáveis (sem colisão). */
+  /**
+   * Asteroides ocupados, agrupados pelo DONO da estrutura: na superfície, cada
+   * nave atravessa só os da própria estação; os de estação inimiga são sólidos.
+   */
+  passthroughByOwner(): Map<string, Set<string>> {
+    const map = new Map<string, Set<string>>();
+    for (const st of this.structures.values()) {
+      if (!st.asteroidId) continue;
+      let set = map.get(st.owner);
+      if (!set) map.set(st.owner, (set = new Set()));
+      set.add(st.asteroidId);
+    }
+    return map;
+  }
+
+  /** Asteroides ocupados por estruturas, de qualquer dono. */
   occupiedAsteroids(): Set<string> {
     const set = new Set<string>();
     for (const st of this.structures.values()) {
@@ -126,7 +141,7 @@ export class SimWorld {
     this.stepAccum = rest;
     // tempo de simulação efetivamente gasto neste tick — o relógio de TUDO
     const dt = steps * PHYSICS_SUBSTEP;
-    const passthrough = this.occupiedAsteroids();
+    const passthroughByOwner = this.passthroughByOwner();
     // naves em voo livre neste tick: só elas entram no laço de física e nos
     // contatos nave × nave (as congeladas/guardadas ficam fora do mundo)
     const flying: Array<{ id: string; ship: ShipState; input: ShipInput; mult: number }> = [];
@@ -195,8 +210,10 @@ export class SimWorld {
     if (steps > 0 && flying.length > 0) {
       const env: FlightEnv = {
         seed: this.seed,
-        passthrough,
-        ceres: this.ceres, // planeta anão: sólido
+        passthroughByOwner,
+        // planeta anão: sólido na SUPERFÍCIE; em cruzeiro a nave passa por cima
+        // (quem decide é a camada, em resolveSolids)
+        ceres: this.ceres,
         boundaryCenter: this.boundaryCenter,
         boundaryRadius: this.boundaryRadius,
       };

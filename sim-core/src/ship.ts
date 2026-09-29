@@ -12,6 +12,7 @@ import {
   type ShipInput,
   type ShipKind,
   type CargoKind,
+  type ShipLayer,
   type WorldPos,
 } from "@ceres/shared";
 
@@ -86,6 +87,21 @@ export interface ShipState extends WorldPos {
   fireCooldown: number;
   /** cooldown até a próxima granada (s) */
   grenadeCooldown: number;
+  /**
+   * Camada de voo em que a nave ESTÁ (ver shared/layers.ts e layers.ts). Nasce
+   * em cruzeiro: é por onde as naves circulam; a superfície é para pousar,
+   * minerar e atacar.
+   */
+  layer: ShipLayer;
+  /** camada de DESTINO da transição em curso; "" = parada em `layer` */
+  layerTo: ShipLayer | "";
+  /** progresso da transição 0..1 (ver advanceLayer) */
+  layerProgress: number;
+  /**
+   * Impulso normal acumulado em choques casco × casco desde a última vez que o
+   * servidor o converteu em dano (massa·u/s). Ver Body.hullImpulse.
+   */
+  hullImpulse: number;
 }
 
 export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"): ShipState {
@@ -125,6 +141,10 @@ export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"):
     grenadeAmmo: kind === "attack" ? GRENADE_AMMO_MAX : 0,
     fireCooldown: 0,
     grenadeCooldown: 0,
+    layer: "cruise",
+    layerTo: "",
+    layerProgress: 0,
+    hullImpulse: 0,
   };
 }
 

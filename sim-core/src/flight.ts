@@ -6,6 +6,7 @@ import { shipSubstep, drainSubsteps, admitTime, type ShipState } from "./ship";
 import {
   collideShip, collideCeres, clampToBoundary, sweepHulls, separateHulls, type Body,
 } from "./collision";
+import { advanceLayer, collidesWithWorld, hullContactGroup } from "./layers";
 
 /**
  * Voo COM mundo em volta: integração e colisão no mesmo laço de sub-passos.
@@ -40,8 +41,17 @@ export interface FlightEnv {
    * asteroide nenhum — é o modo táxi, que voa em linha reta pelo cinturão.
    */
   seed?: number;
-  /** asteroides atravessáveis (os que hospedam estruturas) */
+  /**
+   * Asteroides atravessáveis (os que hospedam estruturas), iguais para todas as
+   * naves. Só é usado quando `passthroughByOwner` está ausente.
+   */
   passthrough?: ReadonlySet<string>;
+  /**
+   * Asteroides atravessáveis POR DONO: na superfície, asteroide com estação
+   * própria se atravessa e com estação inimiga é sólido. Presente, substitui
+   * `passthrough` — dono sem entrada no mapa não atravessa nenhum.
+   */
+  passthroughByOwner?: ReadonlyMap<string, ReadonlySet<string>>;
   /** posição de Ceres; ausente = não testa o planeta */
   ceres?: WorldPos | null;
   /** raio de Ceres (padrão: CERES_RADIUS) */
@@ -98,10 +108,21 @@ export interface FlightEnv {
  * Devolve `true` quando mexeu na nave.
  */
 export function resolveSolids(s: Body, env: FlightEnv, from?: Readonly<WorldPos>): boolean {
+  // rocha e planeta só existem para quem está PARADO NA SUPERFÍCIE: em
+  // cruzeiro, em modo ataque e em transição a nave passa por cima (layers.ts)
+  if (!collidesWithWorld(s)) return false;
   let moved = false;
-  if (env.seed !== undefined) moved = collideShip(s, env.seed, env.passthrough, from);
+  if (env.seed !== undefined) moved = collideShip(s, env.seed, passthroughFor(s, env), from);
   if (env.ceres && collideCeres(s, env.ceres, env.ceresRadius ?? CERES_RADIUS)) moved = true;
   return moved;
+}
+
+const NO_PASSTHROUGH: ReadonlySet<string> = new Set();
+
+/** Asteroides que ESTE corpo atravessa na superfície (ver FlightEnv.passthroughByOwner). */
+function passthroughFor(s: Body, env: FlightEnv): ReadonlySet<string> | undefined {
+  if (!env.passthroughByOwner) return env.passthrough;
+  return env.passthroughByOwner.get(s.owner ?? "") ?? NO_PASSTHROUGH;
 }
 
 /**
@@ -130,6 +151,10 @@ export function flightSubstep(
   const touched: number[] = [];
   const from: WorldPos = { sx: s.sx, sy: s.sy, x: s.x, y: s.y };
   shipSubstep(s, input, h, speedMult);
+  // a transição de camada anda no MESMO relógio do voo: servidor e predição
+  // chegam à camada nova no mesmo sub-passo, e a colisão logo abaixo já é a
+  // da camada em que a nave está ao fim dele
+  advanceLayer(s, h);
   if (!env) return touched;
   normalizePos(s); // colisão precisa do setor certo para varrer a vizinhança
   resolveSolids(s, env, from);
@@ -181,6 +206,28 @@ export function flightSubstep(
  * Devolve quais cascos tocaram outro casco.
  */
 export function resolveHullContacts(
+  bodies: Body[],
+  from: readonly Readonly<WorldPos>[],
+  h: number,
+  env: FlightEnv,
+): boolean[] {
+  // naves só se tocam dentro da MESMA camada: cada grupo (cruzeiro, superfície)
+  // é um problema de contato separado; modo ataque e transição ficam de fora
+  const touched = new Array<boolean>(bodies.length).fill(false);
+  for (const group of HULL_GROUPS) {
+    const idx: number[] = [];
+    for (let i = 0; i < bodies.length; i++) if (hullContactGroup(bodies[i]) === group) idx.push(i);
+    if (idx.length < 2) continue;
+    const hit = resolveHullGroup(idx.map((i) => bodies[i]), idx.map((i) => from[i]), h, env);
+    for (let k = 0; k < idx.length; k++) if (hit[k]) touched[idx[k]] = true;
+  }
+  return touched;
+}
+
+const HULL_GROUPS = ["cruise", "surface"] as const;
+
+/** Um grupo de contato (cascos da mesma camada): o solver e os sólidos. */
+function resolveHullGroup(
   bodies: Body[],
   from: readonly Readonly<WorldPos>[],
   h: number,
@@ -263,7 +310,9 @@ interface GhostEntry {
   /** relógio da predição (s) no fim do último sub-passo em que tocou a nave */
   lastContact: number;
 }
-type GhostKey = Pick<Body, "sx" | "sy" | "x" | "y" | "vx" | "vy" | "av" | "kind" | "cargoAmount">;
+type GhostKey = Pick<
+  Body, "sx" | "sy" | "x" | "y" | "vx" | "vy" | "av" | "kind" | "cargoAmount" | "layer" | "layerTo" | "owner"
+>;
 
 /** Estado da predição de UMA nave: relógio próprio e fantasmas por chave. */
 interface GhostBook {
@@ -286,13 +335,18 @@ const ghostBook = new WeakMap<ShipState, GhostBook>();
 function sameSnapshot(k: GhostKey, c: Readonly<Body>): boolean {
   return k.sx === c.sx && k.sy === c.sy && k.x === c.x && k.y === c.y
     && k.vx === c.vx && k.vy === c.vy && k.av === c.av
-    && k.kind === c.kind && k.cargoAmount === c.cargoAmount;
+    && k.kind === c.kind && k.cargoAmount === c.cargoAmount
+    // trocar de camada muda contra o que o casco colide: é snapshot novo
+    && k.layer === c.layer && k.layerTo === c.layerTo && k.owner === c.owner;
 }
 
 function keyOf(c: Readonly<Body>): GhostKey {
   return {
     sx: c.sx, sy: c.sy, x: c.x, y: c.y, vx: c.vx, vy: c.vy,
     av: c.av, kind: c.kind, cargoAmount: c.cargoAmount,
+    // o fantasma precisa da CAMADA do snapshot: sem ela cairia em cruzeiro e o
+    // par com uma nave na superfície simplesmente não existiria na predição
+    layer: c.layer, layerTo: c.layerTo, owner: c.owner,
   };
 }
 

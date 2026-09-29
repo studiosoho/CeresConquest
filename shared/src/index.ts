@@ -3,6 +3,7 @@ export * from "./ceres";
 export * from "./map";
 export * from "./structures";
 export * from "./ships";
+export * from "./layers";
 export * from "./asteroids";
 export * from "./constants";
 export * from "./coords";

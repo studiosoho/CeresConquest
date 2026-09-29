@@ -591,6 +591,7 @@ describe("tunelamento (varredura de parâmetros de impacto)", () => {
         x: rock.x - reach - speed * dt,
         y: rock.y + b,
       });
+      ship.layer = "surface"; // na SUPERFÍCIE: em cruzeiro a nave passa por cima da rocha
       ship.vx = speed;
       const travel = 2 * (reach + speed * dt);
       const ticks = Math.ceil(travel / (speed * dt));
@@ -672,6 +673,9 @@ describe("contato nave × nave", () => {
     const w = new SimWorld(seed);
     const normal = w.addShip("n", inside, "p1", "attack");
     const taxi = w.addShip("t", inside, "p1", "attack");
+    // as DUAS na superfície: o táxi atravessa a rocha mesmo lá embaixo
+    normal.layer = "surface";
+    taxi.layer = "surface";
     taxi.taxiTo = "hq-0";
     w.tick(1 / 20);
     expect(dist(a, normal)).toBeGreaterThan(a.radius); // expulsa da rocha
@@ -994,6 +998,7 @@ describe("passo FIXO: h é 1/120 de verdade, não 'quase'", () => {
         { sx: rock.sx, sy: rock.sy, x: rock.x - rock.radius - 3000, y: rock.y + 120 },
         "p", "attack",
       );
+      s.layer = "surface"; // na SUPERFÍCIE: em cruzeiro a nave passa por cima da rocha
       s.vx = 4000;
       for (let i = 0; i < Math.round(3 / dt); i++) stepShipInWorld(s, COAST, dt, 1, { seed });
       return s;
@@ -1035,6 +1040,7 @@ describe("passo FIXO: h é 1/120 de verdade, não 'quase'", () => {
         const s = makeShip({
           sx: small.sx, sy: small.sy, x: small.x - target - 400, y: small.y + b,
         });
+        s.layer = "surface"; // na SUPERFÍCIE: em cruzeiro a nave passa por cima da rocha
         s.vx = speed;
         let deflected = false;
         for (let t = 0; t < 40 && !deflected; t++) {
@@ -1166,6 +1172,7 @@ describe("teto de dt: é propriedade da SIMULAÇÃO, não disciplina de quem cha
       const s = makeShip(
         { sx: rock.sx, sy: rock.sy, x: rock.x - rock.radius - 1500, y: rock.y + 60 }, "p1", "attack",
       );
+      s.layer = "surface"; // na SUPERFÍCIE: em cruzeiro a nave passa por cima da rocha
       s.vx = 3000;
       for (const dt of sl) stepShipInWorld(s, COAST, dt, 1, { seed });
       return s;
@@ -1595,6 +1602,7 @@ describe("fronteira × rocha: a matéria tem a última palavra", () => {
       const ship = makeShip(
         { sx: rock.sx, sy: rock.sy, x: rock.x + ox, y: rock.y + oy }, "p", "builder",
       );
+      ship.layer = "surface"; // na SUPERFÍCIE: em cruzeiro a nave passa por cima da rocha
       for (let i = 0; i < 200; i++) {
         stepShipInWorld(ship, COAST, 1 / 20, 1, {
           seed, boundaryCenter: center, boundaryRadius: R,
@@ -1611,6 +1619,7 @@ describe("fronteira × rocha: a matéria tem a última palavra", () => {
     // o que pode deixá-la além do raio da arena. É o lado certo para errar:
     // lá fora não há nada sólido, aqui dentro há.
     const ship = makeShip({ sx: rock.sx, sy: rock.sy, x: rock.x + 10, y: rock.y }, "p", "builder");
+    ship.layer = "surface"; // na SUPERFÍCIE: em cruzeiro a nave passa por cima da rocha
     for (let i = 0; i < 200; i++) {
       stepShipInWorld(ship, COAST, 1 / 20, 1, {
         seed, boundaryCenter: center, boundaryRadius: R,
@@ -2245,6 +2254,7 @@ describe("raspão: o choque não pode depender da velocidade nem da fase do sub-
       { sx: small.sx, sy: small.sy, x: small.x - 600 - phase * (v / 120), y: small.y + target - pen },
       "p", "attack",
     );
+    s.layer = "surface"; // na SUPERFÍCIE: em cruzeiro a nave passa por cima da rocha
     s.vx = v;
     for (let i = 0; i < 400; i++) {
       stepShipInWorld(s, COAST, dt, 1, { seed });
@@ -2290,6 +2300,7 @@ describe("raspão: o choque não pode depender da velocidade nem da fase do sub-
         { sx: small.sx, sy: small.sy, x: small.x - 600 - 0.37 * (v / 120), y: small.y + target - 1 },
         "p", "attack",
       );
+      s.layer = "surface"; // na SUPERFÍCIE: em cruzeiro a nave passa por cima da rocha
       s.vx = v;
       for (let i = 0; i < Math.round(T / dt); i++) stepShipInWorld(s, COAST, dt, 1, { seed });
       return s;
@@ -2435,6 +2446,7 @@ describe("contato prensado com o giro no teto: o atrito CONTINUA, o limitador co
     // passar de (μ·aperto + trim)·t, e o aperto não passa do motor.
     const c = ceresPosition(seed);
     const s = makeShip({ sx: c.sx, sy: c.sy, x: c.x + CERES_RADIUS + SHIP_RADIUS, y: c.y }, "p", "builder");
+    s.layer = "surface"; // na SUPERFÍCIE: em cruzeiro a nave passa por cima de Ceres
     s.vy = 4000;
     const p = SHIP_PHYSICS.builder;
     let inContact = 0;
@@ -2477,6 +2489,9 @@ describe("os sólidos têm a última palavra também depois do par nave × nave"
         const pos = place();
         const a = w.addShip("a", pos.a, "p1", "attack");
         const b = w.addShip("b", pos.b, "p2", "transport");
+        // os dois na SUPERFÍCIE: é lá que rocha e par disputam o casco
+        a.layer = "surface";
+        b.layer = "surface";
         b.vx = vb;
         if (push) w.setInput("b", THRUST);
         let worstRock = Infinity;
@@ -2499,7 +2514,12 @@ describe("os sólidos têm a última palavra também depois do par nave × nave"
     for (const vb of [800, 2000, 4000]) {
       const pos = place();
       const a = makeShip(pos.a, "p1", "attack");
-      const snap = { ...pos.b, vx: vb, vy: 0, av: 0, kind: "transport" as ShipKind, cargoAmount: 0 };
+      a.layer = "surface"; // na SUPERFÍCIE: em cruzeiro a nave passa por cima da rocha
+      // o snapshot carrega a camada: sem ela o fantasma seria de cruzeiro e o par não existiria
+      const snap = {
+        ...pos.b, vx: vb, vy: 0, av: 0, kind: "transport" as ShipKind, cargoAmount: 0,
+        layer: "surface" as const,
+      };
       let worst = Infinity;
       for (let i = 0; i < 120; i++) {
         stepShipInWorld(a, COAST, PHYSICS_SUBSTEP, 1, { seed, contacts: [snap] });
@@ -2768,6 +2788,7 @@ describe("varredura contra VÁRIAS rochas: nada termina o sub-passo dentro de pe
                 const s = w.addShip("s", {
                   sx: a.sx, sy: a.sy, x: mx + ux * off - dx * 800, y: my + uy * off - dy * 800,
                 }, "p", "attack");
+                s.layer = "surface"; // na SUPERFÍCIE: em cruzeiro a nave passa por cima da rocha
                 s.vx = dx * 6000;
                 s.vy = dy * 6000;
                 runs++;

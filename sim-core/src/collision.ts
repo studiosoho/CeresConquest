@@ -16,6 +16,7 @@ import {
   relVec,
   normalizePos,
   type ShipKind,
+  type ShipLayer,
   type WorldPos,
 } from "@ceres/shared";
 import { sectorAsteroids } from "./procgen";
@@ -39,6 +40,24 @@ export interface Body extends WorldPos {
   kind?: ShipKind;
   /** Carga no porão — é massa, e massa muda quem empurra quem. */
   cargoAmount?: number;
+  /**
+   * Camada de voo (ver shared/layers.ts). Ausente = cruzeiro: é a camada
+   * padrão, e é o que vale para um snapshot que ainda não traz o campo.
+   */
+  layer?: ShipLayer;
+  /** Camada de destino durante uma transição; "" ou ausente = parada numa camada. */
+  layerTo?: ShipLayer | "";
+  /**
+   * Dono. Na superfície decide quais asteroides com estação são atravessáveis:
+   * os de estação PRÓPRIA; os de estação inimiga são sólidos.
+   */
+  owner?: string;
+  /**
+   * Impulso normal acumulado em choques casco × casco (massa·u/s), somado pelo
+   * solver a cada contato resolvido. É a matéria-prima do dano de colisão: quem
+   * o converte em dano — e o zera — é o servidor. Ausente = não acumula.
+   */
+  hullImpulse?: number;
 }
 
 /**
@@ -535,6 +554,15 @@ export function sweepHulls(
     }
     const v0 = bodies.map((b) => [b.vx, b.vy]);
     solveNormals(bodies, cs, inv);
+    // o impulso normal de cada contato vai para os DOIS cascos: é o que cada
+    // um sentiu, e o que o servidor transforma em dano (só onde o campo existe)
+    for (const ct of cs) {
+      if (ct.lam <= 0) continue;
+      const a = bodies[ct.i];
+      const b = bodies[ct.j];
+      if (a.hullImpulse !== undefined) a.hullImpulse += ct.lam;
+      if (b.hullImpulse !== undefined) b.hullImpulse += ct.lam;
+    }
     // atrito, com o impulso normal acumulado de cada contato
     hullFriction(bodies, cs, inv);
     solvedAt = tNow;

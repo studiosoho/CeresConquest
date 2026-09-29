@@ -11,16 +11,33 @@
  *   npx tsx scripts/phystrace.ts
  */
 import {
-  makeShip, stepShip, stepShipInWorld, collideShip, collideShipPair, drainSubsteps,
-  sectorAsteroids, SimWorld,
+  makeShip as makeShipRaw, stepShip, stepShipInWorld, collideShip, collideShipPair, drainSubsteps,
+  sectorAsteroids, SimWorld, setLayer,
   type ShipState,
 } from "../sim-core/src/index";
 import {
-  SHIP_PHYSICS, SHIP_RADIUS, SIM_MAX_DT, PHYSICS_SUBSTEP, IMPACT_SPIN_MAX,
+  SHIP_PHYSICS, SHIP_RADIUS, CERES_RADIUS, SIM_MAX_DT, PHYSICS_SUBSTEP, IMPACT_SPIN_MAX,
   PHYSICS_WORST_CASE_SUBSTEPS, SNAPSHOT_AGE_FIXED_GUESS, ASTEROID_SURFACE_FRICTION,
   BELT_INNER_SECTORS, BELT_OUTER_SECTORS, dist,
   type ShipInput, type ShipKind, type WorldPos,
 } from "@ceres/shared";
+
+// O traço mede física de CONTATO — rocha, Ceres, casco × casco —, e contato só
+// existe na SUPERFÍCIE: em cruzeiro a nave passa por cima de rocha e de Ceres
+// (ver shared/layers.ts). Por isso TODA nave deste traço nasce na superfície,
+// declarado aqui uma vez em vez de em cada cenário. A seção final (§ CAMADAS)
+// é a única que compara camadas, e escolhe a camada de cada nave explicitamente.
+const makeShip = (...args: Parameters<typeof makeShipRaw>): ShipState => {
+  const s = makeShipRaw(...args);
+  setLayer(s, "surface");
+  return s;
+};
+const addShipRaw = SimWorld.prototype.addShip;
+SimWorld.prototype.addShip = function (this: SimWorld, ...args: Parameters<typeof addShipRaw>) {
+  const s = addShipRaw.apply(this, args);
+  setLayer(s, "surface");
+  return s;
+};
 
 const DT = 1 / 60;
 const N = (v: number, d = 1) => v.toFixed(d).padStart(9);
@@ -280,8 +297,11 @@ console.log("   colunas: pior |razão Δv − 1|, pior erro de posição (u), pi
   const at: WorldPos = { sx: 0, sy: 0, x: 5000, y: 5000 };
   const KINDS: ShipKind[] = ["builder", "mining", "attack", "transport"];
   const DRIFT: ShipInput = { thrust: false, turn: 0, mine: false, assistOff: true };
+  // o snapshot leva a CAMADA: sem ela o fantasma cairia em cruzeiro e não tocaria
+  // a nave predita na superfície (é o que o cliente real vai precisar sincronizar)
   const snapOf = (B: ShipState) => ({
     sx: B.sx, sy: B.sy, x: B.x, y: B.y, vx: B.vx, vy: B.vy, av: B.av, kind: B.kind, cargoAmount: B.cargoAmount,
+    layer: B.layer, layerTo: B.layerTo, owner: B.owner,
   });
   const run = (lat: number, ageOf: (real: number) => number, otherAssist: boolean, ids: boolean) => {
     let ratio = 0;
@@ -522,7 +542,7 @@ console.log("\n=== 19. A PREDIÇÃO NÃO ESCREVE NO SNAPSHOT AUTORITATIVO ===");
   me.vx = 4000;
   const snap = {
     sx: at.sx, sy: at.sy, x: at.x + 900, y: at.y,
-    vx: 0, vy: 0, av: 0, kind: "transport" as ShipKind,
+    vx: 0, vy: 0, av: 0, kind: "transport" as ShipKind, layer: "surface" as const,
   };
   const before = { ...snap };
   for (let i = 0; i < 20; i++) stepShipInWorld(me, COAST, DT, 1, { seed: 999, contacts: [snap] });
@@ -778,4 +798,33 @@ console.log("   cargueiro contra um caça ENCOSTADO noutro caça (folga 0 e 15 u
   console.log("  sem desvio lateral. Antes (medido pelo crítico): o do meio atravessava o último em 12–21 de 24");
   console.log("  fases, a cadeia ficava 25–40 u sobreposta, a ordem dos ids mudava o erro de 0,9 para 2851 u/s,");
   console.log("  e nos três corpos o erro ia de 0 a 494 u/s conforme a fase.");
+}
+
+console.log("\n=== CAMADAS: contra o que a nave colide em cada camada ===");
+console.log("   caça a 3000 u/s pelo centro da menor rocha do setor, e pelo centro de Ceres");
+console.log("   camada        rocha: menor distância   Ceres: menor distância   (raio rocha / raio Ceres)");
+{
+  const rock = sectorAsteroids(SEED, belt, 0).reduce((m, r) => (r.radius < m.radius ? r : m));
+  const ceres = new SimWorld(SEED).ceres;
+  const closest = (layer: "cruise" | "surface" | "attack", target: WorldPos, radius: number, env: Parameters<typeof stepShipInWorld>[4]) => {
+    const s = makeShipRaw({ sx: target.sx, sy: target.sy, x: target.x - radius - 400, y: target.y }, "p", "attack");
+    setLayer(s, layer);
+    s.vx = 3000;
+    let c = Infinity;
+    // folga de 20% no tempo: o auxílio de voo desacelera a nave em inércia, e
+    // no raio de Ceres (20 000 u) ela pararia antes do centro sem bater em nada
+    for (let i = 0; i < Math.round(((radius + 400) / 3000 * 1.2 + 0.1) * 60); i++) {
+      stepShipInWorld(s, COAST, 1 / 60, 1, env);
+      c = Math.min(c, dist(s, target));
+    }
+    return c;
+  };
+  const cr = CERES_RADIUS;
+  for (const layer of ["cruise", "surface", "attack"] as const) {
+    const r = closest(layer, rock, rock.radius, { seed: SEED });
+    const c = closest(layer, ceres, cr, { ceres });
+    console.log(`  ${layer.padEnd(10)} ${N(r)}                ${N(c)}               (${rock.radius.toFixed(0)} / ${cr})`);
+  }
+  console.log("  esperado: cruzeiro e ataque passam pelo centro (≈ 0) nos dois; superfície nunca entra");
+  console.log("  (menor distância ≥ raio). Naves na mesma camada colidem entre si; camadas diferentes não.");
 }
