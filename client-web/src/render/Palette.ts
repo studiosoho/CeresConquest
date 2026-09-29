@@ -262,6 +262,12 @@ export const Palette = {
     boundary: 0xff5544,
     bullet: 0xffffff,
     grenade: 0xff8833,
+    /** anel da nave em modo ataque de estação */
+    attackRing: 0xff3344,
+    /** barra de HP das estruturas: fundo, própria, inimiga */
+    hpBack: 0x2a3644,
+    hpOwn: 0x55ee88,
+    hpEnemy: 0xff5566,
   },
 
   ui: {

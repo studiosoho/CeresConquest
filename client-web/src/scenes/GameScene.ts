@@ -30,6 +30,7 @@ import {
   SHIP_PRODUCTION,
   DOCK_RANGE,
   ATTACK_ZONE_MARGIN,
+  STRUCTURE_SPECS,
   STATION_ORE_STORE,
   CERES_RADIUS,
   SNAPSHOT_AGE_FIXED_GUESS,
@@ -62,6 +63,8 @@ import { c3 } from "../render/lineUtils";
 import { KeyInput } from "../input";
 import { MeshFactory } from "../render/MeshFactory";
 import { ShipRenderer } from "../render/ShipRenderer";
+import { shipMeshData } from "../render/ShipMeshGenerator";
+import { dockScale, easePresence, presenceTarget, type Presence, type PresenceShip } from "../render/shipPresence";
 import { AsteroidRenderer } from "../render/AsteroidRenderer";
 import { PlanetRenderer } from "../render/PlanetRenderer";
 import { StructureRenderer } from "../render/StructureRenderer";
@@ -252,6 +255,9 @@ interface ServerStructure extends WorldPos {
   /** minério local (estação) e rações em estoque — logística física */
   oreStore: number;
   rationStore: number;
+  /** pontos de vida e o máximo do tipo */
+  hp: number;
+  maxHp: number;
 }
 
 /**
@@ -301,6 +307,8 @@ export class GameScene {
   private remotes = new Map<string, RemoteView>();
   private serverStructures = new Map<string, ServerStructure>();
   private serverProjectiles = new Map<string, ServerProjectile>();
+  /** presença mostrada de cada nave (tamanho e altitude suavizados — shipPresence.ts) */
+  private presence = new Map<string, Presence>();
   private passthrough = new Set<string>();
   /**
    * Asteroides ocupados agrupados pelo DONO da estrutura — o mesmo ambiente do
@@ -559,7 +567,7 @@ export class GameScene {
     this.meshFactory = new MeshFactory(this.bScene, this.glow);
     // a câmera principal entra pelo piso de tamanho em tela das naves (ver
     // ShipRenderer): só ela vê o casco inflado, o cockpit vê o tamanho real
-    this.shipRenderer = new ShipRenderer(this.meshFactory, this.camera);
+    this.shipRenderer = new ShipRenderer(this.meshFactory, this.camera, this.glow);
     // a câmera entra porque a névoa das rochas tem cor LOCAL: o renderer
     // projeta cada rocha em coordenada de tela para amostrar o céu no ponto
     // em que ela está (ver AsteroidRenderer/Aerial)
@@ -641,6 +649,7 @@ export class GameScene {
         this.serverShips.delete(id);
         this.shipRenderer?.remove(id);
         this.remotes.delete(id);
+        this.presence.delete(id);
       }
     }
 
@@ -660,6 +669,7 @@ export class GameScene {
         angle: st.angle, asteroidId: st.asteroidId,
         shipBays: st.shipBays, expandedBays: st.expandedBays ?? 0,
         oreStore: st.oreStore ?? 0, rationStore: st.rationStore ?? 0,
+        hp: st.hp ?? 0, maxHp: st.maxHp ?? 0,
       });
     });
     for (const id of [...this.serverStructures.keys()]) {
@@ -1162,6 +1172,23 @@ export class GameScene {
     return 0x7f8ea3; // remoto
   }
 
+  /**
+   * Presença de uma nave neste quadro: tamanho e altitude aparentes pela
+   * camada, pelo pouso e pela vaga (shipPresence.ts), suavizados.
+   */
+  private presenceOf(id: string, s: PresenceShip & { kind: ShipKind }, dt: number): Presence {
+    const host = s.hqId ? this.serverStructures.get(s.hqId) : undefined;
+    const docked = dockScale(
+      s,
+      shipMeshData(s.kind).length,
+      host ? { type: host.stype, shipBays: host.shipBays, expandedBays: host.expandedBays } : undefined,
+    );
+    const target = presenceTarget(s, this.shipRenderer.screenScale(s.kind), docked);
+    const shown = easePresence(this.presence.get(id), target, dt);
+    this.presence.set(id, shown);
+    return shown;
+  }
+
   private draw(dt: number, authoritative: ServerShip | undefined, frameSim: SimWorld) {
     const own = this.toRender(this.localShip!);
     const mineAuth = this.serverShips.get(this.myShipId);
@@ -1171,10 +1198,18 @@ export class GameScene {
     const ownAngle = (lPhaseRender === "landed" || lPhaseRender === "landing" || lPhaseRender === "liftoff")
       ? this.localShip!.angle + lSpin * tt
       : this.localShip!.angle;
-    // nave própria: atualiza malha via ShipRenderer
+    // nave própria: atualiza malha via ShipRenderer. A camada vem da PREDIÇÃO
+    // (que segue o servidor, syncLayer); pouso e vaga, do servidor
+    const ownPresence = mineAuth
+      ? this.presenceOf(this.myShipId, {
+        ...mineAuth,
+        layer: this.localShip!.layer, layerTo: this.localShip!.layerTo, layerProgress: this.localShip!.layerProgress,
+      }, dt)
+      : undefined;
     this.shipRenderer.update(this.myShipId, {
       x: own.x, y: own.y, angle: ownAngle,
       kind: this.localShip!.kind, tint: COLOR_OWN, visible: true,
+      scale: ownPresence?.scale, altitude: ownPresence?.altitude,
     });
     // câmera segue a nave (substitui cameras.main.centerOn)
     const camPos = toScene(own.x, own.y);
@@ -1211,7 +1246,10 @@ export class GameScene {
     // da classe) e segue o ângulo RENDERIZADO (o giro de pouso incluso)
     const ownKind = this.localShip!.kind;
     this.effectsRenderer.drawJet(own.x, own.y, ownAngle, Math.hypot(this.localShip!.vx, this.localShip!.vy), tt,
-      this.myShipId, ownKind, this.shipRenderer.screenScale(ownKind));
+      this.myShipId, ownKind, this.shipRenderer.displayScale(this.myShipId, ownKind));
+    if (ownPresence?.attack) {
+      this.effectsRenderer.drawAttackRing(own.x, own.y, 0.75 * shipMeshData(ownKind).length * ownPresence.scale, tt);
+    }
 
     // naves remotas: interpolação + atualiza malhas via ShipRenderer
     for (const [id, server] of this.serverShips) {
@@ -1243,12 +1281,17 @@ export class GameScene {
         view.ry += (target.y - view.ry) * REMOTE_BLEND;
         view.angle += wrapAngle(server.angle - view.angle) * REMOTE_BLEND;
       }
+      const pres = this.presenceOf(id, server, dt);
       this.shipRenderer.update(id, {
         x: view.rx, y: view.ry, angle: view.angle,
         kind: view.kind, tint: view.tint, visible: true,
+        scale: pres.scale, altitude: pres.altitude,
       });
       this.effectsRenderer.drawJet(view.rx, view.ry, view.angle, Math.hypot(server.vx, server.vy), tt,
-        id, view.kind, this.shipRenderer.screenScale(view.kind));
+        id, view.kind, this.shipRenderer.displayScale(id, view.kind));
+      if (pres.attack) {
+        this.effectsRenderer.drawAttackRing(view.rx, view.ry, 0.75 * shipMeshData(view.kind).length * pres.scale, tt);
+      }
     }
 
     // estruturas: assentadas na plataforma do asteroide hospedeiro — o
@@ -1267,6 +1310,14 @@ export class GameScene {
         own: st.owner === this.room.sessionId,
         angle: st.angle,
       }, occupants, attach);
+      // barra de HP: sempre na inimiga; na própria, só quando avariada
+      const own = st.owner === this.room.sessionId;
+      if (st.maxHp > 0 && (!own || st.hp < st.maxHp)) {
+        const R = STRUCTURE_SPECS[st.stype].radius;
+        const p = this.toRender(st);
+        // acima do prédio na tela (y do jogo cresce para baixo)
+        this.effectsRenderer.drawHpBar(p.x, p.y - (R + 60), 2.4 * R, st.hp / st.maxHp, own);
+      }
     }
 
     const anchored = authoritative?.anchored ?? this.localShip!.anchored;
@@ -1376,7 +1427,15 @@ export class GameScene {
       const st = this.serverStructures.get(hqId);
       return !!st && st.stype === "hq";
     })();
-    const anchorTag = anchored ? "  ⚓ LANDED · [F] take off" : "";
+    // camada de voo da nave própria (a da predição, que segue o servidor)
+    const lay = this.localShip!;
+    const layerTag = anchored || (mineAuth?.landingPhase ?? "") !== "" ? ""
+      : lay.layerTo === "cruise" ? "  ▲ CLIMBING"
+      : lay.layerTo ? "  ▼ DESCENDING"
+      : lay.layer === "attack" ? "  ✖ STATION ATTACK"
+      : lay.layer === "surface" ? "  ▼ SURFACE"
+      : "  ▲ CRUISE";
+    const anchorTag = anchored ? "  ⚓ LANDED · [F] take off" : layerTag;
     const canAnchor = !anchored && this.inLandZone;
     const anchorHint = canAnchor
       ? nearOwnStruct !== null
