@@ -1,4 +1,4 @@
-import { Room, updateLobby, type Client } from "colyseus";
+import { Room, updateLobby, type Client } from "../colyseus";
 import {
   MSG_INPUT,
   MSG_BUILD,

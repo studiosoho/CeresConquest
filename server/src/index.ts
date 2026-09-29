@@ -1,4 +1,4 @@
-import { Server, LobbyRoom } from "colyseus";
+import { Server, LobbyRoom } from "./colyseus";
 import { DEFAULT_PORT } from "@ceres/shared";
 import { MatchRoom } from "./rooms/MatchRoom";
 

@@ -1,4 +1,4 @@
-import { Schema, MapSchema, type } from "@colyseus/schema";
+import { Schema, MapSchema, type } from "../colyseus";
 
 /**
  * Estado sincronizado por rede. Espelho do sim-core — só o que os clientes

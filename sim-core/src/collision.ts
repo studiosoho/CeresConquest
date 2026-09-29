@@ -19,7 +19,7 @@ import {
   type ShipLayer,
   type WorldPos,
 } from "@ceres/shared";
-import { sectorAsteroids } from "./procgen";
+import { sectorAsteroids, type Asteroid } from "./procgen";
 
 /** Qualquer corpo móvel com posição + velocidade (a nave, por ora). */
 export interface Body extends WorldPos {
@@ -821,25 +821,26 @@ export function collideShip(
 ): boolean {
   // tudo relativo à posição final com que a nave chegou: rochas e trecho
   const base: WorldPos = { sx: ship.sx, sy: ship.sy, x: ship.x, y: ship.y };
-  const rocks: Rock[] = [];
-  for (let oy = -1; oy <= 1; oy++) {
-    for (let ox = -1; ox <= 1; ox++) {
-      for (const a of sectorAsteroids(seed, ship.sx + ox, ship.sy + oy)) {
-        if (passthrough?.has(a.id)) continue;
-        const c = relVec(base, a);
-        rocks.push({ cx: c.dx, cy: c.dy, r: a.radius + SHIP_RADIUS });
-      }
-    }
-  }
-  let moved = from ? sweepRocks(ship, rocks, base, from) : false;
+  const n = gatherRocks(seed, base, passthrough);
+  const rk = rockBuf;
+  let moved = from ? sweepRocks(ship, n, base, from) : false;
 
-  // teste de ponto: contato sustentado (começou dentro) e acomodação
-  for (const k of rocks) {
-    const p = relVec(base, ship);
-    const dx = p.dx - k.cx;
-    const dy = p.dy - k.cy;
+  // teste de ponto: contato sustentado (começou dentro) e acomodação. A posição
+  // da nave relativa à base só muda quando um empurrão a mexe — é recalculada
+  // ali, com a mesma conta de relVec, em vez de a cada rocha
+  let px = (ship.sx - base.sx) * SECTOR_SIZE + (ship.x - base.x);
+  let py = (ship.sy - base.sy) * SECTOR_SIZE + (ship.y - base.y);
+  for (let i = 0; i < n; i++) {
+    const kr = rk[3 * i + 2];
+    const dx = px - rk[3 * i];
+    const dy = py - rk[3 * i + 1];
+    // descarte barato de quem está CLARAMENTE fora (Math.hypot é cara e quase
+    // toda rocha da vizinhança está longe); a folga relativa de 1e-9 fica muito
+    // acima do erro de arredondamento das duas contas, então só passa adiante
+    // quem o teste exato abaixo decidiria — o resultado não muda
+    if (dx * dx + dy * dy > kr * kr * (1 + 1e-9)) continue;
     const d = Math.hypot(dx, dy);
-    if (d >= k.r) continue;
+    if (d >= kr) continue;
     // normal de saída; se a nave estiver exatamente no centro, empurra em +x
     let nx = 1;
     let ny = 0;
@@ -849,21 +850,65 @@ export function collideShip(
       ny = dy / d;
       dd = d;
     }
-    const penetration = k.r - dd;
+    const penetration = kr - dd;
     ship.x += nx * penetration;
     ship.y += ny * penetration;
     resolveImpact(ship, nx, ny, ASTEROID_SURFACE_RESTITUTION, ASTEROID_SURFACE_FRICTION);
     moved = true;
+    px = (ship.sx - base.sx) * SECTOR_SIZE + (ship.x - base.x);
+    py = (ship.sy - base.sy) * SECTOR_SIZE + (ship.y - base.y);
   }
   normalizePos(ship);
   return moved;
 }
 
-/** Rocha inflada pelo raio do casco, centro relativo à `base` de `collideShip`. */
-interface Rock {
-  cx: number;
-  cy: number;
-  r: number;
+/**
+ * Rochas da vizinhança de `collideShip`, infladas pelo raio do casco, com o
+ * centro relativo à base: trincas (cx, cy, r) num buffer REAPROVEITADO. A
+ * colisão com rocha roda várias vezes por nave por sub-passo (voo, e de novo
+ * para quem o par de cascos mexeu), e montar um objeto por rocha — ~130 nos 9
+ * setores do cinturão — a cada chamada era o custo dominante do tick com naves
+ * amontoadas na superfície. Só `collideShip` escreve nele, e o consome antes
+ * de devolver; nada o guarda entre chamadas.
+ */
+let rockBuf = new Float64Array(3 * 256);
+
+/** Vizinhança 3×3 da última chamada: com as naves agrupadas, quase sempre a mesma. */
+let nearSeed = NaN;
+let nearSx = NaN;
+let nearSy = NaN;
+const nearSectors: Asteroid[][] = [];
+
+/** Preenche `rockBuf` com as rochas sólidas em volta de `base`; devolve quantas. */
+function gatherRocks(seed: number, base: Readonly<WorldPos>, passthrough?: ReadonlySet<string>): number {
+  if (seed !== nearSeed || base.sx !== nearSx || base.sy !== nearSy) {
+    nearSectors.length = 0;
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) nearSectors.push(sectorAsteroids(seed, base.sx + ox, base.sy + oy));
+    }
+    nearSeed = seed;
+    nearSx = base.sx;
+    nearSy = base.sy;
+  }
+  // conjunto vazio (o caso comum: ninguém com estação por perto) nem é consultado
+  const skip = passthrough && passthrough.size > 0 ? passthrough : null;
+  let n = 0;
+  for (const sector of nearSectors) {
+    for (const a of sector) {
+      if (skip && skip.has(a.id)) continue;
+      if (3 * (n + 1) > rockBuf.length) {
+        const grown = new Float64Array(rockBuf.length * 2);
+        grown.set(rockBuf);
+        rockBuf = grown;
+      }
+      // a mesma conta de relVec(base, a), na mesma ordem: bit a bit igual
+      rockBuf[3 * n] = (a.sx - base.sx) * SECTOR_SIZE + (a.x - base.x);
+      rockBuf[3 * n + 1] = (a.sy - base.sy) * SECTOR_SIZE + (a.y - base.y);
+      rockBuf[3 * n + 2] = a.radius + SHIP_RADIUS;
+      n++;
+    }
+  }
+  return n;
 }
 
 /**
@@ -892,7 +937,8 @@ interface Rock {
  * também, na volta seguinte: saindo dela por um disco convexo, não se reentra
  * numa reta.
  */
-function sweepRocks(ship: Body, rocks: Rock[], base: WorldPos, from: Readonly<WorldPos>): boolean {
+function sweepRocks(ship: Body, n: number, base: WorldPos, from: Readonly<WorldPos>): boolean {
+  const rk = rockBuf;
   const f0 = relVec(base, from);
   let p0x = f0.dx;
   let p0y = f0.dy;
@@ -911,12 +957,12 @@ function sweepRocks(ship: Body, rocks: Rock[], base: WorldPos, from: Readonly<Wo
     if (A <= 1e-12) break;
     let best = Infinity;
     let bi = -1;
-    for (let i = 0; i < rocks.length; i++) {
+    for (let i = 0; i < n; i++) {
       if (i === last) continue;
-      const k = rocks[i];
-      const ox = p0x - k.cx;
-      const oy = p0y - k.cy;
-      const c = ox * ox + oy * oy - k.r * k.r;
+      const kr = rk[3 * i + 2];
+      const ox = p0x - rk[3 * i];
+      const oy = p0y - rk[3 * i + 1];
+      const c = ox * ox + oy * oy - kr * kr;
       if (c <= 0) continue; // começou dentro: é do teste de ponto
       const B = ox * ex + oy * ey;
       if (B >= 0) continue; // afastando-se do centro
@@ -929,10 +975,12 @@ function sweepRocks(ship: Body, rocks: Rock[], base: WorldPos, from: Readonly<Wo
       }
     }
     if (bi < 0) break;
-    const k = rocks[bi];
+    const kx = rk[3 * bi];
+    const ky = rk[3 * bi + 1];
+    const kr = rk[3 * bi + 2];
     const qx = p0x + best * ex;
     const qy = p0y + best * ey;
-    resolveImpact(ship, (qx - k.cx) / k.r, (qy - k.cy) / k.r, ASTEROID_SURFACE_RESTITUTION, ASTEROID_SURFACE_FRICTION);
+    resolveImpact(ship, (qx - kx) / kr, (qy - ky) / kr, ASTEROID_SURFACE_RESTITUTION, ASTEROID_SURFACE_FRICTION);
     h *= 1 - best;
     p0x = qx;
     p0y = qy;
