@@ -44,6 +44,9 @@ const LANDZONE_PX = 2;
 const BOUNDARY_PX = 2.5;
 const ATTACK_RING_PX = 2;
 const HP_BAR_PX = 5;
+const EXPLOSION_PX = 2.4;
+/** faíscas por explosão — FIXO: o pool exige a mesma forma em todo slot */
+export const EXPLOSION_SPARKS = 8;
 
 /**
  * Pool de malhas de mesma forma (mesma contagem de pontos por slot),
@@ -132,6 +135,7 @@ export class EffectsRenderer {
   private hpBackPool: LinePool;
   private hpOwnPool: LinePool;
   private hpEnemyPool: LinePool;
+  private explosionPool: LinePool;
 
   // feixe de mineração — singleton dinâmico (posições mudam todo frame)
   private beamMesh: GreasedLineBaseMesh | null = null;
@@ -162,6 +166,7 @@ export class EffectsRenderer {
     this.hpBackPool = new LinePool(scene, glow, "hpBack", Palette.fx.hpBack, HP_BAR_PX + 2, this.layerRoot, MASK_MAIN_ONLY);
     this.hpOwnPool = new LinePool(scene, glow, "hpOwn", Palette.fx.hpOwn, HP_BAR_PX, this.layerRoot, MASK_MAIN_ONLY);
     this.hpEnemyPool = new LinePool(scene, glow, "hpEnemy", Palette.fx.hpEnemy, HP_BAR_PX, this.layerRoot, MASK_MAIN_ONLY);
+    this.explosionPool = new LinePool(scene, glow, "explosion", Palette.fx.explosion, EXPLOSION_PX, this.layerRoot);
   }
 
   beginFrame(): void {
@@ -171,6 +176,7 @@ export class EffectsRenderer {
     this.hpBackPool.begin();
     this.hpOwnPool.begin();
     this.hpEnemyPool.begin();
+    this.explosionPool.begin();
     this.beamUsedThisFrame = false;
     this.landZoneUsedThisFrame = false;
   }
@@ -186,6 +192,7 @@ export class EffectsRenderer {
     this.hpBackPool.end();
     this.hpOwnPool.end();
     this.hpEnemyPool.end();
+    this.explosionPool.end();
     if (!this.beamUsedThisFrame) this.beamMesh?.setEnabled(false);
     if (!this.landZoneUsedThisFrame) this.landZoneRoot?.setEnabled(false);
   }
@@ -280,6 +287,39 @@ export class EffectsRenderer {
     (own ? this.hpOwnPool : this.hpEnemyPool).next([[toScene(x0, y), toScene(x0 + width * f, y)]]);
   }
 
+  /**
+   * Explosão vetorial em (x, y), no instante `t` ∈ [0, 1] da vida dela, com
+   * raio final `radius` (mundo): um anel de choque que se expande rápido e
+   * desacelera, um clarão interno que cresce e se fecha, e EXPLOSION_SPARKS
+   * faíscas que voam para fora encurtando até sumir. `angles` são as direções
+   * das faíscas (sorteadas uma vez por explosão, para cada uma ser diferente).
+   */
+  drawExplosion(x: number, y: number, radius: number, t: number, angles: readonly number[]): void {
+    const u = Math.min(1, Math.max(0, t));
+    const out = 1 - (1 - u) * (1 - u) * (1 - u); // desacelera
+    const ring = (r: number, n: number) => {
+      const pts: Vector3[] = [];
+      for (let i = 0; i <= n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        pts.push(toScene(x + Math.cos(a) * r, y + Math.sin(a) * r));
+      }
+      return pts;
+    };
+    const parts: Vector3[][] = [
+      ring(Math.max(1, radius * out), 24),
+      // clarão: cresce até 40% do raio e se fecha na segunda metade
+      ring(Math.max(1, radius * 0.4 * Math.sin(Math.PI * Math.min(1, u * 1.4))), 12),
+    ];
+    const r0 = radius * (0.15 + 0.75 * out);
+    const len = radius * 0.35 * (1 - u);
+    for (let i = 0; i < EXPLOSION_SPARKS; i++) {
+      const a = angles[i] ?? (i / EXPLOSION_SPARKS) * Math.PI * 2;
+      const c = Math.cos(a), s = Math.sin(a);
+      parts.push([toScene(x + c * r0, y + s * r0), toScene(x + c * (r0 + Math.max(0.5, len)), y + s * (r0 + Math.max(0.5, len)))]);
+    }
+    this.explosionPool.next(parts);
+  }
+
   // ── zona de pouso ─────────────────────────────────────────────────
 
   /** Círculo tracejado girando lentamente — só reconstrói ao trocar de raio. */
@@ -348,6 +388,7 @@ export class EffectsRenderer {
     this.hpBackPool.dispose();
     this.hpOwnPool.dispose();
     this.hpEnemyPool.dispose();
+    this.explosionPool.dispose();
     this.grenadePool.dispose();
     if (this.beamMesh) disposeLineBundle(this.beamMesh, this.glow);
     if (this.landZoneMesh) disposeLineBundle(this.landZoneMesh, this.glow);

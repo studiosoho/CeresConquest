@@ -95,6 +95,19 @@ export type FireKind = "bullet" | "grenade";
 export interface FireCommand { kind: FireKind; }
 export const MSG_FIRE = "fire";
 
+/**
+ * Efeito visual anunciado pelo servidor a todos os clientes — não muda o jogo,
+ * só diz ONDE e O QUÊ explodiu, na posição exata do servidor (o cliente não
+ * teria como saber: o projétil some do estado no mesmo tick do acerto).
+ *  - "hit": perfurante acertou nave ou estrutura;
+ *  - "blast": granada detonou (raio de dano GRENADE_BLAST_RADIUS);
+ *  - "shipDown": nave destruída (tiro ou colisão);
+ *  - "structureDown": estrutura destruída.
+ */
+export type FxKind = "hit" | "blast" | "shipDown" | "structureDown";
+export interface FxEvent { kind: FxKind; sx: number; sy: number; x: number; y: number; }
+export const MSG_FX = "fx";
+
 /** Expande a arena para o próximo tamanho (small→medium→large). */
 // @deprecated("adicionar isto na criação da sala")
 //export const MSG_EXPAND = "expandMap";

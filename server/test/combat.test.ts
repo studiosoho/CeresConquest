@@ -355,3 +355,80 @@ describe("dano de colisão na sala", () => {
     expect(d.hp).toBe(SHIP_HP_MAX);
   });
 });
+
+describe("explosões anunciadas aos clientes (MSG_FX)", () => {
+  /** Captura os efeitos que a sala transmite. */
+  function spy(r: R) {
+    const events: Array<{ kind: string; sx: number; sy: number; x: number; y: number }> = [];
+    (r as unknown as { broadcast: (type: string, msg: never) => void }).broadcast = (type, msg) => {
+      if (type === "fx") events.push(msg);
+    };
+    return events;
+  }
+
+  it("acerto de perfurante: um \"hit\" no ponto do impacto", () => {
+    const r = makeRoom();
+    const fx = spy(r);
+    const p = openSpace();
+    const [, a] = ship(r, "p1", "attack", p);
+    const [, b] = ship(r, "p2", "attack", at(p, 400), false);
+    fireAt(r, "p1", a, b);
+    run(r, 1);
+    const hits = fx.filter((e) => e.kind === "hit");
+    expect(hits.length).toBe(1);
+    expect(dist(hits[0], b)).toBeLessThan(BULLET_RADIUS_REACH);
+  });
+
+  it("tiro que expira sem acertar não explode", () => {
+    const r = makeRoom();
+    const fx = spy(r);
+    const [, a] = ship(r, "p1", "attack", openSpace());
+    fireAt(r, "p1", a, at(a, 400));
+    run(r, 10);
+    expect(fx.length).toBe(0);
+  });
+
+  it("granada: um \"blast\" onde detonou", () => {
+    const r = makeRoom();
+    const fx = spy(r);
+    const p = openSpace();
+    const [, a] = ship(r, "p1", "attack", p);
+    const [, b] = ship(r, "p2", "attack", at(p, 600), false);
+    const { dx, dy } = relVec(a, b);
+    a.angle = Math.atan2(dy, dx);
+    r.tryFire("p1", "grenade");
+    run(r, 1);
+    const blasts = fx.filter((e) => e.kind === "blast");
+    expect(blasts.length).toBe(1);
+    expect(dist(blasts[0], b)).toBeLessThan(200);
+  });
+
+  it("nave destruída: \"shipDown\" onde ela estava; estrutura destruída: \"structureDown\"", () => {
+    const r = makeRoom();
+    const fx = spy(r);
+    const st = station(r, "p2", rocks[0], Math.PI);
+    const [, attacker] = ship(r, "p1", "attack", at(rocks[0], 300));
+    r.tryToggleAnchor("p1");
+    run(r, LAYER_TRANSITION_TIME + DT);
+    st.hp = 1;
+    fireAt(r, "p1", attacker, st);
+    run(r, 0.3);
+    const down = fx.filter((e) => e.kind === "structureDown");
+    expect(down.length).toBe(1);
+    expect(dist(down[0], st)).toBeLessThan(1e-6);
+
+    const p = openSpace();
+    const [, c] = ship(r, "p1", "attack", p);
+    const [, d] = ship(r, "p3", "attack", at(p, 400), false);
+    d.hp = 1;
+    const where = { ...d };
+    fireAt(r, "p1", c, d);
+    run(r, 1);
+    const ships = fx.filter((e) => e.kind === "shipDown");
+    expect(ships.length).toBe(1);
+    expect(dist(ships[0], where)).toBeLessThan(100);
+  });
+});
+
+/** alcance de acerto do perfurante: o raio dele mais o do casco */
+const BULLET_RADIUS_REACH = 30 + 20;

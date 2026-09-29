@@ -11,6 +11,7 @@ import {
   // MSG_EXPAND,
   MSG_CARGO,
   MSG_FIRE,
+  MSG_FX,
   TICK_RATE,
   SIM_MAX_DT,
   SECTOR_SIZE,
@@ -62,6 +63,9 @@ import {
   type TaxiCommand,
   type LandActionCommand,
   type FireCommand,
+  type FxEvent,
+  type FxKind,
+  type WorldPos,
 } from "@ceres/shared";
 import {
   SimWorld,
@@ -1232,8 +1236,15 @@ export class MatchRoom extends Room<MatchState> {
     return null;
   }
 
+  /** Anuncia um efeito visual aos clientes (MSG_FX) — não muda o jogo. */
+  private fx(kind: FxKind, p: WorldPos): void {
+    const ev: FxEvent = { kind, sx: p.sx, sy: p.sy, x: p.x, y: p.y };
+    this.broadcast(MSG_FX, ev);
+  }
+
   /** Explosão da granada: dano decrescente com a distância, no nível dela. */
   private detonate(proj: Projectile): void {
+    this.fx("blast", proj);
     const falloff = (d: number) => GRENADE_DAMAGE * (1 - d / GRENADE_BLAST_RADIUS);
     for (const [id, s] of [...this.sim.ships]) {
       if (s.owner === proj.owner || hittableLevel(s) !== proj.level) continue;
@@ -1286,6 +1297,7 @@ export class MatchRoom extends Room<MatchState> {
         .filter(([, s]) => (s.stored && s.hqId === id) || (s.autoMining && s.stationId === id))
         .map(([sid]) => sid),
     );
+    this.fx("structureDown", st);
     this.sim.structures.delete(id);
     this.state.structures.delete(id);
     this.rationDroneTimers.delete(id);
@@ -1304,6 +1316,8 @@ export class MatchRoom extends Room<MatchState> {
   private destroyShip(shipId: string): void {
     const ship = this.sim.ships.get(shipId);
     if (!ship) return;
+    // a guardada explode dentro do hangar: quem aparece é a da estrutura
+    if (!ship.stored) this.fx("shipDown", ship);
     for (const [sid, active] of this.activeShip) {
       if (active === shipId) {
         this.transferControl(sid, shipId);
@@ -1461,9 +1475,10 @@ export class MatchRoom extends Room<MatchState> {
         } else {
           const ship = this.shipHitBy(proj, BULLET_RADIUS + SHIP_RADIUS);
           const struct = ship ? null : this.structureHitBy(proj, BULLET_RADIUS);
+          hit = !!(ship || struct);
+          if (hit) this.fx("hit", proj);
           if (ship) this.damageShip(ship, BULLET_DAMAGE);
           else if (struct) this.damageStructure(struct, BULLET_DAMAGE);
-          hit = !!(ship || struct);
         }
       } else {
         // granada: detona por proximidade com nave ou estrutura inimiga

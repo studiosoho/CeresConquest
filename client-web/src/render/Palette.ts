@@ -268,6 +268,8 @@ export const Palette = {
     hpBack: 0x2a3644,
     hpOwn: 0x55ee88,
     hpEnemy: 0xff5566,
+    /** explosões de acerto e destruição */
+    explosion: 0xffaa44,
   },
 
   ui: {

@@ -26,6 +26,10 @@ import {
   // MSG_EXPAND,
   MSG_CARGO,
   MSG_FIRE,
+  MSG_FX,
+  GRENADE_BLAST_RADIUS,
+  type FxEvent,
+  type FxKind,
   SECTOR_SIZE,
   SHIP_PRODUCTION,
   DOCK_RANGE,
@@ -63,6 +67,7 @@ import { c3 } from "../render/lineUtils";
 import { KeyInput } from "../input";
 import { MeshFactory } from "../render/MeshFactory";
 import { ShipRenderer } from "../render/ShipRenderer";
+import { EXPLOSION_SPARKS } from "../render/EffectsRenderer";
 import { shipMeshData } from "../render/ShipMeshGenerator";
 import { dockScale, easePresence, presenceTarget, type Presence, type PresenceShip } from "../render/shipPresence";
 import { AsteroidRenderer } from "../render/AsteroidRenderer";
@@ -96,13 +101,41 @@ const ZOOM_WHEEL_STEP = 1.15;
 const ZOOM_KEY_STEP = 1.03;
 const ZOOM_SMOOTH = 0.15;
 
+// ── explosões (MSG_FX) ──
+/**
+ * Raio final (unidades de mundo) e duração (s) de cada explosão. Dimensionadas
+ * contra a nave EXIBIDA (~370 u de comprimento no builder, ver ShipRenderer),
+ * não a de mundo: o acerto tem metade da nave; a granada, o raio de dano de
+ * verdade; a nave destruída, pouco mais que ela; a estrutura, o prédio todo.
+ */
+const EXPLOSION_STYLE: Record<FxKind, { radius: number; duration: number }> = {
+  hit: { radius: 160, duration: 0.35 },
+  blast: { radius: GRENADE_BLAST_RADIUS, duration: 0.55 },
+  shipDown: { radius: 480, duration: 0.9 },
+  structureDown: { radius: 1000, duration: 1.3 },
+};
+
 // ── câmera de cockpit (primeira pessoa) ──
 /** viewport do cockpit em frações do canvas (y a partir de BAIXO, como o
  *  Viewport do Babylon) — a moldura DOM do HUD usa as mesmas frações */
-const FP_VIEW = { left: 0.37, bottom: 0.02, width: 0.26, height: 0.30 };
-/** leve pitch do olho para cima (rad) — levanta o horizonte, mostra mais
- *  do campo à frente em vez de só o dorso das rochas no rodapé */
-const FP_EYE_PITCH = 0.05;
+const FP_VIEW = { left: 0.344, bottom: 0.02, width: 0.312, height: 0.27 };
+/**
+ * O cockpit MUDA COM A CAMADA DE VOO (shared/layers.ts). A nave voa no plano
+ * da camada de naves, rente ao topo das rochas (layers.ts); o olho é deslocado
+ * dali pela altitude aparente da nave (shipPresence.ts, a mesma que comanda
+ * sombra e tamanho — então a transição e o pouso interpolam juntos):
+ *  - CRUZEIRO (altitude 1): o olho sobe FP_CRUISE_LIFT acima do campo e
+ *    inclina FP_CRUISE_PITCH para baixo — vê as rochas passando lá embaixo;
+ *  - SUPERFÍCIE e MODO ATAQUE (altitude 0): o olho desce FP_SURFACE_DROP, até o
+ *    meio da altura das rochas, com o horizonte quase nivelado — elas passam
+ *    ao lado, na altura dos olhos.
+ * Cena: −Z é "para cima" (em direção à câmera principal).
+ */
+const FP_CRUISE_LIFT = 900;
+const FP_SURFACE_DROP = 300;
+/** pitch do olho (rad, positivo = para cima) em cruzeiro e na superfície */
+const FP_CRUISE_PITCH = -0.3;
+const FP_SURFACE_PITCH = 0.05;
 
 // ── farol (spotlight) da nave própria ──
 /** meia-abertura do cone (rad) */
@@ -309,6 +342,8 @@ export class GameScene {
   private serverProjectiles = new Map<string, ServerProjectile>();
   /** presença mostrada de cada nave (tamanho e altitude suavizados — shipPresence.ts) */
   private presence = new Map<string, Presence>();
+  /** explosões em curso: posição de MUNDO (a origem de render flutua), início e faíscas */
+  private explosions: Array<{ pos: WorldPos; kind: FxKind; t0: number; angles: number[] }> = [];
   private passthrough = new Set<string>();
   /**
    * Asteroides ocupados agrupados pelo DONO da estrutura — o mesmo ambiente do
@@ -377,15 +412,9 @@ export class GameScene {
     this.fpCamera = new FreeCamera("fpCam", Vector3.Zero(), scene);
     this.fpCamera.minZ = 2;
     this.fpCamera.maxZ = 5000;
-    // rotação fixa no quadro local da nave: visada (+Z da câmera) → nariz
-    // (+X) e topo da câmera (+Y) → −Z (em direção à câmera principal).
-    // Quaternion explícito: Quaternion.FromLookDirectionLH devolve a visada
-    // INVERTIDA para este par (validado ao vivo — olhava pela cauda).
-    // Composto com um leve pitch em torno do eixo direito local (Xcam) para
-    // levantar o horizonte (sinal validado ao vivo).
-    const fpBase = new Quaternion(0.5, -0.5, 0.5, -0.5);
-    const fpPitch = Quaternion.RotationAxis(new Vector3(1, 0, 0), -FP_EYE_PITCH);
-    this.fpCamera.rotationQuaternion = fpBase.multiply(fpPitch);
+    // rotação no quadro local da nave (ver fpRotation); a altura e o pitch
+    // do olho seguem a camada de voo a cada quadro, em draw()
+    this.fpCamera.rotationQuaternion = this.fpRotation(FP_SURFACE_PITCH);
     this.fpCamera.layerMask = FP_CAMERA_MASK;
     // recorte retangular no rodapé central do canvas (moldura vem do HUD)
     this.fpCamera.viewport.x = FP_VIEW.left;
@@ -595,6 +624,18 @@ export class GameScene {
     // sincronização por diff a cada patch — evita depender da API de
     // callbacks do schema, que varia entre versões do colyseus.js
     this.room.onStateChange((state: any) => this.syncFromServer(state));
+    // explosões: o servidor diz onde e o quê, na posição exata do acerto
+    this.room.onMessage(MSG_FX, (ev: FxEvent) => {
+      const angles: number[] = [];
+      const spin = Math.random() * Math.PI * 2;
+      for (let i = 0; i < EXPLOSION_SPARKS; i++) {
+        angles.push(spin + (i / EXPLOSION_SPARKS) * Math.PI * 2 + (Math.random() - 0.5) * 0.6);
+      }
+      this.explosions.push({
+        pos: { sx: ev.sx, sy: ev.sy, x: ev.x, y: ev.y },
+        kind: ev.kind, t0: performance.now() / 1000, angles,
+      });
+    });
   }
 
   // ── rede ────────────────────────────────────────────────────────────
@@ -1173,6 +1214,19 @@ export class GameScene {
   }
 
   /**
+   * Rotação do olho do cockpit no quadro local da nave: visada (+Z da câmera)
+   * → nariz (+X) e topo da câmera (+Y) → −Z (em direção à câmera principal),
+   * com `pitch` (rad, positivo = para cima) em torno do eixo direito local.
+   * Quaternion explícito: Quaternion.FromLookDirectionLH devolve a visada
+   * INVERTIDA para este par (validado ao vivo — olhava pela cauda); o sinal do
+   * pitch também foi validado ao vivo.
+   */
+  private fpRotation(pitch: number): Quaternion {
+    const base = new Quaternion(0.5, -0.5, 0.5, -0.5);
+    return base.multiply(Quaternion.RotationAxis(new Vector3(1, 0, 0), -pitch));
+  }
+
+  /**
    * Presença de uma nave neste quadro: tamanho e altitude aparentes pela
    * camada, pelo pouso e pela vaga (shipPresence.ts), suavizados.
    */
@@ -1225,7 +1279,11 @@ export class GameScene {
     const cockpit = this.shipRenderer.getCockpit(this.myShipId);
     if (cockpit) {
       if (this.fpCamera.parent !== cockpit.root) this.fpCamera.parent = cockpit.root;
-      this.fpCamera.position.copyFromFloats(cockpit.eye.x, cockpit.eye.y, cockpit.eye.z);
+      // altura e inclinação do olho pela altitude aparente (cruzeiro ↔ superfície)
+      const alt = ownPresence?.altitude ?? 1;
+      const dz = -FP_CRUISE_LIFT * alt + FP_SURFACE_DROP * (1 - alt);
+      this.fpCamera.position.copyFromFloats(cockpit.eye.x, cockpit.eye.y, cockpit.eye.z + dz);
+      this.fpCamera.rotationQuaternion = this.fpRotation(FP_SURFACE_PITCH + (FP_CRUISE_PITCH - FP_SURFACE_PITCH) * alt);
       // farol na mesma cabine, emitindo pelo nariz (direção +X já fixada)
       if (this.headlight.parent !== cockpit.root) this.headlight.parent = cockpit.root;
       this.headlight.position.copyFromFloats(cockpit.eye.x, cockpit.eye.y, cockpit.eye.z);
@@ -1340,6 +1398,14 @@ export class GameScene {
       } else {
         this.effectsRenderer.drawGrenade(pp.x, pp.y, tt);
       }
+    }
+
+    // explosões em curso
+    this.explosions = this.explosions.filter((e) => tt - e.t0 < EXPLOSION_STYLE[e.kind].duration);
+    for (const e of this.explosions) {
+      const style = EXPLOSION_STYLE[e.kind];
+      const p = this.toRender(e.pos);
+      this.effectsRenderer.drawExplosion(p.x, p.y, style.radius, (tt - e.t0) / style.duration, e.angles);
     }
 
     // fronteira do mapa
