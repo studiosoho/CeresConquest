@@ -3,6 +3,7 @@ import {
   MINING_RATE_BY_KIND,
   NEUTRAL_INPUT,
   STRUCTURE_SPECS,
+  structureMaxHp,
   TAXI_SPEED_MULT,
   PHYSICS_SUBSTEP,
   BASE_RATION_INCOME,
@@ -91,11 +92,13 @@ export class SimWorld {
   }
 
   /**
-   * Registra uma estrutura. Sem `hp`, ela nasce com o HP cheio do tipo
-   * (STRUCTURE_SPECS) — a fonte única do valor. Devolve a estrutura guardada.
+   * Registra uma estrutura. Sem `level`, nasce no nível 1; sem `hp`, com o HP
+   * cheio do tipo nesse nível (structureMaxHp) — a fonte única do valor.
+   * Devolve a estrutura guardada.
    */
-  addStructure(st: Omit<Structure, "hp"> & { hp?: number }): Structure {
-    const full: Structure = { ...st, hp: st.hp ?? STRUCTURE_SPECS[st.type].hp };
+  addStructure(st: Omit<Structure, "hp" | "level"> & { hp?: number; level?: number }): Structure {
+    const level = st.level ?? 1;
+    const full: Structure = { ...st, level, hp: st.hp ?? structureMaxHp(st.type, level) };
     this.structures.set(full.id, full);
     return full;
   }

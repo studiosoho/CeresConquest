@@ -2,6 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   CERES_RADIUS,
   CERES_PLATFORM_COUNT,
+  CERES_STATION_MAX_LEVEL,
+  CERES_STATION_ORE_RATE_PER_LEVEL,
+  CERES_STATION_SPIDER_BAYS_PER_LEVEL,
+  ceresStationUpgradeCost,
+  stationOreCap,
+  structureMaxHp,
   ceresPlatforms,
   ceresPlatformPos,
   DOCK_RANGE,
@@ -53,6 +59,7 @@ function makeRoom() {
     tryToggleAnchor(sid: string): void;
     trySwap(sid: string): void;
     tryLandAction(sid: string, action?: string): void;
+    tryUpgrade(sid: string): void;
     firstFreeShipBay(st: Structure, kind: ShipKind): number;
   };
   rooms.push(room);
@@ -490,15 +497,68 @@ describe("construção nas plataformas de Ceres", () => {
     samePos(s, bayWorldPos(st, s.bay)!);
   });
 
-  it("QG e centro de rações também; uma estrutura por plataforma", () => {
-    const hq = landedOn(1);
-    hq.r.tryLandAction("p1", "buildhq");
-    expect([...hq.r.sim.structures.values()].some((x) => x.asteroidId === hq.pad.id && x.type === "hq")).toBe(true);
-    const ration = landedOn(2);
-    ration.r.tryLandAction("p1", "buildration");
-    ration.r.tryLandAction("p1", "buildhq"); // já ocupada: não constrói de novo
-    const onPad = [...ration.r.sim.structures.values()].filter((x) => x.asteroidId === ration.pad.id);
-    expect(onPad.map((x) => x.type)).toEqual(["rationCenter"]);
+  it("em Ceres só se constrói estação de mineração; uma estrutura por plataforma", () => {
+    const { r, pad } = landedOn(1);
+    r.tryLandAction("p1", "buildhq");
+    r.tryLandAction("p1", "buildration");
+    expect([...r.sim.structures.values()].filter((x) => x.asteroidId === pad.id)).toEqual([]);
+    r.tryLandAction("p1", "buildmine");
+    r.tryLandAction("p1", "buildmine"); // já ocupada: não constrói de novo
+    const onPad = [...r.sim.structures.values()].filter((x) => x.asteroidId === pad.id);
+    expect(onPad.map((x) => x.type)).toEqual(["miningStation"]);
+  });
+
+  /** Estação de Ceres construída, com o builder atracado na vaga dela. */
+  function stationDocked() {
+    const ctx = landedOn(0);
+    ctx.r.tryLandAction("p1", "buildmine");
+    run(ctx.r, 1.6);
+    const st = [...ctx.r.sim.structures.values()].find((x) => x.asteroidId === ctx.pad.id)!;
+    expect(ctx.s.anchored).toBe(true);
+    return { ...ctx, st };
+  }
+
+  it("[U] evolui a estação: nível, vagas de aranha, HP e custo", () => {
+    const { r, st } = stationDocked();
+    const ore0 = r.sim.getOre("p1");
+    const bays0 = st.spiderBays;
+    expect(st.level).toBe(1);
+    r.tryUpgrade("p1");
+    expect(st.level).toBe(2);
+    expect(r.sim.getOre("p1")).toBe(ore0 - ceresStationUpgradeCost(1));
+    expect(st.spiderBays).toBe(bays0 + CERES_STATION_SPIDER_BAYS_PER_LEVEL);
+    expect(st.hp).toBe(structureMaxHp("miningStation", 2));
+    for (let i = 0; i < 10; i++) r.tryUpgrade("p1");
+    expect(st.level).toBe(CERES_STATION_MAX_LEVEL);
+  });
+
+  it("sem minério não evolui; estação de asteroide não evolui", () => {
+    const { r, st } = stationDocked();
+    r.sim.spendOre("p1", r.sim.getOre("p1"));
+    r.tryUpgrade("p1");
+    expect(st.level).toBe(1);
+
+    const { r: r2 } = makeRoom();
+    const rock = build(r2, "p1", rocks[0]);
+    const b = pilot(r2, "p1", "builder", beside(rocks[0]));
+    r2.tryToggleAnchor("p1");
+    run(r2, 1.6);
+    expect(b.anchored).toBe(true);
+    r2.sim.addOre("p1", 10_000);
+    r2.tryUpgrade("p1");
+    expect(rock.level).toBe(1);
+  });
+
+  it("estação evoluída produz minério no estoque local, até a capacidade do nível", () => {
+    const { r, st } = stationDocked();
+    r.tryUpgrade("p1");
+    r.tryUpgrade("p1"); // nível 3: +2 níveis de produção
+    st.oreStore = 0;
+    run(r, 2);
+    expect(st.oreStore).toBeCloseTo(2 * CERES_STATION_ORE_RATE_PER_LEVEL * 2, 0);
+    st.oreStore = stationOreCap(3) - 1;
+    run(r, 2);
+    expect(st.oreStore).toBe(stationOreCap(3));
   });
 
   it("[F] perto da plataforma com estação própria pousa na vaga livre (qualquer classe)", () => {

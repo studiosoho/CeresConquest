@@ -107,6 +107,8 @@ export class StructureSchema extends Schema {
   /** pontos de vida e o máximo do tipo; em zero a estrutura é destruída */
   @type("float32") hp = 0;
   @type("float32") maxHp = 0;
+  /** nível (a estação de mineração de Ceres evolui; as demais ficam em 1) */
+  @type("uint8") level = 1;
 }
 
 export class MatchState extends Schema {

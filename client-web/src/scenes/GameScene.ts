@@ -27,6 +27,10 @@ import {
   MSG_CARGO,
   MSG_FIRE,
   MSG_FX,
+  MSG_UPGRADE,
+  CERES_STATION_MAX_LEVEL,
+  ceresStationUpgradeCost,
+  stationOreCap,
   GRENADE_BLAST_RADIUS,
   type FxEvent,
   type FxKind,
@@ -38,7 +42,6 @@ import {
   ceresPlatforms,
   ceresPlatformPos,
   STRUCTURE_SPECS,
-  STATION_ORE_STORE,
   CERES_RADIUS,
   SNAPSHOT_AGE_FIXED_GUESS,
   BULLET_AMMO_MAX,
@@ -301,6 +304,8 @@ interface ServerStructure extends WorldPos {
   /** pontos de vida e o máximo do tipo */
   hp: number;
   maxHp: number;
+  /** nível (a estação de Ceres evolui; as demais ficam em 1) */
+  level: number;
 }
 
 /**
@@ -721,7 +726,7 @@ export class GameScene {
         angle: st.angle, asteroidId: st.asteroidId,
         shipBays: st.shipBays, expandedBays: st.expandedBays ?? 0,
         oreStore: st.oreStore ?? 0, rationStore: st.rationStore ?? 0,
-        hp: st.hp ?? 0, maxHp: st.maxHp ?? 0,
+        hp: st.hp ?? 0, maxHp: st.maxHp ?? 0, level: st.level ?? 1,
       });
     });
     for (const id of [...this.serverStructures.keys()]) {
@@ -928,6 +933,10 @@ export class GameScene {
         if (this.keys.justDown("G")) {
           this.room.send(MSG_FIRE, { kind: "grenade" });
         }
+      }
+      // [U] evolui a estação de mineração de Ceres (o servidor valida tudo)
+      if (this.keys.justDown("U")) {
+        this.room.send(MSG_UPGRADE);
       }
       if (this.keys.justDown("C")) {
         this.room.send(MSG_SWAP);
@@ -1420,6 +1429,11 @@ export class GameScene {
         shipBays: st.shipBays, expandedBays: st.expandedBays,
         own: st.owner === this.room.sessionId,
         angle: st.angle,
+        level: st.level,
+        // anexos da estação evoluída se espalham pela plataforma de Ceres
+        annexArea: st.asteroidId.startsWith(CERES_PLATFORM_PREFIX)
+          ? ceresPlatforms(this.worldSeed).find((p) => p.id === st.asteroidId)?.radius ?? 0
+          : 0,
       }, occupants, attach);
       // barra de HP: sempre na inimiga; na própria, só quando avariada
       const own = st.owner === this.room.sessionId;
@@ -1593,7 +1607,15 @@ export class GameScene {
     let storeHint = "";
     if (anchoredStruct) {
       if (anchoredStruct.stype === "miningStation") {
-        storeHint = `  ·  Buffer: ${Math.floor(anchoredStruct.oreStore)}/${STATION_ORE_STORE} ores · food: ${Math.floor(anchoredStruct.rationStore)}`;
+        storeHint = `  ·  Buffer: ${Math.floor(anchoredStruct.oreStore)}/${stationOreCap(anchoredStruct.level)} ores · food: ${Math.floor(anchoredStruct.rationStore)}`;
+        // estação de Ceres: nível e evolução (builder atracado nela)
+        if (anchoredStruct.asteroidId.startsWith(CERES_PLATFORM_PREFIX)) {
+          const lv = anchoredStruct.level;
+          storeHint += `  ·  Lv.${lv}`;
+          if (activeKind === "builder" && lv < CERES_STATION_MAX_LEVEL) {
+            storeHint += `  » [U] upgrade to Lv.${lv + 1} (${ceresStationUpgradeCost(lv)})`;
+          }
+        }
       } else if (anchoredStruct.stype === "initialBase") {
         storeHint = `  ·  Base — food: ${Math.floor(anchoredStruct.rationStore)} (from Earth)`;
       } else if (anchoredStruct.stype === "hq") {
@@ -1663,6 +1685,7 @@ export class GameScene {
       prodLine,
       anchorTag,
       landHint,
+      landedOnCeres: (mineAuth?.anchoredAsteroidId ?? "").startsWith(CERES_PLATFORM_PREFIX),
     };
     this.hudRenderer.drawStatus(shipData, ctxData);
 

@@ -12,6 +12,7 @@ import {
   MSG_CARGO,
   MSG_FIRE,
   MSG_FX,
+  MSG_UPGRADE,
   TICK_RATE,
   SIM_MAX_DT,
   SECTOR_SIZE,
@@ -24,7 +25,12 @@ import {
   STATION_SPIDER_BAYS,
   BASE_SHIP_BAYS,
   BASE_EXPANDED_BAYS,
-  STATION_ORE_STORE,
+  CERES_STATION_MAX_LEVEL,
+  CERES_STATION_SPIDER_BAYS_PER_LEVEL,
+  CERES_STATION_ORE_RATE_PER_LEVEL,
+  ceresStationUpgradeCost,
+  structureMaxHp,
+  stationOreCap,
   RATION_STORE_CAP,
   RATION_DRONE_RANGE,
   RATION_DRONE_AMOUNT,
@@ -236,6 +242,10 @@ export class MatchRoom extends Room<MatchState> {
 
     this.onMessage(MSG_FIRE, (client: Client, cmd: FireCommand) => {
       this.tryFire(client.sessionId, cmd?.kind);
+    });
+
+    this.onMessage(MSG_UPGRADE, (client: Client) => {
+      this.tryUpgrade(client.sessionId);
     });
 
     // metadata exibida na lista do lobby (título da sala)
@@ -554,6 +564,30 @@ export class MatchRoom extends Room<MatchState> {
   }
 
   /**
+   * Evolui a estação de mineração de Ceres em que o builder do jogador está
+   * atracado: um nível a mais, pagando ceresStationUpgradeCost. Cada nível
+   * soma vagas de aranha, capacidade de estoque, HP (a diferença do máximo
+   * entra também no HP atual) e produção própria — e o render acrescenta
+   * anexos na plataforma.
+   */
+  private tryUpgrade(sessionId: string): void {
+    const ship = this.activeShipOf(sessionId);
+    if (!ship || ship.kind !== "builder" || !ship.anchored) return;
+    const st = this.sim.structures.get(ship.hqId);
+    if (!st || st.owner !== sessionId || st.type !== "miningStation") return;
+    if (!st.asteroidId.startsWith(CERES_PLATFORM_PREFIX)) return;
+    if (st.level >= CERES_STATION_MAX_LEVEL) return;
+    const cost = ceresStationUpgradeCost(st.level);
+    if (this.sim.getOre(sessionId) < cost) return;
+    this.sim.spendOre(sessionId, cost);
+    const oldMax = structureMaxHp(st.type, st.level);
+    st.level += 1;
+    st.spiderBays += CERES_STATION_SPIDER_BAYS_PER_LEVEL;
+    st.hp += structureMaxHp(st.type, st.level) - oldMax;
+    console.log(`[room] ${sessionId} evoluiu a estação ${st.id} para o nível ${st.level}`);
+  }
+
+  /**
    * Local de construção em que a nave está POUSADA: o asteroide vazio (pelo
    * id guardado no pouso) ou uma plataforma de Ceres. Devolve posição, id,
    * raio, classe e a orientação da estrutura: no asteroide, virada para onde a
@@ -786,7 +820,10 @@ export class MatchRoom extends Room<MatchState> {
       console.log(`[room] ${sessionId} construiu miningStation (via pouso) em ${cls} — builder a caminho da vaga`);
     }
 
-    if (action === "buildhq" && ship.kind === "builder") {
+    // em Ceres só se constrói estação de mineração (ver CERES_STATION_MAX_LEVEL)
+    const onCeres = ship.anchoredAsteroidId.startsWith(CERES_PLATFORM_PREFIX);
+
+    if (action === "buildhq" && ship.kind === "builder" && !onCeres) {
       const spec = STRUCTURE_SPECS["hq"];
       if (this.sim.getOre(sessionId) < spec.cost) return;
       // o local em que o builder pousou: asteroide vazio ou plataforma de Ceres
@@ -819,7 +856,7 @@ export class MatchRoom extends Room<MatchState> {
       console.log(`[room] ${sessionId} construiu hq (via pouso) em ${cls}`);
     }
 
-    if (action === "buildration" && ship.kind === "builder") {
+    if (action === "buildration" && ship.kind === "builder" && !onCeres) {
       const spec = STRUCTURE_SPECS["rationCenter"];
       if (this.sim.getOre(sessionId) < spec.cost) return;
       // o local em que o builder pousou: asteroide vazio ou plataforma de Ceres
@@ -941,7 +978,7 @@ export class MatchRoom extends Room<MatchState> {
         ship.cargoAmount = 0;
       } else if (struct.type === "miningStation") {
         // devolve ao estoque da estação (desistiu da viagem)
-        const space = STATION_ORE_STORE - struct.oreStore;
+        const space = stationOreCap(struct.level) - struct.oreStore;
         const moved = Math.min(ship.cargoAmount, Math.max(0, space));
         if (moved <= 0) return;
         struct.oreStore += moved;
@@ -1454,9 +1491,17 @@ export class MatchRoom extends Room<MatchState> {
       if (!ship.anchored || !ship.mining || ship.kind !== "builder") continue;
       const station = this.sim.structures.get(ship.hqId);
       if (!station || station.type !== "miningStation") continue;
-      if (station.oreStore >= STATION_ORE_STORE) { ship.mining = false; continue; }
+      const cap = stationOreCap(station.level);
+      if (station.oreStore >= cap) { ship.mining = false; continue; }
       const rate = MINING_RATE_BY_KIND["builder"];
-      station.oreStore = Math.min(STATION_ORE_STORE, station.oreStore + rate * dt);
+      station.oreStore = Math.min(cap, station.oreStore + rate * dt);
+    }
+    // ESTAÇÕES DE CERES EVOLUÍDAS: as instalações de cada nível acima do 1
+    // extraem minério sozinhas, para o estoque LOCAL (o transporte leva à base)
+    for (const st of this.sim.structures.values()) {
+      if (st.level <= 1 || st.type !== "miningStation") continue;
+      const rate = CERES_STATION_ORE_RATE_PER_LEVEL * (st.level - 1);
+      st.oreStore = Math.min(stationOreCap(st.level), st.oreStore + rate * dt);
     }
     // ARANHAS mineradoras → caminham pelo asteroide e descarregam no
     // estoque LOCAL da estação (param quando ele está cheio)
@@ -1467,13 +1512,13 @@ export class MatchRoom extends Room<MatchState> {
         this.spiders.delete(id);
         continue;
       }
-      if (station.oreStore >= STATION_ORE_STORE) {
+      if (station.oreStore >= stationOreCap(station.level)) {
         ship.mining = false;
         continue;
       }
       const unloaded = stepSpider(ship, station, spider, dt);
       if (unloaded > 0) {
-        station.oreStore = Math.min(STATION_ORE_STORE, station.oreStore + unloaded);
+        station.oreStore = Math.min(stationOreCap(station.level), station.oreStore + unloaded);
       }
     }
     // IA do táxi → voa até o destino; ao chegar, estaciona na 1ª vaga livre
@@ -1644,7 +1689,8 @@ export class MatchRoom extends Room<MatchState> {
       s.oreStore = st.oreStore;
       s.rationStore = st.rationStore;
       s.hp = st.hp;
-      s.maxHp = STRUCTURE_SPECS[st.type].hp;
+      s.maxHp = structureMaxHp(st.type, st.level);
+      s.level = st.level;
     }
     // minério e nave ativa por jogador
     for (const [sid, p] of this.state.players) {

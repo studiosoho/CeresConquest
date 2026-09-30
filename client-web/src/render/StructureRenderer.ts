@@ -33,7 +33,7 @@ import type { GreasedLineBaseMesh } from "@babylonjs/core/Meshes/GreasedLine/gre
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Vector3, Quaternion, Matrix } from "@babylonjs/core/Maths/math.vector";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { STRUCTURE_SPECS, bayLayout, bayFrameAngle } from "@ceres/shared";
+import { STRUCTURE_SPECS, CERES_STATION_ANNEXES_PER_LEVEL, bayLayout, bayFrameAngle } from "@ceres/shared";
 import type { StructureType, ShipKind } from "@ceres/shared";
 import { shipVerts } from "../shapes";
 import { Palette } from "./Palette";
@@ -51,6 +51,10 @@ export interface StructureRenderData {
   expandedBays: number;
   /** direção da frente da estrutura (rad, do jogo) — orienta prédio e vagas */
   angle: number;
+  /** nível (estação de Ceres): cada nível acima do 1 acrescenta anexos */
+  level?: number;
+  /** raio da área em que os anexos se espalham (a plataforma de Ceres); 0 = sem anexos */
+  annexArea?: number;
 }
 
 /** Plataforma hospedeira: root do asteroide + quadro da face. */
@@ -77,6 +81,16 @@ const SLAB_LINE_LIFT = 1;
 const EXPANDED_COLOR = 0xffcc44;
 /** compressão mínima de altura em plataformas rasas */
 const MIN_SQUASH = 0.4;
+/** anexos da estação evoluída: formas que se alternam, escala e altura dos dutos */
+const ANNEX_TYPES: StructureType[] = ["hq", "rationCenter", "miningStation", "initialBase"];
+/**
+ * Escala dos anexos: LARGA no plano (a plataforma tem ~2000 u de raio e o
+ * prédio, ~100 — em 0.75 eles liam como pontos e só os dutos apareciam) e
+ * com a altura original, para não crescerem em direção à camada das naves.
+ */
+const ANNEX_SCALE = 1.8;
+const ANNEX_Z_SCALE = 1;
+const CONDUIT_Z = 2;
 
 interface StructEntry {
   root: TransformNode;
@@ -98,6 +112,11 @@ interface StructEntry {
   face: AsteroidBuildFace | null;
   /** centro da estrutura no quadro do root hospedeiro (ver StructureAttach.anchor) */
   anchor: { x: number; y: number };
+  /** anexos da estação evoluída (ver rebuildAnnexes) e o nível em que foram montados */
+  annexNode: TransformNode | null;
+  annexMeshes: Mesh[];
+  annexLines: GreasedLineBaseMesh[];
+  annexLevel: number;
 }
 
 export class StructureRenderer {
@@ -149,6 +168,12 @@ export class StructureRenderer {
         entry.lastSig = "!"; // as vagas dependem da plataforma: refaz
       }
       entry.root.setEnabled(true);
+    }
+
+    const level = data.level ?? 1;
+    if (level !== entry.annexLevel) {
+      entry.annexLevel = level;
+      this.rebuildAnnexes(entry, level, data.annexArea ?? 0);
     }
 
     const sig = occupants.map((k) => k ?? "").join(",");
@@ -220,6 +245,7 @@ export class StructureRenderer {
       height: gen.height,
       shipBays: data.shipBays, expandedBays: data.expandedBays,
       angle: data.angle, face: null, anchor: { x: 0, y: 0 },
+      annexNode: null, annexMeshes: [], annexLines: [], annexLevel: 1,
     };
   }
 
@@ -427,7 +453,94 @@ export class StructureRenderer {
     return mesh;
   }
 
+  // ── anexos da estação evoluída (Ceres) ──────────────────────────────
+
+  /**
+   * A estação de Ceres OCUPA a plataforma conforme evolui: cada nível acima
+   * do 1 acrescenta CERES_STATION_ANNEXES_PER_LEVEL prédios menores (formas
+   * das outras estruturas, em escala), em anéis cada vez mais afastados,
+   * sempre atrás e dos lados do prédio principal — a frente é das vagas —,
+   * virados para ele e ligados a ele por dutos na cor do dono.
+   *
+   * Tudo num quadro só: os vértices de todos os anexos são transformados
+   * para o quadro do prédio e viram UMA malha de corpo, uma de aberturas, uma
+   * de arestas e uma de destaques — quatro chamadas de desenho por estação,
+   * qualquer que seja o nível.
+   */
+  private rebuildAnnexes(entry: StructEntry, level: number, area: number): void {
+    for (const m of entry.annexLines) disposeLineBundle(m, this.glow);
+    for (const m of entry.annexMeshes) m.dispose(false, false);
+    entry.annexLines = [];
+    entry.annexMeshes = [];
+    entry.annexNode?.dispose();
+    entry.annexNode = null;
+    const count = Math.max(0, level - 1) * CERES_STATION_ANNEXES_PER_LEVEL;
+    if (count === 0 || area <= 0) return;
+
+    const node = new TransformNode(`${entry.root.name}_annexes`, this.scene);
+    node.parent = entry.root;
+    entry.annexNode = node;
+
+    const body = { v: [] as Vector3[], n: [] as Vector3[], t: [] as number[] };
+    const voids = { v: [] as Vector3[], n: [] as Vector3[], t: [] as number[] };
+    const wires: Vector3[][] = [];
+    const accents: Vector3[][] = [];
+    for (let k = 0; k < count; k++) {
+      const ring = Math.floor(k / 2);
+      const side = k % 2 === 0 ? -1 : 1;
+      // ângulo a partir de +Y local (as COSTAS do prédio; a frente, −Y, é das vagas)
+      const a = side * (0.7 + ring * 0.42);
+      const d = area * (0.24 + 0.17 * ring);
+      const cx = Math.sin(a) * d;
+      const cy = Math.cos(a) * d;
+      // virado para o prédio principal: a frente (−Y) do anexo aponta para a origem
+      const yaw = Math.atan2(-cx, cy);
+      const type = ANNEX_TYPES[k % ANNEX_TYPES.length];
+      const gen = generateStructureMesh(type);
+      const c = Math.cos(yaw), s = Math.sin(yaw);
+      const place = (p: Vector3) => new Vector3(cx + (c * p.x - s * p.y) * ANNEX_SCALE, cy + (s * p.x + c * p.y) * ANNEX_SCALE, p.z * ANNEX_Z_SCALE);
+      const turn = (q: Vector3) => new Vector3(c * q.x - s * q.y, s * q.x + c * q.y, q.z);
+      const add = (dst: typeof body, verts: Vector3[], norms: Vector3[] | null, tris: number[]) => {
+        const base = dst.v.length;
+        verts.forEach((p, i) => {
+          dst.v.push(place(p));
+          dst.n.push(norms ? turn(norms[i]) : new Vector3(0, 0, 1));
+        });
+        for (const t of tris) dst.t.push(base + t);
+      };
+      add(body, gen.vertices, gen.normals, gen.triangles);
+      if (gen.voidTriangles.length > 0) add(voids, gen.voidVertices, null, gen.voidTriangles);
+      for (const w of gen.wires) wires.push(w.map(place));
+      for (const w of gen.accents) accents.push(w.map(place));
+      // duto: da borda do prédio principal à borda do anexo, rente ao chão
+      const len = Math.hypot(cx, cy);
+      const ux = cx / len, uy = cy / len;
+      const r0 = entry.radius;
+      const r1 = len - STRUCTURE_SPECS[type].radius * ANNEX_SCALE;
+      if (r1 > r0) accents.push([new Vector3(ux * r0, uy * r0, CONDUIT_Z), new Vector3(ux * r1, uy * r1, CONDUIT_Z)]);
+    }
+
+    const solid = this.makeSolid(`${node.name}_body`, body.v, body.n, body.t, this.structMat);
+    solid.parent = node;
+    entry.annexMeshes.push(solid);
+    if (voids.t.length > 0) {
+      const hole = this.makeSolid(`${node.name}_voids`, voids.v, voids.n, voids.t, this.voidMat);
+      hole.parent = node;
+      entry.annexMeshes.push(hole);
+    }
+    const wire = this.makeLine(`${node.name}_wire`, wires, WIRE_PX, c3(Palette.wire).scale(WIRE_DIM), false);
+    wire.parent = node;
+    entry.annexLines.push(wire);
+    const accentColor = c3(entry.own ? Palette.structure.own : Palette.structure.other);
+    const acc = this.makeLine(`${node.name}_accents`, accents, ACCENT_PX, accentColor, true);
+    acc.parent = node;
+    entry.annexLines.push(acc);
+  }
+
   private disposeEntry(entry: StructEntry): void {
+    for (const m of entry.annexLines) disposeLineBundle(m, this.glow);
+    for (const m of entry.annexMeshes) m.dispose(false, false);
+    entry.annexNode?.dispose();
     for (const m of entry.lines) disposeLineBundle(m, this.glow);
     for (const m of entry.bayLines) disposeLineBundle(m, this.glow);
     for (const m of entry.meshes) m.dispose(false, false); // materiais compartilhados

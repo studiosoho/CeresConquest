@@ -96,6 +96,12 @@ export interface FireCommand { kind: FireKind; }
 export const MSG_FIRE = "fire";
 
 /**
+ * Evolui a estação de mineração de Ceres em que o builder está atracado (sem
+ * payload): um nível a mais, pelo custo de ceresStationUpgradeCost.
+ */
+export const MSG_UPGRADE = "upgrade";
+
+/**
  * Efeito visual anunciado pelo servidor a todos os clientes — não muda o jogo,
  * só diz ONDE e O QUÊ explodiu, na posição exata do servidor (o cliente não
  * teria como saber: o projétil some do estado no mesmo tick do acerto).

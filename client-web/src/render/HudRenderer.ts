@@ -51,6 +51,8 @@ export interface HudContextData {
   prodLine: string;
   anchorTag: string;
   landHint: string;
+  /** pousada numa plataforma de Ceres — lá só se constrói estação de mineração */
+  landedOnCeres: boolean;
 }
 
 export interface MinimapData {
@@ -333,7 +335,9 @@ export class HudRenderer {
         ? "[SPACE] stop mining\n[F] take off — stop mining before"
         : "[SPACE] start mining\n" +
         (ship.kind === "builder"
-          ? `[1] build minestation (100)  [2] build HQ (300) [3] build food center (200)\n`
+          ? ctx.landedOnCeres
+            ? `[1] build minestation (100) — Ceres: mining stations only, upgradable\n`
+            : `[1] build minestation (100)  [2] build HQ (300) [3] build food center (200)\n`
           : "") +
         "[F] take off")
     );

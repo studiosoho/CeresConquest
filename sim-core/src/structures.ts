@@ -18,6 +18,8 @@ export interface Structure extends WorldPos {
   oreStore: number;
   /** rações em estoque (base inicial recebe da Terra; transporte distribui) */
   rationStore: number;
-  /** pontos de vida; o máximo é STRUCTURE_SPECS[type].hp */
+  /** pontos de vida; o máximo é structureMaxHp(type, level) */
   hp: number;
+  /** nível (estação de mineração de Ceres evolui até CERES_STATION_MAX_LEVEL; o resto fica em 1) */
+  level: number;
 }
