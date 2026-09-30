@@ -154,6 +154,29 @@ export class HudRenderer {
    * MESMAS frações do Viewport do Babylon (y a partir de baixo) — o canvas
    * ocupa a janela inteira, então frações do canvas = porcentagens CSS.
    */
+  /**
+   * Mira da vista de cockpit em tela cheia: marca o ponto para onde o NARIZ
+   * aponta (os tiros saem por ele). Com o olho inclinado, esse ponto não é o
+   * centro da tela — `topPct` vem do GameScene a cada quadro.
+   */
+  private reticle: HTMLDivElement | null = null;
+
+  setReticle(visible: boolean, topPct = 50): void {
+    if (!this.reticle) {
+      const r = document.createElement("div");
+      const c = cssColor(Palette.ui.text, 0.85);
+      r.style.cssText =
+        "position:absolute;left:50%;width:28px;height:28px;margin:-14px 0 0 -14px;pointer-events:none;" +
+        `background:linear-gradient(${c},${c}) center/2px 10px no-repeat,` +
+        `linear-gradient(${c},${c}) center/10px 2px no-repeat;` +
+        `border:1px solid ${cssColor(Palette.ui.text, 0.5)};border-radius:50%;box-sizing:border-box;`;
+      this.root.appendChild(r);
+      this.reticle = r;
+    }
+    this.reticle.style.display = visible ? "block" : "none";
+    this.reticle.style.top = `${topPct}%`;
+  }
+
   initCockpitFrame(view: { left: number; bottom: number; width: number; height: number }): void {
     const frame = document.createElement("div");
     frame.style.cssText =
@@ -323,7 +346,7 @@ export class HudRenderer {
       (ship.kind === "attack"
         ? " · [SPACE] FIRE · [G] GRENADE"
         : "") +
-      " · mouseroll/+/- zoom";
+      " · [V] cockpit view · mouseroll/+/- zoom";
     return [line1, line2, ctx.prodLine, ctx.taxiLine].filter(Boolean).join("\n");
   }
 

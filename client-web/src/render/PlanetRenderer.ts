@@ -14,6 +14,10 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
+import { SUN_SCREEN } from "./Lighting";
+import { Palette } from "./Palette";
+import { c3 } from "./lineUtils";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { ceresPlatforms } from "@ceres/shared";
 import { generateCeresMesh } from "./CeresMeshGenerator";
@@ -28,7 +32,18 @@ import { ROCK_FRONT_REACH } from "./layers";
  * de sombra de azul saturado — Ceres é cinza de regolito, só a chave a molda.
  */
 const CERES_AMBIENT = new Color3(0.4, 0.4, 0.41);
-const CERES_EXCLUDED_LIGHTS = ["fillLight", "rimLight"];
+const CERES_EXCLUDED_LIGHTS = ["fillLight", "rimLight", "keyLight"];
+/**
+ * Ceres tem LUZ PRÓPRIA: uma direcional vinda do sol. A chave do rig é
+ * pontual, colada ao enquadramento e com alcance de ~18 000 u — boa para
+ * rochas de 200–2000 u, mas numa esfera de 40 000 u a borda fica ~20 000 u
+ * mais funda e caía no escuro. Direcional não atenua: é o sol distante de
+ * verdade, e dá a Ceres um terminador de planeta, igual nas duas câmeras.
+ * Direção: do ponto do sol na tela (SUN_SCREEN, um pouco à frente da cena)
+ * para o centro.
+ */
+const CERES_SUN_DIR = new Vector3(-SUN_SCREEN.x, -SUN_SCREEN.y, 0.32).normalize();
+const CERES_SUN_INTENSITY = 1.35;
 
 export class PlanetRenderer {
   private scene: Scene;
@@ -36,6 +51,7 @@ export class PlanetRenderer {
   private root: TransformNode | null = null;
   private body: Mesh | null = null;
   private material: StandardMaterial | null = null;
+  private sun: DirectionalLight | null = null;
   /** z de cena de cada plataforma, por id (para o olho do cockpit pousado) */
   private platformLocalZ = new Map<string, number>();
   /** centro XY (cena, no quadro do root) e raio de cada plataforma */
@@ -77,6 +93,12 @@ export class PlanetRenderer {
     // mesmo raciocínio nas rochas, AsteroidRenderer)
     this.glow.addExcludedMesh(body);
     for (const name of CERES_EXCLUDED_LIGHTS) this.scene.getLightByName(name)?.excludedMeshes.push(body);
+    const sun = new DirectionalLight("ceresSun", CERES_SUN_DIR.clone(), this.scene);
+    sun.diffuse = c3(Palette.light.key);
+    sun.specular = Color3.Black();
+    sun.intensity = CERES_SUN_INTENSITY;
+    sun.includedOnlyMeshes = [body];
+    this.sun = sun;
 
     this.body = body;
     this.material = mat;
@@ -128,6 +150,8 @@ export class PlanetRenderer {
       this.body.dispose();
     }
     this.material?.dispose();
+    this.sun?.dispose();
+    this.sun = null;
     this.root?.dispose();
     this.root = null;
     this.body = null;

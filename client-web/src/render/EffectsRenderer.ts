@@ -375,6 +375,9 @@ export class EffectsRenderer {
         { baseWidth: BOUNDARY_PX, sizeAttenuation: true, glow: this.glow },
       );
       this.boundaryMesh.parent = this.boundaryRoot;
+      // só na vista de cima: com o alcance longo do cockpit ela aparecia como
+      // uma cerca de borrões vermelhos pairando no céu
+      this.boundaryMesh.layerMask = MASK_MAIN_ONLY;
     }
     const p = toScene(cx, cy);
     this.boundaryRoot.position.x = p.x;

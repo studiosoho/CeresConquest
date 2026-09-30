@@ -14,7 +14,7 @@
 export type KeyName =
   | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS"
   | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX"
-  | "E" | "F" | "C" | "G" | "T" | "Y" | "M" | "Q" | "X" | "U";
+  | "E" | "F" | "C" | "G" | "T" | "Y" | "M" | "Q" | "X" | "U" | "V";
 
 const CODE_MAP: Record<KeyName, string[]> = {
   W: ["KeyW"], A: ["KeyA"], S: ["KeyS"], D: ["KeyD"],
@@ -30,6 +30,8 @@ const CODE_MAP: Record<KeyName, string[]> = {
   Q: ["KeyQ"], X: ["KeyX"],
   // evolui a estação de mineração de Ceres (builder atracado nela)
   U: ["KeyU"],
+  // alterna a vista: de cima ↔ cockpit em tela cheia
+  V: ["KeyV"],
 };
 
 /** code → nome (invertido uma vez no módulo) */

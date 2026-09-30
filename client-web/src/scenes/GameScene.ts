@@ -214,7 +214,7 @@ const STAR_POINT_PX = 2.8;
  * antigo (200) elas ficavam à FRENTE dos detritos e piscavam por cima das
  * silhuetas gigantes, denunciando o fundo como transparente.
  */
-const STAR_DEPTH_Z = 4500;
+const STAR_DEPTH_Z = 40_900; // atrás de Ceres e das lajes (ver Backdrop.ts)
 /** temperaturas (branco, quente, frio) — o que impede o campo de virar grade */
 const STAR_TEMPS = [Palette.ui.starBright, 0xffe9c8, 0xc8dcff];
 
@@ -355,6 +355,15 @@ export class GameScene {
   private remotes = new Map<string, RemoteView>();
   private serverStructures = new Map<string, ServerStructure>();
   private serverProjectiles = new Map<string, ServerProjectile>();
+  /**
+   * Vista de cockpit em TELA CHEIA (tecla V): a câmera de primeira pessoa
+   * ocupa o canvas e a de cima vira o quadro pequeno do rodapé — as duas
+   * trocam de viewport e de ordem de desenho, e o brilho acompanha a vista
+   * cheia. Os controles são os mesmos (já são relativos ao nariz).
+   */
+  private cockpitFull = false;
+  /** pitch corrente do olho do cockpit (rad) — posiciona a mira */
+  private fpPitch = FP_SURFACE_PITCH;
   /** presença mostrada de cada nave (tamanho e altitude suavizados — shipPresence.ts) */
   private presence = new Map<string, Presence>();
   /** explosões em curso: posição de MUNDO (a origem de render flutua), início e faíscas */
@@ -410,7 +419,9 @@ export class GameScene {
     // planos de fundo do Backdrop, que vão até z = 4800 (céu) → 5800 a partir
     // da câmera. Em ortográfica a profundidade é linear: alargar o far plane
     // não custa precisão nenhuma.
-    this.camera.maxZ = 6200;
+    // Ceres (esfera cheia) desce até ~39 700 e o fundo do Backdrop mora atrás
+    // dela, até 42 000 local — ver Backdrop.ts
+    this.camera.maxZ = 42_500;
     this.updateOrtho();
 
     // glow amarrado à câmera principal: sem isso o composite de tela cheia
@@ -425,8 +436,11 @@ export class GameScene {
     // nariz (+X local) com horizonte nivelado no plano de jogo (up = −Z,
     // em direção à câmera principal) — "ângulo z = 0"
     this.fpCamera = new FreeCamera("fpCam", Vector3.Zero(), scene);
-    this.fpCamera.minZ = 2;
-    this.fpCamera.maxZ = 5000;
+    // alcance longo: Ceres (40 km) inteira no horizonte de qualquer ponto da
+    // arena; as rochas continuam limitadas à grade 3×3 de setores. minZ 5
+    // segura a precisão de profundidade com o far plane 24 000× mais longe
+    this.fpCamera.minZ = 5;
+    this.fpCamera.maxZ = 120_000;
     // rotação no quadro local da nave (ver fpRotation); a altura e o pitch
     // do olho seguem a camada de voo a cada quadro, em draw()
     this.fpCamera.rotationQuaternion = this.fpRotation(FP_SURFACE_PITCH);
@@ -809,8 +823,12 @@ export class GameScene {
    * faixa preta na borda ao dar zoom out rápido).
    */
   private updateOrtho(): void {
-    const halfW = this.engine.getRenderWidth() / (2 * this.zoom);
-    const halfH = this.engine.getRenderHeight() / (2 * this.zoom);
+    // pelo VIEWPORT da câmera, não pelo canvas: na vista de cockpit a
+    // principal vira o quadro pequeno, e o enquadramento tem de manter px por
+    // unidade = zoom e o formato do quadro (senão a vista de cima esticaria)
+    const vp = this.camera.viewport;
+    const halfW = (this.engine.getRenderWidth() * vp.width) / (2 * this.zoom);
+    const halfH = (this.engine.getRenderHeight() * vp.height) / (2 * this.zoom);
     this.camera.orthoLeft = -halfW;
     this.camera.orthoRight = halfW;
     this.camera.orthoTop = halfH;
@@ -850,6 +868,8 @@ export class GameScene {
     }
     this.zoom = lerp(this.zoom, this.zoomTarget, ZOOM_SMOOTH);
     this.updateOrtho();
+    // [V] alterna a vista: de cima ↔ cockpit em tela cheia (vale pousada também)
+    if (this.keys.justDown("V")) this.setCockpitFull(!this.cockpitFull);
 
     // construção, produção e ancoragem (autoritativas no servidor)
     const landingPhase = mineServer.landingPhase ?? "";
@@ -1265,6 +1285,45 @@ export class GameScene {
     return null;
   }
 
+  /** Liga/desliga a vista de cockpit em tela cheia (ver `cockpitFull`). */
+  private setCockpitFull(on: boolean): void {
+    this.cockpitFull = on;
+    const full = { x: 0, y: 0, w: 1, h: 1 };
+    const inset = { x: FP_VIEW.left, y: FP_VIEW.bottom, w: FP_VIEW.width, h: FP_VIEW.height };
+    const put = (cam: Camera, v: typeof full) => {
+      cam.viewport.x = v.x;
+      cam.viewport.y = v.y;
+      cam.viewport.width = v.w;
+      cam.viewport.height = v.h;
+    };
+    put(this.fpCamera, on ? full : inset);
+    put(this.camera, on ? inset : full);
+    // quem desenha por último fica por cima: o quadro pequeno vai depois
+    this.bScene.activeCameras = on ? [this.fpCamera, this.camera] : [this.camera, this.fpCamera];
+    this.setGlowCamera(on ? this.fpCamera : this.camera);
+    this.updateOrtho();
+    this.hudRenderer.setReticle(on);
+    this.backdrop.setCockpitFull(on);
+  }
+
+  /**
+   * Prende o brilho (GlowLayer) a outra câmera. O Babylon não expõe a troca:
+   * a câmera mora nas opções da camada, na textura principal e no
+   * renderizador de objetos — os três precisam apontar para a mesma, senão o
+   * mapa de brilho é desenhado de um ponto de vista e composto em outro.
+   */
+  private setGlowCamera(cam: Camera): void {
+    const g = this.glow as unknown as {
+      _thinEffectLayer: { camera: Camera; _objectRenderer?: { activeCamera: Camera } };
+      _effectLayerOptions?: { camera: Camera };
+      _mainTexture?: { activeCamera: Camera };
+    };
+    g._thinEffectLayer.camera = cam;
+    if (g._effectLayerOptions) g._effectLayerOptions.camera = cam;
+    if (g._mainTexture) g._mainTexture.activeCamera = cam;
+    if (g._thinEffectLayer._objectRenderer) g._thinEffectLayer._objectRenderer.activeCamera = cam;
+  }
+
   /**
    * Rotação do olho do cockpit no quadro local da nave: visada (+Z da câmera)
    * → nariz (+X) e topo da câmera (+Y) → −Z (em direção à câmera principal),
@@ -1343,7 +1402,14 @@ export class GameScene {
         dz += (dockDz - dz) * dock;
       }
       this.fpCamera.position.copyFromFloats(cockpit.eye.x, cockpit.eye.y, cockpit.eye.z + dz);
-      this.fpCamera.rotationQuaternion = this.fpRotation(FP_SURFACE_PITCH + (FP_CRUISE_PITCH - FP_SURFACE_PITCH) * alt);
+      this.fpPitch = FP_SURFACE_PITCH + (FP_CRUISE_PITCH - FP_SURFACE_PITCH) * alt;
+      this.fpCamera.rotationQuaternion = this.fpRotation(this.fpPitch);
+      if (this.cockpitFull) {
+        // o nariz aponta para o horizonte: com o olho inclinado p (positivo =
+        // para cima), esse ponto fica tan(p)/tan(fov/2) meia-tela abaixo do centro
+        const off = Math.tan(this.fpPitch) / Math.tan(this.fpCamera.fov / 2);
+        this.hudRenderer.setReticle(true, 50 + 50 * off);
+      }
       // farol na mesma cabine, emitindo pelo nariz (direção +X já fixada)
       if (this.headlight.parent !== cockpit.root) this.headlight.parent = cockpit.root;
       this.headlight.position.copyFromFloats(cockpit.eye.x, cockpit.eye.y, cockpit.eye.z);

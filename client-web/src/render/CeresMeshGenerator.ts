@@ -8,13 +8,13 @@
  * Ceres é ESTÁTICA (não gira): as plataformas são pontos fixos do mapa, e o
  * servidor pousa naves nelas pelas mesmas contas.
  *
- * PROFUNDIDADE. A câmera principal é ortográfica e enxerga até z ≈ 5200; com
- * o céu em ≈ 4800 e as estrelas em 4500, uma esfera de 20 000 u de raio seria
- * cortada pelo plano distante e apareceria menor que o círculo de colisão.
- * Então a malha é ACHATADA em Z por CERES_DEPTH_SCALE — só a posição. As
- * NORMAIS continuam as da esfera sem achatar: sob a câmera ortográfica vista
- * de cima, silhueta e luz são as de um corpo redondo com relevo, e a
- * profundidade cabe no orçamento (face visível entre −300 e ~1300 de mundo).
+ * PROFUNDIDADE. Ceres é uma ESFERA CHEIA: o topo fica rente ao plano das
+ * naves e o corpo desce 40 000 u para trás dele. Já foi achatada a 8% para
+ * caber na faixa de profundidade das rochas — vista de cima lia redonda
+ * (normais de esfera), mas o cockpit olha de LADO, e de lado ela era uma
+ * placa fina. Por isso o fundo da vista de cima (lajes de detritos, estrelas,
+ * sol e céu) mora atrás dela (Backdrop.ts, GameScene STAR_DEPTH_Z e maxZ).
+ * CERES_DEPTH_SCALE fica como alavanca, em 1.
  *
  * COORDENADAS: local de CENA (y para cima = −y do jogo; câmera em −Z olhando
  * +Z, então "para fora, em direção à câmera" é −Z). Malha centrada na origem.
@@ -24,8 +24,8 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { CERES_RADIUS, ceresPlatforms, mulberry32 } from "@ceres/shared";
 import { icosphere } from "./AsteroidMeshGenerator";
 
-/** achatamento em Z da posição (as normais são as da esfera cheia) */
-export const CERES_DEPTH_SCALE = 0.08;
+/** achatamento em Z da posição (1 = esfera cheia; ver PROFUNDIDADE acima) */
+export const CERES_DEPTH_SCALE = 1;
 /**
  * subdivisões da icosfera: ~82 000 facetas, arestas de ~350 u — ainda low poly
  * na tela (35–90 px nos zooms do jogo), mas fino o bastante para crateras

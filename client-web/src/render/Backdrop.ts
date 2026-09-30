@@ -65,10 +65,13 @@ import { SUN_SCREEN } from "./Lighting";
 import { generateAsteroidMesh } from "./AsteroidMeshGenerator";
 
 // ── geometria de profundidade (Z LOCAL À CÂMERA; a câmera vive em z=−1000) ──
-// Ordem obrigatória: plano de jogo (~−300 mundo = 700 local) < detritos <
-// estrelas < céu, e o céu dentro do far plane (GameScene usa maxZ = 6200).
-const SKY_Z = 5800;
-const SUN_Z = 5750;
+// Ordem obrigatória: plano de jogo (~−300 mundo = 700 local) < Ceres < detritos
+// < estrelas < céu, e o céu dentro do far plane (GameScene usa maxZ = 42 500).
+// Ceres é uma esfera cheia que desce até ~39 700 de mundo (40 700 local): o
+// fundo mora ATRÁS dela, senão lajes, estrelas e céu cobririam a borda dela.
+// Em ortográfica a profundidade não muda tamanho nem posição na tela.
+const SKY_Z = 42_000;
+const SUN_Z = 41_950;
 /**
  * z por camada — PRIMEIRO PLANO, perto, médio, fundo.
  *
@@ -79,7 +82,7 @@ const SUN_Z = 5750;
  * bordas inferiores, onde nada de decisivo acontece. Sem uma massa assim, um
  * quadro não tem primeiro plano — tem só assunto e fundo.
  */
-const TIER_Z = [420, 2600, 3700, 4400];
+const TIER_Z = [420, 41_000, 41_400, 41_800];
 /**
  * Profundidade ENCENADA de cada camada, na mesma escala de Aerial.ts. Começa
  * em ROCK_T_MAX porque as lajes estão de fato ATRÁS de qualquer rocha: a
@@ -140,9 +143,14 @@ const SKY_SUN_UV = {
  * esquerda saiu como "mancha" no julgamento anterior.
  */
 const TIER_MAX_THICK = [340, 1700, 1400, 1250];
-/** tamanho do quadro de fundo do cockpit (cobre o frustum da fpCamera em z=4500) */
-const COCKPIT_Z = 4500;
-const COCKPIT_SIZE = 13_000;
+/**
+ * Quadro de fundo do cockpit: a 110 000 u do olho, atrás de tudo que o
+ * cockpit alcança (maxZ 120 000 — Ceres inteira no horizonte). O tamanho
+ * cresce na mesma proporção da distância (era 13 000 a 4 500) para cobrir o
+ * frustum também em tela cheia.
+ */
+const COCKPIT_Z = 110_000;
+const COCKPIT_SIZE = 320_000;
 /** distância do quadro de esfumaçamento ao olho da fpCamera (minZ = 2) */
 const FADE_Z = 20;
 /**
@@ -421,6 +429,15 @@ export class Backdrop {
    * hoje e sairia do lugar no dia em que o recorte mudar. Recalculado em
    * `resize()` porque a proporção muda quando a janela muda.
    */
+  /**
+   * Vista de cockpit em tela cheia: o esmaecimento de borda existe para fundir
+   * o RECORTE pequeno com a cena em volta; em tela cheia não há borda, e ele
+   * virava um anel manchado no meio da vista.
+   */
+  setCockpitFull(on: boolean): void {
+    this.fade?.setEnabled(!on);
+  }
+
   private fitFade(): void {
     const fade = this.fade;
     const cam = this.fpCam;
@@ -856,8 +873,10 @@ function paintSky(scene: Scene): DynamicTexture {
  * O visor passa a ler como uma janela para a MESMA cena.
  */
 function paintCockpitSky(scene: Scene): DynamicTexture {
-  const W = 256;
-  const H = 256;
+  // 1024: o céu do cockpit também vira fundo de TELA CHEIA (vista de cockpit,
+  // tecla V) — com 256 px o pontilhado ampliado virava borrões
+  const W = 1024;
+  const H = 1024;
   const tex = new DynamicTexture("cockpitSkyTex", { width: W, height: H }, scene, false);
   const ctx = tex.getContext() as unknown as CanvasRenderingContext2D;
   const rng = mulberry32(0x0cbb17);
@@ -881,12 +900,13 @@ function paintCockpitSky(scene: Scene): DynamicTexture {
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, W, H);
 
-  for (let i = 0; i < 130; i++) {
+  // densidade e tamanho de ponto proporcionais à resolução (eram 130 de 1 px em 256)
+  for (let i = 0; i < 520; i++) {
     const level = 0.12 + Math.pow(rng(), 2.6) * 0.7;
     // menos estrelas embaixo: é onde a névoa é densa
     const py = Math.pow(rng(), 0.7) * H * 0.86;
     ctx.fillStyle = css(0xdfe8ff, level * 0.8);
-    ctx.fillRect(rng() * W, py, 1, 1);
+    ctx.fillRect(rng() * W, py, 2, 2);
   }
 
   ctx.globalCompositeOperation = "source-over";
