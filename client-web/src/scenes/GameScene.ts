@@ -34,6 +34,9 @@ import {
   SHIP_PRODUCTION,
   DOCK_RANGE,
   ATTACK_ZONE_MARGIN,
+  CERES_PLATFORM_PREFIX,
+  ceresPlatforms,
+  ceresPlatformPos,
   STRUCTURE_SPECS,
   STATION_ORE_STORE,
   CERES_RADIUS,
@@ -870,6 +873,8 @@ export class GameScene {
       } else {
         this.inLandZone = false;
       }
+      // plataforma de Ceres: pousa-se nela como num asteroide vazio
+      if (!this.inLandZone && this.nearCeresPad(DOCK_RANGE)) this.inLandZone = true;
     } else {
       this.inLandZone = false;
     }
@@ -1222,11 +1227,31 @@ export class GameScene {
   }
 
   /**
+   * Plataforma de Ceres mais próxima cuja borda está a até `maxEdge` da nave
+   * própria (shared/ceres.ts — posições fixas, as mesmas do servidor).
+   */
+  private nearCeresPad(maxEdge: number): { pos: WorldPos; radius: number } | null {
+    if (!this.localShip) return null;
+    let best: { pos: WorldPos; radius: number } | null = null;
+    let bestEdge = maxEdge;
+    for (const p of ceresPlatforms(this.worldSeed)) {
+      const pos = ceresPlatformPos(this.worldSeed, p);
+      const edge = dist(this.localShip, pos) - p.radius;
+      if (edge <= bestEdge) {
+        bestEdge = edge;
+        best = { pos, radius: p.radius };
+      }
+    }
+    return best;
+  }
+
+  /**
    * z de cena do chão em que a nave própria está atracada (ou pousando): a
    * base do prédio da estrutura, ou a plataforma do asteroide vazio.
    */
   private dockFloorZ(s: ServerShip): number | null {
     if (s.hqId) return this.structureRenderer.platformZ(s.hqId);
+    if (s.anchoredAsteroidId.startsWith(CERES_PLATFORM_PREFIX)) return this.planetRenderer.platformZ(s.anchoredAsteroidId);
     if (s.anchoredAsteroidId) return this.asteroidRenderer.platformZ(s.anchoredAsteroidId);
     return null;
   }
@@ -1320,7 +1345,7 @@ export class GameScene {
     // Ceres: posição e rotação via renderer
     if (this.ceres) {
       const cp = this.toRender(this.ceres);
-      this.planetRenderer.tick(cp, tt);
+      this.planetRenderer.tick(cp);
     }
 
     // início do frame de efeitos
@@ -1448,6 +1473,13 @@ export class GameScene {
         const zoneRadius = landZoneAst.radius + DOCK_RANGE;
         const ap = this.toRender(landZoneAst);
         this.effectsRenderer.drawLandZone(ap.x, ap.y, zoneRadius, tt);
+      } else {
+        // perto de uma plataforma de Ceres: o aro de pouso dela
+        const pad = this.nearCeresPad(DOCK_RANGE * 2);
+        if (pad) {
+          const pp = this.toRender(pad.pos);
+          this.effectsRenderer.drawLandZone(pp.x, pp.y, pad.radius + DOCK_RANGE, tt);
+        }
       }
     }
 

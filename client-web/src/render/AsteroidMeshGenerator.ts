@@ -103,7 +103,7 @@ const PAD_HALF_H_FRAC = 0.22;
 
 // ── icosfera base (compartilhada e cacheada por nível de subdivisão) ────────
 
-interface IcoSphere {
+export interface IcoSphere {
   /** direções unitárias */
   dirs: Vector3[];
   faces: number[];
@@ -111,7 +111,7 @@ interface IcoSphere {
 
 const icoCache = new Map<number, IcoSphere>();
 
-function icosphere(subdiv: number): IcoSphere {
+export function icosphere(subdiv: number): IcoSphere {
   const cached = icoCache.get(subdiv);
   if (cached) return cached;
 

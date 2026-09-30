@@ -49,6 +49,9 @@ import {
   CERES_RADIUS,
   SHIP_RADIUS,
   bayWorldPos,
+  ceresPlatforms,
+  ceresPlatformPos,
+  type CeresPlatform,
   asteroidClassOf,
   mulberry32,
   asteroidSpinRate,
@@ -468,6 +471,8 @@ export class MatchRoom extends Room<MatchState> {
    *    · perto (DOCK_RANGE) de estação própria: pousa na primeira vaga livre
    *      compatível com a classe;
    *    · perto de asteroide vazio, builder e mineração: pousam no centro dele;
+   *    · perto de uma plataforma de Ceres, builder e mineração: pousam no
+   *      centro dela (shared/ceres.ts — áreas planas fixas, Ceres não gira);
    *    · nave de ataque dentro da zona de uma estação inimiga: modo ataque — a
    *      zona é a mesma que a mantém nele, então ela não é expulsa ao entrar;
    *    · sobre Ceres, ou sobre uma rocha que não seja de estação própria:
@@ -510,6 +515,19 @@ export class MatchRoom extends Room<MatchState> {
     const ownNear = this.nearestOwnStructure(sessionId, ship, DOCK_RANGE);
     if (ownNear && this.landAtBay(ship, ownNear)) return;
 
+    // plataforma de Ceres: como um asteroide vazio — builder e mineração
+    // pousam no centro da área plana mais próxima
+    if (ship.kind === "builder" || ship.kind === "mining") {
+      const pad = this.ceresPlatformNear(ship);
+      if (pad) {
+        this.startLanding(ship, ceresPlatformPos(this.sim.seed, pad), 0);
+        ship.anchoredAsteroidId = pad.id;
+        ship.hqId = "";
+        ship.bay = -1;
+        return;
+      }
+    }
+
     if (ship.kind === "attack") {
       const target = this.enemyStationZoneAt(ship, sessionId);
       if (target) {
@@ -527,6 +545,20 @@ export class MatchRoom extends Room<MatchState> {
       if (!ownRock) return;
     }
     beginLayerChange(ship, "surface");
+  }
+
+  /** Plataforma de Ceres cuja borda está a até DOCK_RANGE da nave (a mais próxima). */
+  private ceresPlatformNear(ship: ShipState): CeresPlatform | null {
+    let best: CeresPlatform | null = null;
+    let bestEdge = DOCK_RANGE;
+    for (const p of ceresPlatforms(this.sim.seed)) {
+      const edge = dist(ship, ceresPlatformPos(this.sim.seed, p)) - p.radius;
+      if (edge <= bestEdge) {
+        bestEdge = edge;
+        best = p;
+      }
+    }
+    return best;
   }
 
   /**

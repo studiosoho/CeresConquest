@@ -1,118 +1,117 @@
 /**
- * PlanetRenderer — Ceres como malha GreasedLine construída uma vez
- * (contorno duplo + crateras + núcleo mineral), só transform por frame.
- * Substitui o pipeline de RenderTexture do Phaser: a geometria é construída
- * direto em unidades de mundo (CERES_RADIUS) — não precisa mais do conceito
- * de "raio de textura" separado, que só existia por causa do raster.
+ * PlanetRenderer — Ceres como corpo SÓLIDO low poly (CeresMeshGenerator):
+ * relevo craterado cinza, facetado como as rochas e iluminado pelo mesmo rig,
+ * com as plataformas de construção escavadas como mesas planas. Construída
+ * uma vez; por quadro só acompanha a origem flutuante — Ceres é ESTÁTICA
+ * (não gira), porque as plataformas são pontos fixos do mapa onde as naves
+ * pousam (shared/ceres.ts).
  */
 
 import type { Scene } from "@babylonjs/core/scene";
 import type { GlowLayer } from "@babylonjs/core/Layers/glowLayer";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
-import type { GreasedLineBaseMesh } from "@babylonjs/core/Meshes/GreasedLine/greasedLineBaseMesh";
-import { CERES_RADIUS, mulberry32 } from "@ceres/shared";
-import { Palette } from "./Palette";
-import { createLineBundle, disposeLineBundle, circlePts, type LinePart } from "./lineUtils";
-import { toScene, toSceneAngle } from "./coords";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
+import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { generateCeresMesh } from "./CeresMeshGenerator";
+import { toScene } from "./coords";
+import { ROCK_FRONT_REACH } from "./layers";
 
-const R = CERES_RADIUS;
-const CONTOUR_PX = 2.2;
-const CRATER_PX = 1.3;
-const CORE_PX = 1.6;
-const CRATER_DIM = 0.5;
-const INNER_RING_DIM = 0.5;
-const CORE_TICK_DIM = 0.5;
-/** mesma semente usada no Phaser original */
-const CRATER_SEED_XOR = 0xce7e5;
-/** velocidade angular decorativa (rad/s no espaço do jogo) */
-const SPIN_RATE = 0.008;
+/**
+ * Ambiente do regolito: o lado de sombra fica cinza-escuro NEUTRO, não preto.
+ * Ceres fica fora do preenchimento e do rim do rig (CERES_EXCLUDED_LIGHTS):
+ * o preenchimento é azul e o rim esverdeado, e nela os dois pintavam o lado
+ * de sombra de azul saturado — Ceres é cinza de regolito, só a chave a molda.
+ */
+const CERES_AMBIENT = new Color3(0.4, 0.4, 0.41);
+const CERES_EXCLUDED_LIGHTS = ["fillLight", "rimLight"];
 
 export class PlanetRenderer {
   private scene: Scene;
   private glow: GlowLayer;
   private root: TransformNode | null = null;
-  private contour: GreasedLineBaseMesh | null = null;
-  private craters: GreasedLineBaseMesh | null = null;
-  private core: GreasedLineBaseMesh | null = null;
+  private body: Mesh | null = null;
+  private material: StandardMaterial | null = null;
+  /** z de cena de cada plataforma, por id (para o olho do cockpit pousado) */
+  private platformLocalZ = new Map<string, number>();
 
   constructor(scene: Scene, glow: GlowLayer) {
     this.scene = scene;
     this.glow = glow;
   }
 
-  /** Constrói a geometria de Ceres a partir da semente do mundo. Chamar uma vez. */
+  /** Constrói Ceres a partir da semente do mundo. Chamar uma vez. */
   init(worldSeed: number): void {
     if (this.root) return;
-    const p = Palette.ceres;
+    const data = generateCeresMesh(worldSeed);
 
     this.root = new TransformNode("ceres", this.scene);
+    // a frente (o ponto mais perto da câmera) fica rente ao limite das rochas:
+    // naves e efeitos, em z ≤ −318, sempre por cima (ver layers.ts)
+    this.root.position.z = -ROCK_FRONT_REACH - data.minZ;
 
-    // contorno duplo (borda + anel interno)
-    const contourParts: LinePart[] = [
-      { pts: circlePts(0, 0, R * 0.985, 48), closed: true, color: p.body },
-      { pts: circlePts(0, 0, R * 0.94, 48), closed: true, color: p.body, dim: INNER_RING_DIM },
-    ];
-    this.contour = createLineBundle("ceres_contour", this.scene, contourParts, {
-      baseWidth: CONTOUR_PX,
-      sizeAttenuation: true,
-      glow: this.glow,
-    });
-    this.contour.parent = this.root;
+    const body = new Mesh("ceres_body", this.scene);
+    const vd = new VertexData();
+    vd.positions = flatten3(data.vertices);
+    vd.normals = flatten3(data.normals);
+    vd.colors = data.colors;
+    vd.indices = data.triangles;
+    vd.applyToMesh(body);
+    body.isPickable = false;
+    body.parent = this.root;
 
-    // crateras
-    const crng = mulberry32((worldSeed ^ CRATER_SEED_XOR) >>> 0);
-    const craterParts: LinePart[] = [];
-    for (let i = 0; i < 9; i++) {
-      const ang = crng() * Math.PI * 2;
-      const rr = R * (0.25 + crng() * 0.55);
-      const cr = R * (0.04 + crng() * 0.09);
-      craterParts.push({
-        pts: circlePts(Math.cos(ang) * rr, Math.sin(ang) * rr, cr, 20),
-        closed: true,
-        color: p.crater,
-        dim: CRATER_DIM,
-      });
-    }
-    this.craters = createLineBundle("ceres_craters", this.scene, craterParts, {
-      baseWidth: CRATER_PX,
-      sizeAttenuation: true,
-      glow: this.glow,
-    });
-    this.craters.parent = this.root;
+    const mat = new StandardMaterial("ceres_regolith", this.scene);
+    mat.diffuseColor = Color3.White(); // a cor vem das facetas (cor de vértice)
+    mat.ambientColor = CERES_AMBIENT;
+    // sem brilho especular: em faceta chapada ele só denuncia o polígono
+    mat.specularColor = Color3.Black();
+    mat.backFaceCulling = false;
+    body.material = mat;
+    // nada que brilhe fica atrás de Ceres: fora do mapa de glow (ver o
+    // mesmo raciocínio nas rochas, AsteroidRenderer)
+    this.glow.addExcludedMesh(body);
+    for (const name of CERES_EXCLUDED_LIGHTS) this.scene.getLightByName(name)?.excludedMeshes.push(body);
 
-    // núcleo mineral: anel central + cruz de mira
-    const coreParts: LinePart[] = [
-      { pts: circlePts(0, 0, R * 0.16, 24), closed: true, color: p.core },
-      { pts: [{ x: -R * 0.22, y: 0 }, { x: -R * 0.1, y: 0 }], color: p.core, dim: CORE_TICK_DIM },
-      { pts: [{ x: R * 0.1, y: 0 }, { x: R * 0.22, y: 0 }], color: p.core, dim: CORE_TICK_DIM },
-      { pts: [{ x: 0, y: -R * 0.22 }, { x: 0, y: -R * 0.1 }], color: p.core, dim: CORE_TICK_DIM },
-      { pts: [{ x: 0, y: R * 0.1 }, { x: 0, y: R * 0.22 }], color: p.core, dim: CORE_TICK_DIM },
-    ];
-    this.core = createLineBundle("ceres_core", this.scene, coreParts, {
-      baseWidth: CORE_PX,
-      sizeAttenuation: true,
-      glow: this.glow,
-    });
-    this.core.parent = this.root;
+    this.body = body;
+    this.material = mat;
+    for (const p of data.platforms) this.platformLocalZ.set(p.id, p.z);
   }
 
-  /** Posiciona/gira Ceres (pos em coordenadas de render do jogo). */
-  tick(pos: { x: number; y: number }, tt: number): void {
+  /** Posiciona Ceres (pos em coordenadas de render do jogo). Estática: sem giro. */
+  tick(pos: { x: number; y: number }): void {
     if (!this.root) return;
     const p = toScene(pos.x, pos.y);
     this.root.position.x = p.x;
     this.root.position.y = p.y;
-    this.root.rotation.z = toSceneAngle(tt * SPIN_RATE);
+  }
+
+  /** z de cena (mundo) do chão de uma plataforma de Ceres, ou null. */
+  platformZ(id: string): number | null {
+    const z = this.platformLocalZ.get(id);
+    return z === undefined || !this.root ? null : this.root.position.z + z;
   }
 
   destroy(): void {
-    if (this.contour) disposeLineBundle(this.contour, this.glow);
-    if (this.craters) disposeLineBundle(this.craters, this.glow);
-    if (this.core) disposeLineBundle(this.core, this.glow);
+    if (this.body) {
+      this.glow.removeExcludedMesh(this.body);
+      this.body.dispose();
+    }
+    this.material?.dispose();
     this.root?.dispose();
     this.root = null;
-    this.contour = null;
-    this.craters = null;
-    this.core = null;
+    this.body = null;
+    this.material = null;
+    this.platformLocalZ.clear();
   }
+}
+
+function flatten3(vs: { x: number; y: number; z: number }[]): number[] {
+  const out = new Array<number>(vs.length * 3);
+  for (let i = 0; i < vs.length; i++) {
+    out[i * 3] = vs[i].x;
+    out[i * 3 + 1] = vs[i].y;
+    out[i * 3 + 2] = vs[i].z;
+  }
+  return out;
 }

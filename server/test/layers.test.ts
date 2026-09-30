@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CERES_RADIUS,
+  CERES_PLATFORM_COUNT,
+  ceresPlatforms,
+  ceresPlatformPos,
   DOCK_RANGE,
   HQ_EXPANDED_BAYS,
   HQ_SHIP_BAYS,
@@ -410,5 +413,50 @@ describe("cenário de teste", () => {
     const before = { ...s };
     run(r, 1);
     expect(dist(s, before)).toBeLessThan(1);
+  });
+});
+
+describe("plataformas de Ceres", () => {
+  const pads = ceresPlatforms(SEED);
+
+  it("ficam dentro de Ceres, longe da borda, sem se sobrepor, e são as mesmas para a mesma semente", () => {
+    expect(pads.length).toBe(CERES_PLATFORM_COUNT);
+    for (const p of pads) {
+      const r = Math.hypot(p.dx, p.dy);
+      expect(r + p.radius).toBeLessThan(CERES_RADIUS * 0.9);
+    }
+    for (let i = 0; i < pads.length; i++) {
+      for (let j = i + 1; j < pads.length; j++) {
+        const d = Math.hypot(pads[i].dx - pads[j].dx, pads[i].dy - pads[j].dy);
+        expect(d).toBeGreaterThan(pads[i].radius + pads[j].radius);
+      }
+    }
+    expect(ceresPlatforms(SEED)).toEqual(pads);
+  });
+
+  it("[F] perto de uma plataforma: o builder pousa no centro dela, na superfície, e decola", () => {
+    const { r } = makeRoom();
+    const pad = pads[0];
+    const center = ceresPlatformPos(SEED, pad);
+    const s = pilot(r, "p1", "builder", { ...center, x: center.x + pad.radius + DOCK_RANGE * 0.5 });
+    r.tryToggleAnchor("p1");
+    expect(s.landingPhase).toBe("landing");
+    run(r, 1.6);
+    expect(s.landingPhase).toBe("landed");
+    expect(s.layer).toBe("surface");
+    expect(s.anchoredAsteroidId).toBe(pad.id);
+    samePos(s, center);
+    r.tryToggleAnchor("p1");
+    expect(s.landingPhase).toBe("");
+    expect(s.layerTo).toBe("cruise");
+  });
+
+  it("nave de ataque sobre a plataforma não pousa nem desce (Ceres é sólida na superfície)", () => {
+    const { r } = makeRoom();
+    const center = ceresPlatformPos(SEED, pads[0]);
+    const s = pilot(r, "p1", "attack", center);
+    r.tryToggleAnchor("p1");
+    expect(s.landingPhase).toBe("");
+    expect(s.layerTo).toBe("");
   });
 });

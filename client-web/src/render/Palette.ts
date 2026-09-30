@@ -240,9 +240,9 @@ export const Palette = {
   },
 
   ceres: {
-    body: 0xe0b34c,   // dourado — marco do mapa
-    crater: 0xc99a38,
-    core: 0xffe066,
+    // cinza de regolito — o corpo 3D tem o próprio tom (CeresMeshGenerator);
+    // este é o do marcador no minimapa
+    body: 0xa9a6a0,
   },
 
   structure: {
