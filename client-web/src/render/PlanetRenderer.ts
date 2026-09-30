@@ -14,7 +14,10 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { ceresPlatforms } from "@ceres/shared";
 import { generateCeresMesh } from "./CeresMeshGenerator";
+import type { AsteroidBuildFace } from "./AsteroidMeshGenerator";
 import { toScene } from "./coords";
 import { ROCK_FRONT_REACH } from "./layers";
 
@@ -35,6 +38,8 @@ export class PlanetRenderer {
   private material: StandardMaterial | null = null;
   /** z de cena de cada plataforma, por id (para o olho do cockpit pousado) */
   private platformLocalZ = new Map<string, number>();
+  /** centro XY (cena, no quadro do root) e raio de cada plataforma */
+  private platformXY = new Map<string, { x: number; y: number; radius: number }>();
 
   constructor(scene: Scene, glow: GlowLayer) {
     this.scene = scene;
@@ -76,6 +81,7 @@ export class PlanetRenderer {
     this.body = body;
     this.material = mat;
     for (const p of data.platforms) this.platformLocalZ.set(p.id, p.z);
+    for (const p of ceresPlatforms(worldSeed)) this.platformXY.set(p.id, { x: p.dx, y: -p.dy, radius: p.radius });
   }
 
   /** Posiciona Ceres (pos em coordenadas de render do jogo). Estática: sem giro. */
@@ -92,6 +98,30 @@ export class PlanetRenderer {
     return z === undefined || !this.root ? null : this.root.position.z + z;
   }
 
+  /**
+   * Face de construção de uma plataforma, no formato das rochas
+   * (AsteroidRenderer.getBuildFace) mais a ÂNCORA: a estrutura fica no centro
+   * da plataforma, não no do planeta. A mesa é horizontal (normal para a
+   * câmera), e Ceres não gira — a estrutura parentada fica parada no mundo.
+   */
+  getBuildFace(id: string): { root: TransformNode; face: AsteroidBuildFace; anchor: { x: number; y: number } } | null {
+    const z = this.platformLocalZ.get(id);
+    const xy = this.platformXY.get(id);
+    if (z === undefined || !xy || !this.root) return null;
+    return {
+      root: this.root,
+      face: {
+        center: new Vector3(xy.x, xy.y, z),
+        normal: new Vector3(0, 0, -1),
+        tangent: new Vector3(1, 0, 0),
+        bitangent: new Vector3(0, -1, 0), // n × t, como nas rochas
+        width: xy.radius * 2,
+        height: xy.radius * 2,
+      },
+      anchor: { x: xy.x, y: xy.y },
+    };
+  }
+
   destroy(): void {
     if (this.body) {
       this.glow.removeExcludedMesh(this.body);
@@ -103,6 +133,7 @@ export class PlanetRenderer {
     this.body = null;
     this.material = null;
     this.platformLocalZ.clear();
+    this.platformXY.clear();
   }
 }
 

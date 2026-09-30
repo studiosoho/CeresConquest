@@ -1412,7 +1412,9 @@ export class GameScene {
       for (const s of this.serverShips.values()) {
         if (s.stored && s.hqId === id && s.bay >= 0 && s.bay < occupants.length) occupants[s.bay] = s.kind;
       }
-      const attach = st.asteroidId ? this.asteroidRenderer.getBuildFace(st.asteroidId) : null;
+      const attach = !st.asteroidId ? null
+        : st.asteroidId.startsWith(CERES_PLATFORM_PREFIX) ? this.planetRenderer.getBuildFace(st.asteroidId)
+        : this.asteroidRenderer.getBuildFace(st.asteroidId);
       this.structureRenderer.upsert({
         id, stype: st.stype,
         shipBays: st.shipBays, expandedBays: st.expandedBays,

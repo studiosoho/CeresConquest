@@ -57,6 +57,12 @@ export interface StructureRenderData {
 export interface StructureAttach {
   root: TransformNode;
   face: AsteroidBuildFace;
+  /**
+   * XY (cena, no quadro do root) do CENTRO da estrutura. Ausente = a origem do
+   * root: no asteroide a estrutura fica no centro dele; numa plataforma de
+   * Ceres, no centro da plataforma, longe do centro do planeta.
+   */
+  anchor?: { x: number; y: number };
 }
 
 const WIRE_PX = 1.1;
@@ -90,6 +96,8 @@ interface StructEntry {
   angle: number;
   /** quadro da plataforma em que o prédio assentou (para achar as vagas nela) */
   face: AsteroidBuildFace | null;
+  /** centro da estrutura no quadro do root hospedeiro (ver StructureAttach.anchor) */
+  anchor: { x: number; y: number };
 }
 
 export class StructureRenderer {
@@ -211,7 +219,7 @@ export class StructureRenderer {
       radius: STRUCTURE_SPECS[data.stype].radius,
       height: gen.height,
       shipBays: data.shipBays, expandedBays: data.expandedBays,
-      angle: data.angle, face: null,
+      angle: data.angle, face: null, anchor: { x: 0, y: 0 },
     };
   }
 
@@ -232,8 +240,11 @@ export class StructureRenderer {
     const t = dir.subtract(n.scale(Vector3.Dot(dir, n))).normalize();
     // base ortonormal {t, b, n} com det +1 (b = n×t) → rotação própria
     const b = Vector3.Cross(n, t).normalize();
-    const origin = new Vector3(0, 0, Vector3.Dot(face.center, n) / n.z);
+    // ponto do plano da plataforma sobre o centro da estrutura (âncora)
+    const a = attach.anchor ?? { x: 0, y: 0 };
+    const origin = new Vector3(a.x, a.y, (Vector3.Dot(face.center, n) - n.x * a.x - n.y * a.y) / n.z);
     entry.face = face;
+    entry.anchor = a;
     entry.root.position = origin.add(n.scale(0.5));
     const m = Matrix.FromValues(
       t.x, t.y, t.z, 0,
@@ -275,8 +286,8 @@ export class StructureRenderer {
     const ax = Vector3.TransformNormal(new Vector3(1, 0, 0), m);
     const ay = Vector3.TransformNormal(new Vector3(0, 1, 0), m);
     const az = Vector3.TransformNormal(new Vector3(0, 0, z * entry.root.scaling.z), m);
-    const tx = gx - entry.root.position.x - az.x;
-    const ty = -gy - entry.root.position.y - az.y;
+    const tx = entry.anchor.x + gx - entry.root.position.x - az.x;
+    const ty = entry.anchor.y - gy - entry.root.position.y - az.y;
     // [ax.xy ay.xy]·(u, v) = alvo — a plataforma inclina no máximo MAX_TILT,
     // então o determinante fica longe de zero
     const det = ax.x * ay.y - ay.x * ax.y;

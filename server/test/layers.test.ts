@@ -460,3 +460,71 @@ describe("plataformas de Ceres", () => {
     expect(s.layerTo).toBe("");
   });
 });
+
+describe("construção nas plataformas de Ceres", () => {
+  const pads = ceresPlatforms(SEED);
+  /** Builder pousado no centro da plataforma `i`, com minério para construir. */
+  function landedOn(i: number) {
+    const { r } = makeRoom();
+    const pad = pads[i];
+    const center = ceresPlatformPos(SEED, pad);
+    const s = pilot(r, "p1", "builder", { ...center, x: center.x + pad.radius + DOCK_RANGE * 0.5 });
+    r.tryToggleAnchor("p1");
+    run(r, 1.6);
+    expect(s.landingPhase).toBe("landed");
+    r.sim.addOre("p1", 10_000);
+    return { r, s, pad, center };
+  }
+
+  it("estação de mineração: no centro da plataforma, virada para fora de Ceres, e o builder vai para a vaga", () => {
+    const { r, s, pad, center } = landedOn(0);
+    r.tryLandAction("p1", "buildmine");
+    const st = [...r.sim.structures.values()].find((x) => x.asteroidId === pad.id)!;
+    expect(st).toBeDefined();
+    expect(st.type).toBe("miningStation");
+    samePos(st, center);
+    expect(st.angle).toBeCloseTo(Math.atan2(pad.dy, pad.dx), 12);
+    run(r, 1.6);
+    expect(s.anchored).toBe(true);
+    expect(s.hqId).toBe(st.id);
+    samePos(s, bayWorldPos(st, s.bay)!);
+  });
+
+  it("QG e centro de rações também; uma estrutura por plataforma", () => {
+    const hq = landedOn(1);
+    hq.r.tryLandAction("p1", "buildhq");
+    expect([...hq.r.sim.structures.values()].some((x) => x.asteroidId === hq.pad.id && x.type === "hq")).toBe(true);
+    const ration = landedOn(2);
+    ration.r.tryLandAction("p1", "buildration");
+    ration.r.tryLandAction("p1", "buildhq"); // já ocupada: não constrói de novo
+    const onPad = [...ration.r.sim.structures.values()].filter((x) => x.asteroidId === ration.pad.id);
+    expect(onPad.map((x) => x.type)).toEqual(["rationCenter"]);
+  });
+
+  it("[F] perto da plataforma com estação própria pousa na vaga livre (qualquer classe)", () => {
+    const { r, pad, center } = landedOn(0);
+    r.tryLandAction("p1", "buildmine");
+    run(r, 1.6);
+    const st = [...r.sim.structures.values()].find((x) => x.asteroidId === pad.id)!;
+    const t = pilot(r, "p1", "transport", { ...center, x: center.x - pad.radius - DOCK_RANGE * 0.5 });
+    r.tryToggleAnchor("p1");
+    expect(t.landingPhase).toBe("landing");
+    run(r, 1.6);
+    expect(t.anchored).toBe(true);
+    samePos(t, bayWorldPos(st, t.bay)!);
+  });
+
+  it("estação inimiga numa plataforma: não se pousa nela; a nave de ataque entra em modo ataque", () => {
+    const { r, pad, center } = landedOn(0);
+    r.tryLandAction("p1", "buildmine");
+    run(r, 1.6);
+    const b = pilot(r, "p2", "builder", { ...center, x: center.x + pad.radius + DOCK_RANGE * 0.5 });
+    r.tryToggleAnchor("p2");
+    expect(b.landingPhase).toBe("");
+    const a = pilot(r, "p2", "attack", { ...center, x: center.x + pad.radius * 0.5 });
+    r.tryToggleAnchor("p2");
+    expect(a.layerTo).toBe("attack");
+    run(r, LAYER_TRANSITION_TIME + DT);
+    expect(a.layer).toBe("attack");
+  });
+});

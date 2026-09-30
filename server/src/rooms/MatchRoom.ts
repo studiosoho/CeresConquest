@@ -51,6 +51,8 @@ import {
   bayWorldPos,
   ceresPlatforms,
   ceresPlatformPos,
+  CERES_PLATFORM_PREFIX,
+  type AsteroidClass,
   type CeresPlatform,
   asteroidClassOf,
   mulberry32,
@@ -515,11 +517,15 @@ export class MatchRoom extends Room<MatchState> {
     const ownNear = this.nearestOwnStructure(sessionId, ship, DOCK_RANGE);
     if (ownNear && this.landAtBay(ship, ownNear)) return;
 
-    // plataforma de Ceres: como um asteroide vazio — builder e mineração
-    // pousam no centro da área plana mais próxima
-    if (ship.kind === "builder" || ship.kind === "mining") {
-      const pad = this.ceresPlatformNear(ship);
-      if (pad) {
+    // plataforma de Ceres: com estrutura PRÓPRIA, pousa na vaga livre dela (o
+    // alcance é a área da plataforma, não o centro do prédio); VAZIA, é como um
+    // asteroide vazio — builder e mineração pousam no centro; com estrutura
+    // inimiga, não pousa (a nave de ataque cai no modo ataque, abaixo)
+    const pad = this.ceresPlatformNear(ship);
+    if (pad) {
+      const built = [...this.sim.structures.values()].find((st) => st.asteroidId === pad.id);
+      if (built?.owner === sessionId && this.landAtBay(ship, built)) return;
+      if (!built && (ship.kind === "builder" || ship.kind === "mining")) {
         this.startLanding(ship, ceresPlatformPos(this.sim.seed, pad), 0);
         ship.anchoredAsteroidId = pad.id;
         ship.hqId = "";
@@ -547,6 +553,45 @@ export class MatchRoom extends Room<MatchState> {
     beginLayerChange(ship, "surface");
   }
 
+  /**
+   * Local de construção em que a nave está POUSADA: o asteroide vazio (pelo
+   * id guardado no pouso) ou uma plataforma de Ceres. Devolve posição, id,
+   * raio, classe e a orientação da estrutura: no asteroide, virada para onde a
+   * nave estava; na plataforma de Ceres (a nave pousa no centro), para FORA de
+   * Ceres — a fileira de vagas fica do lado da borda. null se não achar.
+   */
+  private landedSite(ship: ShipState): (WorldPos & { id: string; radius: number; cls: AsteroidClass; angle: number }) | null {
+    const id = ship.anchoredAsteroidId;
+    if (!id) return null;
+    if (id.startsWith(CERES_PLATFORM_PREFIX)) {
+      const pad = ceresPlatforms(this.sim.seed).find((p) => p.id === id);
+      if (!pad) return null;
+      const pos = ceresPlatformPos(this.sim.seed, pad);
+      return { ...pos, id, radius: pad.radius, cls: asteroidClassOf(pad.radius), angle: Math.atan2(pad.dy, pad.dx) };
+    }
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        for (const a of sectorAsteroids(this.sim.seed, ship.sx + ox, ship.sy + oy)) {
+          if (a.id !== id) continue;
+          const { dx, dy } = relVec(a, ship);
+          return { sx: a.sx, sy: a.sy, x: a.x, y: a.y, id, radius: a.radius, cls: asteroidClassOf(a.radius), angle: Math.atan2(dy, dx) };
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Raio do local que hospeda a estrutura — o asteroide, ou a plataforma de
+   * Ceres — ou null se não achar. É a zona do modo ataque e o chão da aranha.
+   */
+  private siteRadius(st: Structure): number | null {
+    if (st.asteroidId.startsWith(CERES_PLATFORM_PREFIX)) {
+      return ceresPlatforms(this.sim.seed).find((p) => p.id === st.asteroidId)?.radius ?? null;
+    }
+    return sectorAsteroids(this.sim.seed, st.sx, st.sy).find((a) => a.id === st.asteroidId)?.radius ?? null;
+  }
+
   /** Plataforma de Ceres cuja borda está a até DOCK_RANGE da nave (a mais próxima). */
   private ceresPlatformNear(ship: ShipState): CeresPlatform | null {
     let best: CeresPlatform | null = null;
@@ -568,9 +613,9 @@ export class MatchRoom extends Room<MatchState> {
   private enemyStationZoneAt(ship: ShipState, sessionId: string): { structId: string; radius: number } | null {
     for (const st of this.sim.structures.values()) {
       if (st.owner === sessionId) continue;
-      const rock = sectorAsteroids(this.sim.seed, st.sx, st.sy).find((a) => a.id === st.asteroidId);
-      if (!rock) continue;
-      if (dist(ship, st) <= rock.radius + ATTACK_ZONE_MARGIN) return { structId: st.id, radius: rock.radius };
+      const radius = this.siteRadius(st);
+      if (radius === null) continue;
+      if (dist(ship, st) <= radius + ATTACK_ZONE_MARGIN) return { structId: st.id, radius };
     }
     return null;
   }
@@ -655,10 +700,7 @@ export class MatchRoom extends Room<MatchState> {
     if (station.nextSpiderBay >= station.spiderBays) return;
 
     // raio do asteroide hospedeiro (para a aranha caminhar na superfície)
-    let astRadius = 400;
-    for (const a of sectorAsteroids(this.sim.seed, station.sx, station.sy)) {
-      if (a.id === station.asteroidId) astRadius = a.radius;
-    }
+    const astRadius = this.siteRadius(station) ?? 400;
 
     // transfere o controle para outra nave ANTES de largar a mineradora
     const activeId = this.activeShip.get(sessionId)!;
@@ -708,18 +750,8 @@ export class MatchRoom extends Room<MatchState> {
       const spec = STRUCTURE_SPECS["miningStation"];
       if (this.sim.getOre(sessionId) < spec.cost) return;
 
-      // encontra o asteroide pelo id armazenado
-      const astId = ship.anchoredAsteroidId;
-      let ast = null;
-      for (let oy = -1; oy <= 1; oy++) {
-        for (let ox = -1; ox <= 1; ox++) {
-          for (const a of sectorAsteroids(this.sim.seed, ship.sx + ox, ship.sy + oy)) {
-            if (a.id === astId) { ast = a; break; }
-          }
-          if (ast) break;
-        }
-        if (ast) break;
-      }
+      // o local em que o builder pousou: asteroide vazio ou plataforma de Ceres
+      const ast = this.landedSite(ship);
       if (!ast) return;
 
       // 1 estrutura por asteroide
@@ -727,9 +759,7 @@ export class MatchRoom extends Room<MatchState> {
         if (st.asteroidId === ast.id) return;
       }
 
-      const { dx, dy } = relVec(ast, ship);
-      const angle = Math.atan2(dy, dx);
-      const cls = asteroidClassOf(ast.radius);
+      const { angle, cls } = ast;
       const shipBays = STATION_SHIP_BAYS;
       const expandedBays = STATION_EXPANDED_BAYS;
       const spiderBays = STATION_SPIDER_BAYS[cls];
@@ -759,24 +789,13 @@ export class MatchRoom extends Room<MatchState> {
     if (action === "buildhq" && ship.kind === "builder") {
       const spec = STRUCTURE_SPECS["hq"];
       if (this.sim.getOre(sessionId) < spec.cost) return;
-      const astId = ship.anchoredAsteroidId;
-      let ast = null;
-      for (let oy = -1; oy <= 1; oy++) {
-        for (let ox = -1; ox <= 1; ox++) {
-          for (const a of sectorAsteroids(this.sim.seed, ship.sx + ox, ship.sy + oy)) {
-            if (a.id === astId) { ast = a; break; }
-          }
-          if (ast) break;
-        }
-        if (ast) break;
-      }
+      // o local em que o builder pousou: asteroide vazio ou plataforma de Ceres
+      const ast = this.landedSite(ship);
       if (!ast) return;
       for (const st of this.sim.structures.values()) {
         if (st.asteroidId === ast.id) return;
       }
-      const { dx, dy } = relVec(ast, ship);
-      const angle = Math.atan2(dy, dx);
-      const cls = asteroidClassOf(ast.radius);
+      const { angle, cls } = ast;
       const shipBays = HQ_SHIP_BAYS;
       const expandedBays = HQ_EXPANDED_BAYS;
       this.sim.spendOre(sessionId, spec.cost);
@@ -803,24 +822,13 @@ export class MatchRoom extends Room<MatchState> {
     if (action === "buildration" && ship.kind === "builder") {
       const spec = STRUCTURE_SPECS["rationCenter"];
       if (this.sim.getOre(sessionId) < spec.cost) return;
-      const astId = ship.anchoredAsteroidId;
-      let ast = null;
-      for (let oy = -1; oy <= 1; oy++) {
-        for (let ox = -1; ox <= 1; ox++) {
-          for (const a of sectorAsteroids(this.sim.seed, ship.sx + ox, ship.sy + oy)) {
-            if (a.id === astId) { ast = a; break; }
-          }
-          if (ast) break;
-        }
-        if (ast) break;
-      }
+      // o local em que o builder pousou: asteroide vazio ou plataforma de Ceres
+      const ast = this.landedSite(ship);
       if (!ast) return;
       for (const st of this.sim.structures.values()) {
         if (st.asteroidId === ast.id) return;
       }
-      const { dx, dy } = relVec(ast, ship);
-      const angle = Math.atan2(dy, dx);
-      const cls = asteroidClassOf(ast.radius);
+      const { angle, cls } = ast;
       this.sim.spendOre(sessionId, spec.cost);
       const id = `st-${this.structSeq++}`;
       this.sim.addStructure({
