@@ -165,6 +165,17 @@ const FP_CRUISE_PITCH = -0.3;
 /** altura do olho da nave atracada acima do chão da plataforma */
 const FP_DOCK_EYE_HEIGHT = 25;
 const FP_SURFACE_PITCH = 0.05;
+/**
+ * MODO ATAQUE: a vista aponta para a estação em foco. O olho sobe
+ * FP_ATTACK_EYE_HEIGHT acima do chão da plataforma dela (no meio das rochas
+ * o prédio ficava escondido atrás da própria rocha) e a câmera mira o prédio
+ * — em inclinação e em rumo, o que também absorve o atraso do nariz
+ * travado enquanto a nave circula. Entra e sai suavizado (FP_ATTACK_BLEND_RATE /s).
+ */
+const FP_ATTACK_EYE_HEIGHT = 380;
+/** altura (acima do chão) do ponto do prédio para onde a vista aponta */
+const FP_ATTACK_AIM_LIFT = 35;
+const FP_ATTACK_BLEND_RATE = 3;
 
 // ── farol (spotlight) da nave própria ──
 /** meia-abertura do cone (rad) */
@@ -399,6 +410,9 @@ export class GameScene {
   private cockpitFull = false;
   /** pitch corrente do olho do cockpit (rad) — posiciona a mira */
   private fpPitch = FP_SURFACE_PITCH;
+  /** quanto o cockpit está no enquadramento do modo ataque (0..1) e de qual estrutura */
+  private fpAttack = 0;
+  private fpAttackId = "";
   /** presença mostrada de cada nave (tamanho e altitude suavizados — shipPresence.ts) */
   private presence = new Map<string, Presence>();
   /** explosões em curso: posição de MUNDO (a origem de render flutua), início e faíscas */
@@ -1495,9 +1509,12 @@ export class GameScene {
    * INVERTIDA para este par (validado ao vivo — olhava pela cauda); o sinal do
    * pitch também foi validado ao vivo.
    */
-  private fpRotation(pitch: number): Quaternion {
+  private fpRotation(pitch: number, yaw = 0): Quaternion {
     const base = new Quaternion(0.5, -0.5, 0.5, -0.5);
-    return base.multiply(Quaternion.RotationAxis(new Vector3(1, 0, 0), -pitch));
+    // rumo em torno do "para cima" da câmera (+yaw vira para o lado −y da cabine)
+    return base
+      .multiply(Quaternion.RotationAxis(new Vector3(0, 1, 0), yaw))
+      .multiply(Quaternion.RotationAxis(new Vector3(1, 0, 0), -pitch));
   }
 
   /**
@@ -1564,9 +1581,34 @@ export class GameScene {
         const dockDz = floor - FP_DOCK_EYE_HEIGHT - cockpit.root.position.z - cockpit.eye.z;
         dz += (dockDz - dz) * dock;
       }
+      // modo ataque: olho acima da estação em foco e vista apontada para ela
+      const atkId = mineAuth?.attackTarget ?? "";
+      if (atkId) this.fpAttackId = atkId;
+      this.fpAttack += ((atkId ? 1 : 0) - this.fpAttack) * Math.min(1, dt * FP_ATTACK_BLEND_RATE);
+      const atkSt = this.fpAttack > 0.001 ? this.serverStructures.get(this.fpAttackId) : undefined;
+      const atkFloor = atkSt ? this.structureRenderer.platformZ(this.fpAttackId) : null;
+      let look: { yaw: number; pitch: number } | null = null;
+      if (atkSt && atkFloor !== null) {
+        const eyeZ = atkFloor - FP_ATTACK_EYE_HEIGHT;
+        dz += (eyeZ - cockpit.root.position.z - cockpit.eye.z - dz) * this.fpAttack;
+        // o prédio no quadro da cabine (x = nariz, y = lado, −z = para cima)
+        const r = this.toRender(atkSt);
+        const target = toScene(r.x, r.y);
+        target.z = atkFloor - FP_ATTACK_AIM_LIFT;
+        const local = Vector3.TransformCoordinates(target, cockpit.root.computeWorldMatrix(true).clone().invert());
+        const lx = local.x - cockpit.eye.x;
+        const ly = local.y - cockpit.eye.y;
+        const lz = local.z - (cockpit.eye.z + dz);
+        look = { yaw: -Math.atan2(ly, lx), pitch: Math.atan2(-lz, Math.hypot(lx, ly)) };
+      }
       this.fpCamera.position.copyFromFloats(cockpit.eye.x, cockpit.eye.y, cockpit.eye.z + dz);
       this.fpPitch = FP_SURFACE_PITCH + (FP_CRUISE_PITCH - FP_SURFACE_PITCH) * alt;
-      this.fpCamera.rotationQuaternion = this.fpRotation(this.fpPitch);
+      let yaw = 0;
+      if (look) {
+        this.fpPitch += (look.pitch - this.fpPitch) * this.fpAttack;
+        yaw = look.yaw * this.fpAttack;
+      }
+      this.fpCamera.rotationQuaternion = this.fpRotation(this.fpPitch, yaw);
       if (this.cockpitFull) {
         // o nariz aponta para o horizonte: com o olho inclinado p (positivo =
         // para cima), esse ponto fica tan(p)/tan(fov/2) meia-tela abaixo do centro
