@@ -52,7 +52,7 @@ import { toScene, toSceneAngle } from "./coords";
 import { SHIP_LAYER_Z, SHIP_TOP_LAYER_Z, MASK_MAIN_ONLY } from "./layers";
 import { ShipAB } from "./shipAB";
 
-const KINDS: readonly ShipKind[] = ["builder", "mining", "attack", "transport"];
+const KINDS: readonly ShipKind[] = ["builder", "mining", "attack", "transport", "pod"];
 
 /** Dados mínimos que o renderer precisa de uma nave. */
 export interface ShipRenderData {
@@ -85,6 +85,20 @@ interface MeshEntry {
   scale: number | undefined;
   /** profundidade padrão (camada de voo; a nave própria fica um pouco à frente) */
   baseZ: number;
+}
+
+/**
+ * Descarta a malha de uma nave SEM levar junto o que foi pendurado nela de
+ * fora: a câmera de cockpit e o farol são filhos da cabine da nave própria, e
+ * o dispose recursivo do Babylon os destruía quando ela saía do mundo
+ * (destruída, ou trocada de classe) — o cockpit ficava morto até recarregar.
+ */
+function disposeKeepingAttachments(instance: ShipMeshInstance): void {
+  for (const child of instance.root.getChildren()) {
+    const kind = child.getClassName();
+    if (kind.endsWith("Camera") || kind.endsWith("Light")) (child as { parent: unknown }).parent = null;
+  }
+  instance.dispose();
 }
 
 export class ShipRenderer {
@@ -120,7 +134,7 @@ export class ShipRenderer {
       this.applyData(existing, data);
       return;
     }
-    existing?.instance.dispose();
+    if (existing) disposeKeepingAttachments(existing.instance);
 
     const instance = this.factory.createShip(data.kind, data.tint);
     // camada de voo: à frente do pior avanço de uma rocha em balanço
@@ -150,7 +164,7 @@ export class ShipRenderer {
   remove(id: string): void {
     const entry = this.entries.get(id);
     if (entry) {
-      entry.instance.dispose();
+      disposeKeepingAttachments(entry.instance);
       this.entries.delete(id);
     }
   }
@@ -207,7 +221,7 @@ export class ShipRenderer {
       this.camera.getScene().onBeforeCameraRenderObservable.remove(this.observer);
       this.observer = null;
     }
-    for (const { instance } of this.entries.values()) instance.dispose();
+    for (const { instance } of this.entries.values()) disposeKeepingAttachments(instance);
     this.entries.clear();
   }
 

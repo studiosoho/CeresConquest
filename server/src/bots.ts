@@ -21,9 +21,10 @@ import { seekInput, faceInput, type SimWorld, type ShipState } from "@ceres/sim-
  *  - "raid": voa até a estrutura de jogador mais perto, desce ao modo ataque
  *    sobre ela e dispara os BOT_AMMO mísseis que leva;
  *  - "return": sem munição (ou sem alvo), volta ao QG e pousa numa vaga;
- *  - "reload": atracada, recarrega em BOT_RELOAD_TIME s e espera na vaga.
+ *  - "reload": atracada, recarrega em BOT_RELOAD_TIME s, conserta o casco
+ *    (BOT_REPAIR_TIME do zero ao cheio) e espera na vaga.
  *
- * ATAQUE EM ONDA: os bots prontos (atracados, recarregados) só saem em GRUPO
+ * ATAQUE EM ONDA: os bots prontos (atracados, recarregados e consertados) só saem em GRUPO
  * — quando BOT_WAVE_SIZE deles estão prontos e há alvo, saem juntos, no mesmo
  * instante. Sozinho, um bot caía nas turretas antes de o próximo existir.
  */
@@ -48,7 +49,9 @@ export const BOT_BUILD_INTERVAL = 120;
 /** Mísseis por saída. */
 export const BOT_AMMO = 2;
 /** Recarga atracado no QG (s). */
-export const BOT_RELOAD_TIME = 30;
+export const BOT_RELOAD_TIME = 60;
+/** Conserto atracado no QG: tempo para ir de 0 ao HP cheio (s); proporcional ao dano. */
+export const BOT_REPAIR_TIME = 120;
 /** Bots por grupo de ataque. */
 export const BOT_WAVE_SIZE = 3;
 /** Intervalo entre disparos (s). */

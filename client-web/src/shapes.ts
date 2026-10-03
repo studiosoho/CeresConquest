@@ -33,6 +33,12 @@ const BUILDER_VERTS: Array<{ x: number; y: number }> = [
 ];
 
 /** Nave de ataque: silhueta mais larga e agressiva (asas). */
+/** escape pod: gota curta */
+const POD_VERTS: Array<{ x: number; y: number }> = [
+  { x: R * 0.55, y: 0 }, { x: R * 0.3, y: R * 0.28 }, { x: -R * 0.3, y: R * 0.28 },
+  { x: -R * 0.5, y: 0 }, { x: -R * 0.3, y: -R * 0.28 }, { x: R * 0.3, y: -R * 0.28 },
+];
+
 const ATTACK_VERTS: Array<{ x: number; y: number }> = [
   { x: R * 1.15, y: 0 },
   { x: -R * 0.3, y: R * 0.4 },
@@ -72,6 +78,7 @@ export function shipVerts(kind: ShipKind): Array<{ x: number; y: number }> {
   if (kind === "attack") return ATTACK_VERTS;
   if (kind === "mining") return MINING_VERTS;
   if (kind === "transport") return TRANSPORT_VERTS;
+  if (kind === "pod") return POD_VERTS;
   return BUILDER_VERTS; // builder
 }
 

@@ -340,7 +340,7 @@ describe("armas na sala", () => {
 
 describe("velocidade final", () => {
   it("40% menor em todos os cascos, com a mesma aceleração", () => {
-    const orig: Record<ShipKind, number> = { builder: 5200, mining: 4600, attack: 6000, transport: 4000 };
+    const orig: Record<ShipKind, number> = { builder: 5200, mining: 4600, attack: 6000, transport: 4000, pod: 5200 };
     expect(SHIP_TOP_SPEED_FACTOR).toBe(0.6);
     for (const k of Object.keys(orig) as ShipKind[]) {
       expect(shipPhysics(k).maxSpeed).toBeCloseTo(orig[k] * 0.6, 9);

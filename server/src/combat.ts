@@ -38,6 +38,8 @@ export function levelOfLayer(layer: ShipLayer): CombatLevel {
  * `splitDamage`) ou como aranha mineradora, que é parte da estação.
  */
 export function hittableLevel(s: Readonly<ShipState>): CombatLevel | null {
+  // escape pod: em fuga, intocável (ninguém mira nem acerta)
+  if (s.kind === "pod") return null;
   if (s.stored || s.autoMining) return null;
   if (s.layerTo || s.landingPhase === "landing" || s.landingPhase === "liftoff") return null;
   if (s.anchored || s.landingPhase === "landed") return "surface";

@@ -6,7 +6,7 @@ import type { WorldPos } from "./coords";
  * TURRETAS de defesa das estruturas.
  *
  * O builder atracado numa estrutura própria constrói uma turreta por vez,
- * pagando TURRET_COST de minério do PORÃO dele (BUILDER_ORE_CAP; carregado
+ * pagando TURRET_COST KITS DE CONSTRUÇÃO do porão dele (logistics.ts; refinados
  * com [E] no estoque de uma estação ou da carteira, na base/QG). Durante a
  * obra (TURRET_BUILD_TIME) o builder fica TRAVADO na vaga: não decola — o
  * jogador só sai trocando de nave ([C]) ou chamando um táxi.
@@ -22,8 +22,8 @@ import type { WorldPos } from "./coords";
 
 /** turretas por estrutura */
 export const TURRET_MAX = 4;
-/** minério (do porão do builder) por turreta */
-export const TURRET_COST = 120;
+/** kits de construção (do porão do builder) por turreta */
+export const TURRET_COST = 100;
 /** duração da obra (s) — o builder fica travado na vaga até o fim */
 export const TURRET_BUILD_TIME = 20;
 /** alcance do tiro, a partir da turreta (u) */
@@ -31,9 +31,6 @@ export const TURRET_RANGE = 3000;
 export const TURRET_DAMAGE = 6;
 /** intervalo entre tiros de UMA turreta (s) */
 export const TURRET_COOLDOWN = 0.8;
-
-/** porão de minério do builder */
-export const BUILDER_ORE_CAP = 300;
 
 /** Centro do lugar da turreta `i` no quadro local da estrutura. */
 export function turretSlot(type: StructureType, i: number): { x: number; y: number } {

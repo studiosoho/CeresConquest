@@ -12,6 +12,10 @@
  * de 7 segmentos, cantoneiras amarelas nas expandidas e silhueta da nave
  * guardada quando ocupada — reconstruídas só quando a ocupação muda.
  *
+ * RUÍNAS (estruturas de jogador eliminado): sem energia — corpo escurecido,
+ * linhas apagadas e nenhum glow (nem nos destaques, nem nas vagas). Ao ser
+ * reconquistada, a estrutura é refeita com as cores do novo dono.
+ *
  * ONDE fica cada vaga não é decisão do render: vem de shared/bays.ts, a mesma
  * conta com que o servidor pousa a nave na vaga. O prédio assenta sobre o
  * centro do asteroide, virado para `angle` da estrutura, e cada placa vai para
@@ -47,6 +51,8 @@ export interface StructureRenderData {
   id: string;
   stype: StructureType;
   own: boolean;
+  /** em ruínas: sem energia (sem glow, cores apagadas) */
+  ruin?: boolean;
   shipBays: number;
   expandedBays: number;
   /** direção da frente da estrutura (rad, do jogo) — orienta prédio e vagas */
@@ -95,6 +101,9 @@ const ANNEX_TYPES: StructureType[] = ["hq", "rationCenter", "miningStation", "in
 const ANNEX_SCALE = 1.8;
 const ANNEX_Z_SCALE = 1;
 const CONDUIT_Z = 2;
+/** ruínas: corpo bem mais escuro e as linhas quase apagadas */
+const RUIN_BODY = new Color3(0.2, 0.18, 0.16);
+const RUIN_LINE = new Color3(0.16, 0.15, 0.14);
 
 interface StructEntry {
   root: TransformNode;
@@ -106,6 +115,7 @@ interface StructEntry {
   attachedTo: TransformNode | null;
   lastSig: string;
   own: boolean;
+  ruin: boolean;
   type: StructureType;
   radius: number;
   height: number;
@@ -138,6 +148,7 @@ export class StructureRenderer {
   private glow: GlowLayer;
   private entries = new Map<string, StructEntry>();
   private structMat: StandardMaterial;
+  private ruinMat: StandardMaterial;
   private voidMat: StandardMaterial;
   /** lâmpada acesa (brilha no GlowLayer) e apagada */
   private lampOn: StandardMaterial;
@@ -162,6 +173,11 @@ export class StructureRenderer {
     this.voidMat.emissiveColor = Color3.Black();
     this.voidMat.backFaceCulling = false;
 
+    this.ruinMat = new StandardMaterial("structRuin", scene);
+    this.ruinMat.diffuseColor = RUIN_BODY;
+    this.ruinMat.specularColor = Color3.Black();
+    this.ruinMat.backFaceCulling = false;
+
     this.lampOn = new StandardMaterial("bayLampOn", scene);
     this.lampOn.disableLighting = true;
     this.lampOn.emissiveColor = c3(LAMP_ON);
@@ -173,6 +189,11 @@ export class StructureRenderer {
   /** Cria/atualiza a estrutura e a assenta na plataforma do asteroide. */
   upsert(data: StructureRenderData, occupants: ReadonlyArray<ShipKind | null>, attach: StructureAttach | null): void {
     let entry = this.entries.get(data.id);
+    // ruína reconquistada (ou o contrário): refaz com as cores e a energia do dono
+    if (entry && (entry.own !== data.own || entry.ruin !== !!data.ruin)) {
+      this.remove(data.id);
+      entry = undefined;
+    }
     if (!entry) {
       entry = this.createEntry(data);
       this.entries.set(data.id, entry);
@@ -242,6 +263,7 @@ export class StructureRenderer {
     for (const entry of this.entries.values()) this.disposeEntry(entry);
     this.entries.clear();
     this.structMat.dispose();
+    this.ruinMat.dispose();
     this.voidMat.dispose();
   }
 
@@ -249,11 +271,12 @@ export class StructureRenderer {
 
   private createEntry(data: StructureRenderData): StructEntry {
     const gen = generateStructureMesh(data.stype);
-    const accentColor = c3(data.own ? Palette.structure.own : Palette.structure.other);
+    const ruin = !!data.ruin;
+    const accentColor = ruin ? RUIN_LINE : c3(data.own ? Palette.structure.own : Palette.structure.other);
     const root = new TransformNode(`struct_${data.id}`, this.scene);
 
     const meshes: Mesh[] = [];
-    const solid = this.makeSolid(`struct_${data.id}_body`, gen.vertices, gen.normals, gen.triangles, this.structMat);
+    const solid = this.makeSolid(`struct_${data.id}_body`, gen.vertices, gen.normals, gen.triangles, ruin ? this.ruinMat : this.structMat);
     solid.parent = root;
     meshes.push(solid);
 
@@ -266,11 +289,11 @@ export class StructureRenderer {
     }
 
     const lines: GreasedLineBaseMesh[] = [];
-    const wire = this.makeLine(`struct_${data.id}_wire`, gen.wires, WIRE_PX, c3(Palette.wire).scale(WIRE_DIM), false);
+    const wire = this.makeLine(`struct_${data.id}_wire`, gen.wires, WIRE_PX, ruin ? RUIN_LINE : c3(Palette.wire).scale(WIRE_DIM), false);
     wire.parent = root;
     lines.push(wire);
 
-    const accents = this.makeLine(`struct_${data.id}_accents`, gen.accents, ACCENT_PX, accentColor, true);
+    const accents = this.makeLine(`struct_${data.id}_accents`, gen.accents, ACCENT_PX, accentColor, !ruin);
     accents.parent = root;
     lines.push(accents);
 
@@ -278,7 +301,7 @@ export class StructureRenderer {
       root, meshes, lines,
       bayNode: null, bayMeshes: [], bayLines: [],
       attachedTo: null, lastSig: "\0",
-      own: data.own, type: data.stype,
+      own: data.own, ruin, type: data.stype,
       radius: STRUCTURE_SPECS[data.stype].radius,
       height: gen.height,
       shipBays: data.shipBays, expandedBays: data.expandedBays,
@@ -382,9 +405,9 @@ export class StructureRenderer {
     const slabNormals: Vector3[] = [];
     const slabTris: number[] = [];
     const lineParts: Array<{ pts: Vector3[]; color: Color3 }> = [];
-    const outlineColor = c3(Palette.structure.hangar);
-    const bracketColor = c3(EXPANDED_COLOR);
-    const shipColor = c3(entry.own ? Palette.structure.fleet : 0x8899aa);
+    const outlineColor = entry.ruin ? RUIN_LINE : c3(Palette.structure.hangar);
+    const bracketColor = entry.ruin ? RUIN_LINE : c3(EXPANDED_COLOR);
+    const shipColor = entry.ruin ? RUIN_LINE : c3(entry.own ? Palette.structure.fleet : 0x8899aa);
     const zTop = SLAB_H + SLAB_LINE_LIFT;
 
     slots.forEach((slot, i) => {
@@ -416,11 +439,11 @@ export class StructureRenderer {
       }
     });
 
-    const slabs = this.makeSolid(`${entry.root.name}_slabs`, slabVerts, slabNormals, slabTris, this.structMat);
+    const slabs = this.makeSolid(`${entry.root.name}_slabs`, slabVerts, slabNormals, slabTris, entry.ruin ? this.ruinMat : this.structMat);
     slabs.parent = bayNode;
     entry.bayMeshes.push(slabs);
 
-    const bundle = this.makeBundle(`${entry.root.name}_baylines`, lineParts, BAY_PX);
+    const bundle = this.makeBundle(`${entry.root.name}_baylines`, lineParts, BAY_PX, !entry.ruin);
     bundle.parent = bayNode;
     entry.bayLines.push(bundle);
   }
@@ -590,7 +613,7 @@ export class StructureRenderer {
   }
 
   /** Várias polilinhas coloridas numa única malha (cor por ponto). */
-  private makeBundle(name: string, parts: Array<{ pts: Vector3[]; color: Color3 }>, widthPx: number): GreasedLineBaseMesh {
+  private makeBundle(name: string, parts: Array<{ pts: Vector3[]; color: Color3 }>, widthPx: number, glow = true): GreasedLineBaseMesh {
     const points: Vector3[][] = [];
     const colors: Color3[] = [];
     for (const part of parts) {
@@ -603,7 +626,7 @@ export class StructureRenderer {
       { width: widthPx, sizeAttenuation: true, useColors: true, colors },
       this.scene,
     ) as GreasedLineBaseMesh;
-    this.glow.referenceMeshToUseItsOwnMaterial(mesh);
+    if (glow) this.glow.referenceMeshToUseItsOwnMaterial(mesh);
     return mesh;
   }
 
@@ -674,7 +697,7 @@ export class StructureRenderer {
       if (r1 > r0) accents.push([new Vector3(ux * r0, uy * r0, CONDUIT_Z), new Vector3(ux * r1, uy * r1, CONDUIT_Z)]);
     }
 
-    const solid = this.makeSolid(`${node.name}_body`, body.v, body.n, body.t, this.structMat);
+    const solid = this.makeSolid(`${node.name}_body`, body.v, body.n, body.t, entry.ruin ? this.ruinMat : this.structMat);
     solid.parent = node;
     entry.annexMeshes.push(solid);
     if (voids.t.length > 0) {
@@ -682,11 +705,11 @@ export class StructureRenderer {
       hole.parent = node;
       entry.annexMeshes.push(hole);
     }
-    const wire = this.makeLine(`${node.name}_wire`, wires, WIRE_PX, c3(Palette.wire).scale(WIRE_DIM), false);
+    const wire = this.makeLine(`${node.name}_wire`, wires, WIRE_PX, entry.ruin ? RUIN_LINE : c3(Palette.wire).scale(WIRE_DIM), false);
     wire.parent = node;
     entry.annexLines.push(wire);
-    const accentColor = c3(entry.own ? Palette.structure.own : Palette.structure.other);
-    const acc = this.makeLine(`${node.name}_accents`, accents, ACCENT_PX, accentColor, true);
+    const accentColor = entry.ruin ? RUIN_LINE : c3(entry.own ? Palette.structure.own : Palette.structure.other);
+    const acc = this.makeLine(`${node.name}_accents`, accents, ACCENT_PX, accentColor, !entry.ruin);
     acc.parent = node;
     entry.annexLines.push(acc);
   }

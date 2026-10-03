@@ -1,4 +1,4 @@
-import { Schema, MapSchema, type } from "../colyseus";
+import { Schema, MapSchema, ArraySchema, type } from "../colyseus";
 
 /**
  * Estado sincronizado por rede. Espelho do sim-core — só o que os clientes
@@ -61,6 +61,13 @@ export class ShipSchema extends Schema {
   @type("boolean") aimLocked = false;
   /** segundo canhão do laser (o primeiro usa aimOffset/aimLocked) */
   @type("float32") aimOffset2 = 0;
+  /** refinaria do builder: lotes na fila e progresso do lote atual (0..1) */
+  @type("uint8") refineQueue = 0;
+  /** kits de construção a bordo (builder) — o porão de minério é cargoKind/cargoAmount */
+  @type("uint16") kits = 0;
+  /** rações a bordo (builder) */
+  @type("uint16") rations = 0;
+  @type("float32") refineProgress = 0;
   @type("boolean") aimLocked2 = false;
   /**
    * Modo ataque: a estrutura atacada e o raio da parede macia da órbita
@@ -99,11 +106,24 @@ export class ProjectileSchema extends Schema {
 }
 
 export class PlayerSchema extends Schema {
-  @type("float32") ore = 0;
   /** id da nave que o jogador pilota */
   @type("string") activeShip = "";
   /** nome de jogador informado no lobby (join option) */
   @type("string") name = "";
+  /**
+   * Fim de jogo: o jogador perdeu a nave sem ter para onde o escape pod ir
+   * (nenhum QG útil, nenhum builder em hangar). `survival` = segundos de
+   * partida; `summary` = JSON com o que ele construiu e fabricou.
+   */
+  /**
+   * Estrutura em que o piloto ESPERA, sem nave ("" = está numa nave): pôs a
+   * mineradora para autominerar, ou chegou de escape pod. Dali pede táxi,
+   * embarca numa nave do hangar ([C]) ou, num QG, fabrica.
+   */
+  @type("string") station = "";
+  @type("boolean") eliminated = false;
+  @type("float32") survival = 0;
+  @type("string") summary = "";
 }
 
 export class StructureSchema extends Schema {
@@ -136,6 +156,42 @@ export class StructureSchema extends Schema {
   @type("int8") turretBuild = -1;
   @type("float32") turretProgress = 0;
   @type("string") turretBuilder = "";
+  /** um builder está consertando esta estrutura ([G]) */
+  @type("boolean") repairing = false;
+  /** kits de construção guardados no buffer da estrutura */
+  @type("uint16") kitStore = 0;
+  /** central de rações: níveis das melhorias dos drones (logistics.ts) */
+  @type("uint8") droneLv = 0;
+  @type("uint8") speedLv = 0;
+  @type("uint8") cargoLv = 0;
+}
+
+/** Drone de ração em voo entre a central e as estações (logistics.ts). */
+export class DroneSchema extends Schema {
+  @type("string") owner = "";
+  @type("string") center = "";
+  @type("int32") sx = 0;
+  @type("int32") sy = 0;
+  @type("float32") x = 0;
+  @type("float32") y = 0;
+  @type("float32") angle = 0;
+  /** rações a bordo */
+  @type("uint8") cargo = 0;
+}
+
+/** Minhoca gigante (shared/worms.ts): a cabeça e o corpo, em offsets dela. */
+export class WormSchema extends Schema {
+  @type("int32") sx = 0;
+  @type("int32") sy = 0;
+  @type("float32") x = 0;
+  @type("float32") y = 0;
+  @type("float32") angle = 0;
+  @type("float32") hp = 0;
+  /** 0..1 — cabeça erguida para fora do chão; boca aberta */
+  @type("float32") breach = 0;
+  @type("float32") mouth = 0;
+  /** gomos 1.. como pares (dx, dy) a partir da cabeça */
+  @type(["float32"]) segs = new ArraySchema<number>();
 }
 
 export class MatchState extends Schema {
@@ -148,4 +204,9 @@ export class MatchState extends Schema {
   @type({ map: StructureSchema }) structures = new MapSchema<StructureSchema>();
   @type({ map: PlayerSchema }) players = new MapSchema<PlayerSchema>();
   @type({ map: ProjectileSchema }) projectiles = new MapSchema<ProjectileSchema>();
+  @type({ map: DroneSchema }) drones = new MapSchema<DroneSchema>();
+  @type({ map: WormSchema }) worms = new MapSchema<WormSchema>();
+  /** toca aberta das minhocas: id da plataforma de Ceres ("" = nenhuma) e minas já detonadas nela */
+  @type("string") wormHole = "";
+  @type("uint8") wormHoleSeal = 0;
 }

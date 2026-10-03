@@ -14,7 +14,8 @@
 export type KeyName =
   | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS"
   | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX"
-  | "E" | "F" | "C" | "G" | "T" | "Y" | "M" | "Q" | "X" | "U" | "V" | "B" | "N";
+  | "E" | "F" | "C" | "G" | "T" | "Y" | "M" | "Q" | "X" | "U" | "V" | "B" | "N" | "R"
+  | "O" | "P" | "K" | "L" | "J";
 
 const CODE_MAP: Record<KeyName, string[]> = {
   W: ["KeyW"], A: ["KeyA"], S: ["KeyS"], D: ["KeyD"],
@@ -28,6 +29,10 @@ const CODE_MAP: Record<KeyName, string[]> = {
   T: ["KeyT"], Y: ["KeyY"], M: ["KeyM"],
   // liga/desliga o som
   N: ["KeyN"],
+  // recomeçar (encerrado, no modo espectador)
+  R: ["KeyR"],
+  // builder atracado: [O] retira / [P] deposita minério, [K] retira / [L] deposita kits
+  O: ["KeyO"], P: ["KeyP"], K: ["KeyK"], L: ["KeyL"], J: ["KeyJ"],
   // RCS de translação (Q/E lateral, S de ré) e flight assist off (X)
   Q: ["KeyQ"], X: ["KeyX"],
   // evolui a estação de mineração de Ceres (builder atracado nela)

@@ -77,6 +77,10 @@ export interface ShipState extends WorldPos {
   /** porão de carga (nave de transporte): tipo ("" = vazio) e quantidade */
   cargoKind: CargoKind;
   cargoAmount: number;
+  /** kits de construção a bordo (builder; logistics.ts) — separado do porão de minério */
+  kits: number;
+  /** rações a bordo (builder) */
+  rations: number;
   /** HP atual da nave (0 = destruída) */
   hp: number;
   /** mini mísseis restantes (weapons.ts; recarrega atracada num QG) */
@@ -136,6 +140,8 @@ export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"):
     landingAsteroidSpin: 0,
     cargoKind: "",
     cargoAmount: 0,
+    kits: 0,
+    rations: 0,
     hp: SHIP_HP_MAX,
     ammo: kind === "attack" ? MISSILE_AMMO_MAX : 0,
     grenadeAmmo: kind === "attack" ? MINE_AMMO_MAX : 0,

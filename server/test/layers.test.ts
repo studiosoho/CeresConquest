@@ -3,9 +3,9 @@ import {
   CERES_RADIUS,
   CERES_PLATFORM_COUNT,
   CERES_STATION_MAX_LEVEL,
-  CERES_STATION_ORE_RATE_PER_LEVEL,
+  DRILL_BASE_RATE,
   CERES_STATION_SPIDER_BAYS_PER_LEVEL,
-  ceresStationUpgradeCost,
+  stationUpgradeCost,
   stationOreCap,
   structureMaxHp,
   ceresPlatforms,
@@ -312,7 +312,7 @@ describe("pouso na vaga livre", () => {
     r.tryToggleAnchor("p1");
     run(r, 1.6);
     expect(s.landingPhase).toBe("landed");
-    r.sim.addOre("p1", 10_000);
+    Object.assign(s, { kits: 10_000 }); // construções custam kits
     r.tryLandAction("p1", "buildmine");
     const st = [...r.sim.structures.values()].find((x) => x.asteroidId === rocks[2].id)!;
     expect(st).toBeDefined();
@@ -479,7 +479,7 @@ describe("construção nas plataformas de Ceres", () => {
     r.tryToggleAnchor("p1");
     run(r, 1.6);
     expect(s.landingPhase).toBe("landed");
-    r.sim.addOre("p1", 10_000);
+    Object.assign(s, { kits: 10_000 }); // construções custam kits
     return { r, s, pad, center };
   }
 
@@ -515,26 +515,29 @@ describe("construção nas plataformas de Ceres", () => {
     run(ctx.r, 1.6);
     const st = [...ctx.r.sim.structures.values()].find((x) => x.asteroidId === ctx.pad.id)!;
     expect(ctx.s.anchored).toBe(true);
+    // toca das minhocas já aberta em outra plataforma: evoluir esta não acorda o
+    // ninho (que derrubaria a estação — ver worms.test.ts)
+    Object.assign(ctx.r, { hole: { padId: "ceres-x", pos: { sx: 0, sy: 0, x: 0, y: 0 }, radius: 1, seal: 0 }, nestTimer: 1e9 });
     return { ...ctx, st };
   }
 
   it("[U] evolui a estação: nível, vagas de aranha, HP e custo", () => {
-    const { r, st } = stationDocked();
-    const ore0 = r.sim.getOre("p1");
+    const { r, s, st } = stationDocked();
+    const kits0 = s.kits;
     const bays0 = st.spiderBays;
     expect(st.level).toBe(1);
     r.tryUpgrade("p1");
     expect(st.level).toBe(2);
-    expect(r.sim.getOre("p1")).toBe(ore0 - ceresStationUpgradeCost(1));
+    expect(s.kits).toBe(kits0 - stationUpgradeCost(1)!);
     expect(st.spiderBays).toBe(bays0 + CERES_STATION_SPIDER_BAYS_PER_LEVEL);
     expect(st.hp).toBe(structureMaxHp("miningStation", 2));
     for (let i = 0; i < 10; i++) r.tryUpgrade("p1");
     expect(st.level).toBe(CERES_STATION_MAX_LEVEL);
   });
 
-  it("sem minério não evolui; estação de asteroide não evolui", () => {
-    const { r, st } = stationDocked();
-    r.sim.spendOre("p1", r.sim.getOre("p1"));
+  it("sem kits não evolui; estação de asteroide também evolui (sem as vagas extras de Ceres)", () => {
+    const { r, s, st } = stationDocked();
+    Object.assign(s, { kits: 0 });
     r.tryUpgrade("p1");
     expect(st.level).toBe(1);
 
@@ -544,18 +547,20 @@ describe("construção nas plataformas de Ceres", () => {
     r2.tryToggleAnchor("p1");
     run(r2, 1.6);
     expect(b.anchored).toBe(true);
-    r2.sim.addOre("p1", 10_000);
+    Object.assign(b, { kits: 10_000 });
+    const bays = rock.spiderBays;
     r2.tryUpgrade("p1");
-    expect(rock.level).toBe(1);
+    expect(rock.level).toBe(2);
+    expect(rock.spiderBays).toBe(bays);
   });
 
-  it("estação evoluída produz minério no estoque local, até a capacidade do nível", () => {
+  it("a broca da estação evoluída escava mais, até a capacidade do nível", () => {
     const { r, st } = stationDocked();
     r.tryUpgrade("p1");
     r.tryUpgrade("p1"); // nível 3: +2 níveis de produção
     st.oreStore = 0;
     run(r, 2);
-    expect(st.oreStore).toBeCloseTo(2 * CERES_STATION_ORE_RATE_PER_LEVEL * 2, 0);
+    expect(st.oreStore).toBeCloseTo(DRILL_BASE_RATE * 3 * 2, 0);
     st.oreStore = stationOreCap(3) - 1;
     run(r, 2);
     expect(st.oreStore).toBe(stationOreCap(3));

@@ -113,6 +113,24 @@ export const MSG_UPGRADE = "upgrade";
  */
 export const MSG_TURRET = "turret";
 
+/** Jogador encerrado recomeça com uma base inicial nova num lugar aleatório. */
+export const MSG_RESTART = "restart";
+
+/** Builder atracado na central de rações: compra um nível de uma melhoria dos drones (kits). */
+import type { DroneTrack } from "./logistics";
+export interface DroneUpgradeCommand { track: DroneTrack; }
+export const MSG_DRONE_UPGRADE = "droneUpgrade";
+
+/**
+ * Builder atracado numa estrutura própria troca com o buffer dela:
+ * [O] retira minério, [P] deposita minério, [K] retira kits, [L] deposita kits;
+ * [J] rações — carrega na base inicial, descarrega na estação de mineração ou
+ * no QG; na central de rações, descarrega se o builder chega com rações e
+ * carrega se chega sem (a direção vem da estrutura e do porão; `dir` é ignorado).
+ */
+export interface TransferCommand { item: "ore" | "kits" | "rations"; dir: "withdraw" | "deposit"; }
+export const MSG_TRANSFER = "transfer";
+
 /**
  * Efeito visual anunciado pelo servidor a todos os clientes — não muda o jogo,
  * só diz ONDE e O QUÊ explodiu, na posição exata do servidor (o cliente não
@@ -145,6 +163,13 @@ export interface FxEvent {
   bay?: number;
 }
 export const MSG_FX = "fx";
+
+/** Alerta a UM jogador (faixa no centro da tela + alarme): ex. os tremores da toca das minhocas. */
+export interface AlertEvent {
+  text: string;
+  level: "warn" | "danger";
+}
+export const MSG_ALERT = "alert";
 
 /** Expande a arena para o próximo tamanho (small→medium→large). */
 // @deprecated("adicionar isto na criação da sala")

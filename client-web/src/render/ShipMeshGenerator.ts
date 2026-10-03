@@ -72,6 +72,7 @@ const PLAN_RADIUS: Record<ShipKind, number> = {
   mining: 1.35,
   attack: 1.15,
   transport: 1.12,
+  pod: 0.55,
 };
 
 /** comprimento em tela (px) da massa de referência NO ZOOM DE REFERÊNCIA —
@@ -509,6 +510,25 @@ const ASSEMBLE: Record<ShipKind, (b: Build) => void> = {
     for (const y of [0.22, 0.60, -0.22, -0.60]) engine(b, -2.95, -2.10, y, 0.00, 0.19, 0.22, 6);
     chevron(b, 2.28, 0.20, 0.12, 0.04, 0.26, (y) => 0.52 - y * 0.7);
     b.eye = [1.50, 0, 0.80];
+  },
+
+  // ESCAPE POD — cápsula curta e gorda (gota facetada), domo de vidro
+  // escuro quase da proa ao meio, um motor só na popa e faixas de
+  // sinalização: lê "bote salva-vidas", não nave de linha.
+  pod: (b) => {
+    b.hull.add([
+      [1.00, 0, 0.10],
+      ...station(0.55, [[0.10, 0.50], [0.40, 0.34], [0.50, 0.02], [0.32, -0.30]]),
+      ...station(-0.45, [[0.10, 0.52], [0.42, 0.36], [0.52, 0.02], [0.34, -0.32]]),
+      ...station(-0.95, [[0.08, 0.34], [0.30, 0.24], [0.36, 0.02], [0.24, -0.22]]),
+    ], C.hull, true);
+    b.hull.add([
+      [0.85, 0, 0.30], [0.50, 0, 0.60], [-0.05, 0, 0.64],
+      ...station(0.55, [[0.14, 0.50]]), ...station(0.05, [[0.20, 0.56]]),
+    ], C.glass);
+    for (const s of [1, -1]) b.hull.add(box(-0.40, 0.20, 0.50 * s, 0.53 * s, -0.05, 0.12), C.trim);
+    engine(b, -1.25, -0.90, 0, 0.02, 0.16, 0.20, 6);
+    b.eye = [0.40, 0, 0.55];
   },
 };
 

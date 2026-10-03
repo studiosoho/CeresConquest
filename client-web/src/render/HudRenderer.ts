@@ -11,7 +11,7 @@
  * graça do próprio retângulo do `<canvas>`, sem precisar de geometry mask.
  */
 
-import { CERES_RADIUS, SECTOR_SIZE, ASTEROID_CLASSES } from "@ceres/shared";
+import { CERES_RADIUS, SECTOR_SIZE, ASTEROID_CLASSES, REFINE_KITS, REFINE_ORE, STRUCTURE_SPECS } from "@ceres/shared";
 import type { ShipKind, WorldPos } from "@ceres/shared";
 import { Palette } from "./Palette";
 
@@ -35,7 +35,9 @@ export interface HudShipData {
 }
 
 export interface HudContextData {
+  /** porão da nave ativa: minério e kits */
   ore: number;
+  kits: number;
   zoom: number;
   isFlying: boolean;
   inLandZone: boolean;
@@ -59,6 +61,8 @@ export interface MinimapData {
   own: { x: number; y: number };
   angle: number;
   remotes: Array<{ rx: number; ry: number }>;
+  /** gomos das minhocas gigantes (posição de render) */
+  worms: Array<{ rx: number; ry: number }>;
   asteroids: Array<{ rx: number; ry: number; asteroidClass: string }>;
   ceres: WorldPos | null;
   mapCenter: WorldPos | null;
@@ -213,6 +217,97 @@ export class HudRenderer {
     if (this.cockpitFrame) this.cockpitFrame.style.display = visible ? "block" : "none";
   }
 
+  // ── fim de jogo ─────────────────────────────────────────────────────
+
+  private endScreen: HTMLDivElement | null = null;
+  private spectatorBanner: HTMLDivElement | null = null;
+
+  /**
+   * Tela de FIM DE JOGO: tempo de sobrevivência e o que o jogador construiu
+   * e fabricou, com as opções de assistir (modo espectador) e recomeçar.
+   */
+  showEndScreen(data: { survival: number; lines: string[] }, onSpectate: () => void, onRestart: () => void): void {
+    this.hideEndScreen();
+    const box = document.createElement("div");
+    box.style.cssText =
+      "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);min-width:340px;padding:22px 28px;" +
+      `background:${cssColor(0x05080c, 0.88)};border:1px solid ${cssColor(Palette.fx.aimLock, 0.8)};` +
+      `color:${cssColor(Palette.ui.text)};font:13px monospace;text-align:center;pointer-events:auto;`;
+    const min = Math.floor(data.survival / 60);
+    const sec = Math.floor(data.survival % 60).toString().padStart(2, "0");
+    box.innerHTML =
+      `<div style="font-size:20px;letter-spacing:3px;color:${cssColor(Palette.fx.aimLock)};margin-bottom:6px">FIM DE JOGO</div>` +
+      `<div style="opacity:.8;margin-bottom:14px">Sua frota foi perdida e não há como se reerguer.</div>` +
+      `<div style="margin-bottom:10px">Sobreviveu <b>${min}:${sec}</b></div>` +
+      `<div style="text-align:left;margin:0 auto 18px;display:inline-block;line-height:1.6">${data.lines.map((l) => `· ${l}`).join("<br>") || "· nada construído"}</div>`;
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:12px;justify-content:center";
+    const button = (label: string, fn: () => void) => {
+      const bt = document.createElement("button");
+      bt.textContent = label;
+      bt.style.cssText =
+        `padding:7px 16px;font:12px monospace;letter-spacing:1px;cursor:pointer;background:${cssColor(0x10202a)};` +
+        `color:${cssColor(Palette.ui.text)};border:1px solid ${cssColor(Palette.ui.minimapBorder, 0.8)};`;
+      bt.onclick = fn;
+      row.appendChild(bt);
+    };
+    button("ASSISTIR", onSpectate);
+    button("RECOMEÇAR", onRestart);
+    box.appendChild(row);
+    this.root.appendChild(box);
+    this.endScreen = box;
+  }
+
+  hideEndScreen(): void {
+    this.endScreen?.remove();
+    this.endScreen = null;
+  }
+
+  private alertBox: HTMLDivElement | null = null;
+  private alertTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * ALERTA no centro da tela (MSG_ALERT): âmbar para aviso, vermelho piscando
+   * para perigo; some sozinho depois de alguns segundos.
+   */
+  showAlert(text: string, level: "warn" | "danger"): void {
+    if (!this.alertBox) {
+      const b = document.createElement("div");
+      b.style.cssText =
+        "position:absolute;left:50%;top:34%;transform:translateX(-50%);padding:10px 22px;font:bold 16px monospace;" +
+        "letter-spacing:1px;text-align:center;pointer-events:none;white-space:nowrap;";
+      this.root.appendChild(b);
+      this.alertBox = b;
+      const style = document.createElement("style");
+      style.textContent = "@keyframes ccAlertBlink{0%,100%{opacity:1}50%{opacity:.35}}";
+      document.head.appendChild(style);
+    }
+    const b = this.alertBox;
+    const color = level === "danger" ? "#ff4a3a" : "#ffb347";
+    b.textContent = `⚠ ${text}`;
+    b.style.color = color;
+    b.style.background = cssColor(0x140606, 0.85);
+    b.style.border = `2px solid ${color}`;
+    b.style.animation = level === "danger" ? "ccAlertBlink 0.6s steps(2) infinite" : "none";
+    b.style.display = "block";
+    if (this.alertTimer) clearTimeout(this.alertTimer);
+    this.alertTimer = setTimeout(() => { b.style.display = "none"; }, level === "danger" ? 9000 : 6000);
+  }
+
+  /** Faixa do modo espectador (null esconde). */
+  setSpectatorBanner(text: string | null): void {
+    if (!this.spectatorBanner) {
+      const b = document.createElement("div");
+      b.style.cssText =
+        "position:absolute;left:50%;top:12px;transform:translateX(-50%);padding:5px 14px;font:12px monospace;" +
+        `background:${cssColor(0x05080c, 0.75)};color:${cssColor(Palette.ui.text)};border:1px solid ${cssColor(Palette.ui.minimapBorder, 0.6)};`;
+      this.root.appendChild(b);
+      this.spectatorBanner = b;
+    }
+    this.spectatorBanner.style.display = text ? "block" : "none";
+    if (text) this.spectatorBanner.textContent = text;
+  }
+
   initCockpitFrame(view: { left: number; bottom: number; width: number; height: number }): void {
     const frame = document.createElement("div");
     this.cockpitFrame = frame;
@@ -351,6 +446,18 @@ export class HudRenderer {
     }
     g.globalAlpha = 1;
 
+    // minhocas gigantes
+    g.fillStyle = "#ff9a3c";
+    for (const w of data.worms) {
+      const dx = (w.rx - own.x) * k;
+      const dy = (w.ry - own.y) * k;
+      if (Math.abs(dx) < half - 2 && Math.abs(dy) < half - 2) {
+        g.beginPath();
+        g.arc(cx + dx, cy + dy, 2, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+
     // nave própria: ponto + seta de direção
     g.fillStyle = "#ffffff";
     g.beginPath();
@@ -373,9 +480,10 @@ export class HudRenderer {
   private buildFlightText(ship: HudShipData, ctx: HudContextData): string {
     const kindLabel: Record<ShipKind, string> = {
       builder: "Builder", mining: "Mining", attack: "Combat", transport: "Transport",
+      pod: "Escape pod",
     };
     const line1 =
-      `⬡ ${ctx.ore} ores  ·  ${kindLabel[ship.kind]}  ·  ${ctx.zoom.toFixed(2)}×` +
+      `${kindLabel[ship.kind]}  ·  ${ctx.zoom.toFixed(2)}×` +
       `${ctx.anchorTag}${ctx.anchorHint}${ctx.swapHint}${ctx.autoHint}` +
       `${ctx.stationBufferHint}${ctx.ammoHint}${ctx.storeHint}${ctx.cargoHint}`;
     const line2 =
@@ -390,14 +498,15 @@ export class HudRenderer {
   private buildLandedText(ship: HudShipData, ctx: HudContextData): string {
     const miningOn = ship.anchored;
     return (
-      `⬡ Landed${miningOn ? "  ·  ⛏ MINING (ore: " + ctx.ore + ")" : ""}\n` +
+      `⬡ Landed${miningOn ? "  ·  ⛏ MINING" : ""}  ·  hold ${ctx.ore} ore${ship.kind === "builder" ? ` · ${ctx.kits} kits  [E] refine ${REFINE_ORE} ore → ${REFINE_KITS} kits` : ""}\n` +
       (miningOn
         ? "[SPACE] stop mining\n[F] take off — stop mining before"
         : "[SPACE] start mining\n" +
         (ship.kind === "builder"
           ? ctx.landedOnCeres
-            ? `[1] build minestation (100) — Ceres: mining stations only, upgradable\n`
-            : `[1] build minestation (100)  [2] build HQ (300) [3] build food center (200)\n`
+            ? `[1] build minestation (${STRUCTURE_SPECS.miningStation.cost} kits) — Ceres: mining stations only, upgradable\n`
+            : `[1] build minestation (${STRUCTURE_SPECS.miningStation.cost} kits)  [2] build HQ (${STRUCTURE_SPECS.hq.cost} kits) ` +
+              `[3] build food center (${STRUCTURE_SPECS.rationCenter.cost} kits)\n`
           : "") +
         "[F] take off")
     );

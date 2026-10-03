@@ -23,4 +23,4 @@ const require = createRequire(import.meta.url);
 export const { Server, LobbyRoom, Room, updateLobby } = require("colyseus") as typeof import("colyseus");
 export type { Client } from "colyseus";
 
-export const { Schema, MapSchema, type } = require("@colyseus/schema") as typeof import("@colyseus/schema");
+export const { Schema, MapSchema, ArraySchema, type } = require("@colyseus/schema") as typeof import("@colyseus/schema");

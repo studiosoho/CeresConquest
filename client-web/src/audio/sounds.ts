@@ -9,7 +9,7 @@ import { Wave, type SfxrParams } from "./sfxr";
 export type SoundName =
   | "missile" | "laser" | "turret" | "mineLaunch" | "mineArm"
   | "hit" | "blast" | "shipDown" | "structureDown"
-  | "select" | "lock" | "dock" | "takeoff" | "layerShift"
+  | "select" | "lock" | "layerShift"
   | "buildStart" | "turretReady" | "coin" | "hurt" | "alarm";
 
 export interface SoundSpec {
@@ -78,16 +78,6 @@ export const SOUNDS: Record<SoundName, SoundSpec> = {
   lock: {
     params: { wave: Wave.Square, freq: 0.5, arpMod: 0.5, arpSpeed: 0.55, duty: 0.3, sustain: 0.2, decay: 0.15 },
     gain: 0.25, voices: 1, gap: 0.2,
-  },
-  /** atracou / pousou */
-  dock: {
-    params: { wave: Wave.Square, freq: 0.42, arpMod: -0.25, arpSpeed: 0.6, duty: 0.5, sustain: 0.1, decay: 0.25 },
-    gain: 0.3, voices: 1, gap: 0.2,
-  },
-  /** decolou */
-  takeoff: {
-    params: { wave: Wave.Square, freq: 0.24, slide: 0.32, duty: 0.4, sustain: 0.12, decay: 0.22 },
-    gain: 0.3, voices: 1, gap: 0.2,
   },
   /** troca de camada (subida/descida): sopro de ruído filtrado */
   layerShift: {

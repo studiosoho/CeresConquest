@@ -288,7 +288,7 @@ describe("estação com HP", () => {
     expect(STRUCTURE_SPECS.miningStation.hp - st.hp).toBeGreaterThan(0);
   });
 
-  it("estação zerada explode com o hangar; a pousada decola; o atacante sobe sozinho", () => {
+  it("estação zerada explode com o hangar; a pousada SEM PILOTO decola; o atacante sobe sozinho", () => {
     const r = makeRoom();
     // frente (e vagas) para −x, do lado oposto ao atacante: a nave pousada não
     // fica na linha de tiro e o último tiro chega ao prédio
@@ -299,6 +299,10 @@ describe("estação com HP", () => {
     r.tryToggleAnchor("p2");
     run(r, 1.6);
     expect(landed.anchored).toBe(true);
+    // o dono passa a pilotar outra nave, longe: a pousada fica sem piloto (a
+    // PILOTADA explodiria junto e o dono sairia num pod — ver turrets.test)
+    const [elsewhere] = ship(r, "p2", "attack", openSpace(), false);
+    r.activeShip.set("p2", elsewhere);
     const fire = assault(r, st);
     st.hp = 1; // o último tiro
     stored.hp = 1e9; // não morre sozinha antes da estação
@@ -311,7 +315,7 @@ describe("estação com HP", () => {
     expect(attacker.layerTo).toBe("cruise");
   });
 
-  it("o jogador cuja nave ativa estava no hangar recebe outra que NÃO explodiu junto", () => {
+  it("a nave ativa no hangar explode com a estação: o dono sai num pod rumo ao QG com nave guardada", () => {
     const r = makeRoom();
     const st = station(r, "p2", rocks[0]);
     const doomed = [0, 1].map((bay) => {
@@ -319,12 +323,22 @@ describe("estação com HP", () => {
       s.stored = true; s.hqId = st.id; s.bay = bay; s.hp = 1e9;
       return id;
     });
-    const [survivorId] = ship(r, "p2", "attack", openSpace(), false);
+    // QG do dono em outra rocha, com uma nave guardada
+    const hq = r.sim.addStructure({
+      id: "st-hq-p2", type: "hq", owner: "p2", angle: 0,
+      sx: rocks[1].sx, sy: rocks[1].sy, x: rocks[1].x, y: rocks[1].y,
+      asteroidId: rocks[1].id, asteroidClass: asteroidClassOf(rocks[1].radius),
+      shipBays: STATION_SHIP_BAYS, expandedBays: STATION_EXPANDED_BAYS, spiderBays: 0,
+      nextShipBay: 0, nextSpiderBay: 0, oreStore: 0, rationStore: 0,
+    });
+    const [, waiting] = ship(r, "p2", "attack", rocks[1], false);
+    Object.assign(waiting, { stored: true, hqId: hq.id, bay: STATION_EXPANDED_BAYS });
     r.activeShip.set("p2", doomed[0]);
     const fire = assault(r, st);
     st.hp = 1;
     fire(1);
-    expect(r.activeShip.get("p2")).toBe(survivorId);
+    const pod = r.sim.ships.get(r.activeShip.get("p2")!)!;
+    expect([pod.kind, pod.taxiTo]).toEqual(["pod", hq.id]);
   });
 });
 

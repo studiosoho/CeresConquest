@@ -114,6 +114,11 @@ export class PlanetRenderer {
     this.root.position.y = p.y;
   }
 
+  /** z de cena do centro de Ceres (esfera cheia), ou null antes de existir. */
+  centerZ(): number | null {
+    return this.root ? this.root.position.z : null;
+  }
+
   /** z de cena (mundo) do chão de uma plataforma de Ceres, ou null. */
   platformZ(id: string): number | null {
     const z = this.platformLocalZ.get(id);

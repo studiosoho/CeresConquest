@@ -14,7 +14,7 @@ import {
 } from "@ceres/shared";
 import { sectorAsteroids, setLayer, type Asteroid, type ShipState, type SimWorld, type Structure } from "@ceres/sim-core";
 import { MatchRoom } from "../src/rooms/MatchRoom";
-import { BOT_AMMO, BOT_BUILD_INTERVAL, BOT_FLEET_MAX, BOT_OWNER, BOT_RELOAD_TIME, BOT_WAVE_SIZE, type BotState } from "../src/bots";
+import { BOT_AMMO, BOT_BUILD_INTERVAL, BOT_FLEET_MAX, BOT_OWNER, BOT_RELOAD_TIME, BOT_REPAIR_TIME, BOT_WAVE_SIZE, type BotState } from "../src/bots";
 
 // Frota dos bots (bots.ts): QG em Ceres que produz um bot a cada
 // BOT_BUILD_INTERVAL até BOT_FLEET_MAX; cada bot ataca com BOT_AMMO mísseis,
@@ -152,7 +152,20 @@ describe("ciclo do bot", () => {
     expect(out.length).toBe(BOT_WAVE_SIZE);
   });
 
-  it("o grupo ataca com 2 mísseis cada, volta, recarrega em 30 s e sai de novo junto", () => {
+  it("no QG o bot conserta o casco devagar; o grupo só sai com todos de casco cheio", () => {
+    const r = makeRoom(BOT_FLEET_MAX);
+    (r as unknown as { botBuildTimer: number }).botBuildTimer = 1e9; // sem bots novos no meio
+    station(r, "p1", rocks[0]);
+    const bots = [r.spawnBot()!, r.spawnBot()!, r.spawnBot()!].map((id) => r.sim.ships.get(id)!);
+    bots[0].hp = SHIP_HP_MAX / 2;
+    run(r, BOT_REPAIR_TIME / 2 - 2);
+    expect(bots.every((b) => b.anchored)).toBe(true);
+    expect(bots[0].hp).toBeLessThan(SHIP_HP_MAX);
+    expect(until(r, () => bots.every((b) => !b.anchored), 10)).toBeLessThan(10);
+    expect(bots[0].hp).toBe(SHIP_HP_MAX);
+  });
+
+  it("o grupo ataca com 2 mísseis cada, volta, recarrega e sai de novo junto", () => {
     const r = makeRoom(BOT_FLEET_MAX);
     const st = station(r, "p1", rocks[0]);
     const ids = [r.spawnBot()!, r.spawnBot()!, r.spawnBot()!];

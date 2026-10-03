@@ -415,6 +415,11 @@ export class AsteroidRenderer {
     return entry.root.position.z + (f.center.x * f.normal.x + f.center.y * f.normal.y + f.center.z * f.normal.z) / f.normal.z;
   }
 
+  /** z de cena do centro da rocha `id`, ou null se ela não está em cena. */
+  centerZ(id: string): number | null {
+    return this.entries.get(id)?.root.position.z ?? null;
+  }
+
   getBuildFace(id: string): { root: TransformNode; face: AsteroidBuildFace } | null {
     const entry = this.entries.get(id);
     return entry ? { root: entry.root, face: entry.buildFace } : null;

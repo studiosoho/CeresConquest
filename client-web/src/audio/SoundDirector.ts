@@ -12,7 +12,7 @@
  * dispara de uma vez o som de tudo que já existia.
  */
 
-import { relVec, type FxEvent, type WorldPos } from "@ceres/shared";
+import { LAND_DURATION, LAYER_TRANSITION_TIME, relVec, type FxEvent, type WorldPos } from "@ceres/shared";
 import type { SoundEngine } from "./SoundEngine";
 import type { SoundName } from "./sounds";
 
@@ -28,6 +28,8 @@ export interface DirectorShip extends WorldPos {
   kind: string;
   anchored: boolean;
   landingPhase: string;
+  /** minerando (pousada num asteroide, ou o builder na estação) */
+  mining: boolean;
   layerTo: string;
   weapon: string;
   aimLocked: boolean;
@@ -71,6 +73,11 @@ export class SoundDirector {
     this.engine = engine;
   }
 
+  /** Alarme de um alerta do servidor (MSG_ALERT). */
+  alarm(): void {
+    this.engine.play("alarm");
+  }
+
   /** Efeito anunciado pelo servidor (explosão, laser). */
   fx(ev: FxEvent, listener: WorldPos | null, myShipId: string): void {
     const at = { sx: ev.sx, sy: ev.sy, x: ev.x, y: ev.y };
@@ -99,6 +106,8 @@ export class SoundDirector {
   sync(s: DirectorSnapshot, listener: WorldPos | null, now: number): void {
     const prev = this.memory;
     const me = s.ships.get(s.myShipId) ?? null;
+    // WOOSH-WOOSH-WOOSH enquanto a nave própria minera
+    this.engine.setMining(!!me?.mining);
     const next: Memory = {
       myShipId: s.myShipId,
       me: me ? { ...me } : null,
@@ -142,11 +151,15 @@ export class SoundDirector {
     if (!me || !was || prev.myShipId !== s.myShipId) return;
     if (me.weapon !== was.weapon) this.engine.play("select");
     if (me.aimLocked && !was.aimLocked) this.engine.play("lock");
+    // pouso: o jato morrendo durante a descida e o CLANK dos pés ao tocar o chão
+    if (me.landingPhase === "landing" && was.landingPhase !== "landing") this.engine.playLanding(LAND_DURATION);
     const parked = (x: DirectorShip) => x.anchored || x.landingPhase === "landed";
-    if (parked(me) && !parked(was)) this.engine.play("dock");
-    else if (!parked(me) && parked(was)) this.engine.play("takeoff");
+    if (parked(me) && !parked(was)) this.engine.playClank();
+    else if (!parked(me) && parked(was)) this.engine.playTakeoff(LAYER_TRANSITION_TIME);
     else if (me.layerTo && me.layerTo !== was.layerTo) this.engine.play("layerShift");
-    if (me.cargoAmount > was.cargoAmount + 0.5 && me.anchored) this.engine.play("coin");
+    // moeda: carga PONTUAL de minério ([O], transporte) — minerando, o porão
+    // cresce a cada estado e a moeda virava um bip contínuo sobre o WOOSH
+    if (me.cargoAmount > was.cargoAmount + 0.5 && me.anchored && !me.mining && !was.mining) this.engine.play("coin");
   }
 
   /** Empuxo do motor da nave própria (0..1). */

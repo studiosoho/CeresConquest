@@ -25,10 +25,17 @@ export interface StructureSpec {
   hp: number;
 }
 
+/**
+ * Dono das RUÍNAS: as estruturas de um jogador encerrado ficam no mapa sem
+ * dono — ninguém ataca, nada produz, e o asteroide continua ocupado (não dá
+ * para construir nele).
+ */
+export const RUIN_OWNER = "ruins";
+
 export const STRUCTURE_SPECS: Record<StructureType, StructureSpec> = {
   miningStation: {
     label: "Estação de mineração",
-    cost: 100,
+    cost: 150,
     radius: SHIP_RADIUS * 4,
     requiresAsteroid: true,
     // a estação sozinha NÃO minera — quem produz são as aranhas atreladas
@@ -37,7 +44,7 @@ export const STRUCTURE_SPECS: Record<StructureType, StructureSpec> = {
   },
   hq: {
     label: "Quartel-general",
-    cost: 300,
+    cost: 250, // o porão inteiro de kits do builder (BUILDER_ITEM_CAP)
     radius: SHIP_RADIUS * 6,
     requiresAsteroid: true,
     productionRate: 0,
@@ -53,7 +60,7 @@ export const STRUCTURE_SPECS: Record<StructureType, StructureSpec> = {
   },
   rationCenter: {
     label: "Centro de distribuição de rações",
-    cost: 200,
+    cost: 100,
     radius: SHIP_RADIUS * 4,
     requiresAsteroid: true,
     productionRate: 0,
@@ -90,15 +97,9 @@ export const RATION_STORE_CAP = 2000;
 export const CERES_STATION_MAX_LEVEL = 5;
 /** Vagas de aranha a mais por nível acima do 1. */
 export const CERES_STATION_SPIDER_BAYS_PER_LEVEL = 2;
-/** Minério/s que cada nível acima do 1 põe no estoque local da estação. */
-export const CERES_STATION_ORE_RATE_PER_LEVEL = 3;
 /** Anexos (prédios novos na plataforma) que cada nível acima do 1 acrescenta. */
 export const CERES_STATION_ANNEXES_PER_LEVEL = 2;
 
-/** Custo (minério) para subir a estação de Ceres do nível `level` ao seguinte. */
-export function ceresStationUpgradeCost(level: number): number {
-  return 200 * level;
-}
 
 /** HP máximo de uma estrutura no nível dado: +50% por nível acima do 1. */
 export function structureMaxHp(type: StructureType, level = 1): number {

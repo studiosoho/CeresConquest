@@ -1,6 +1,8 @@
 import { Room, updateLobby, type Client } from "../colyseus";
 import {
   MSG_INPUT,
+  MSG_ALERT,
+  type AlertEvent,
   MSG_BUILD,
   MSG_PRODUCE,
   MSG_ANCHOR,
@@ -15,6 +17,8 @@ import {
   MSG_FX,
   MSG_UPGRADE,
   MSG_TURRET,
+  MSG_RESTART,
+  RUIN_OWNER,
   TICK_RATE,
   SIM_MAX_DT,
   SECTOR_SIZE,
@@ -29,14 +33,36 @@ import {
   BASE_EXPANDED_BAYS,
   CERES_STATION_MAX_LEVEL,
   CERES_STATION_SPIDER_BAYS_PER_LEVEL,
-  CERES_STATION_ORE_RATE_PER_LEVEL,
-  ceresStationUpgradeCost,
   structureMaxHp,
+  LAND_DURATION,
+  WORM_HEAD_RADIUS,
+  WORM_RAM_DAMAGE,
+  WORM_RAM_RETREAT,
+  WORM_QUAKE_BREACH_TIME,
+  WORM_QUAKE_DANGER_TIME,
+  WORM_QUAKE_WARN_TIME,
+  WORM_REVENGE_MEMORY,
+  WORM_SIEGE_TIME,
+  WORM_BODY_COOLDOWN,
+  WORM_BODY_DAMAGE,
+  WORM_HOLE_ID,
+  WORM_HOLE_RADIUS,
+  WORM_HOLE_SEAL_MINES,
+  WORM_WAKE_LEVEL,
+  WORM_DEN_TIME,
+  WORM_ROAM_TIME,
+  WORM_MAX,
+  WORM_MOUTH_RADIUS,
+  WORM_SENSE_RANGE,
+  WORM_SPAWN_INTERVAL,
+  WORM_SPACING,
+  WORM_SPEED,
+  wormRadiusAt,
+  REPAIR_HP_PER_KIT,
+  REPAIR_RATE,
+  SHIP_HP_MAX,
   stationOreCap,
   RATION_STORE_CAP,
-  RATION_DRONE_RANGE,
-  RATION_DRONE_AMOUNT,
-  RATION_DRONE_INTERVAL,
   RATION_CENTER_SHIP_BAYS,
   RATION_CENTER_EXPANDED_BAYS,
   TRANSPORT_CARGO_CAP,
@@ -72,7 +98,30 @@ import {
   TURRET_RANGE,
   TURRET_DAMAGE,
   TURRET_COOLDOWN,
-  BUILDER_ORE_CAP,
+  holdRoom,
+  REFINE_ORE,
+  STARTING_KITS,
+  DRILL_BASE_RATE,
+  DRILL_CYCLE_ORE,
+  STRUCTURE_ORE_CAP,
+  STRUCTURE_KIT_CAP,
+  stationUpgradeCost,
+  MSG_TRANSFER,
+  type TransferCommand,
+  REFINE_KITS,
+  REFINE_TIME,
+  STRUCTURE_START_RATIONS,
+  RATIONS_PER_MINING_CYCLE,
+  RATIONS_PER_SHIP,
+  DRONE_TRACKS,
+  DRONE_HP,
+  DRONE_RADIUS,
+  DRONE_REBUILD_TIME,
+  droneStats,
+  droneUpgradeCost,
+  MSG_DRONE_UPGRADE,
+  type DroneTrack,
+  type DroneUpgradeCommand,
   turretWorldPos,
   ATTACK_ZONE_MARGIN,
   CERES_RADIUS,
@@ -92,6 +141,8 @@ import {
   normalizePos,
   type ShipInput,
   type ShipKind,
+  type StructureType,
+  type ProducibleKind,
   type BuildCommand,
   type ProduceCommand,
   type TaxiCommand,
@@ -109,13 +160,15 @@ import {
   seekInput,
   findClearSpawn,
   sectorAsteroids,
+  wormBodyAt,
   beginLayerChange,
   setLayer,
   type Asteroid,
   type ShipState,
   type Structure,
 } from "@ceres/sim-core";
-import { MatchState, ShipSchema, StructureSchema, PlayerSchema, ProjectileSchema } from "../schema/State";
+import { MatchState, ShipSchema, StructureSchema, PlayerSchema, ProjectileSchema, DroneSchema, WormSchema } from "../schema/State";
+import { makeWorm, moveWorm, type Worm } from "../worms";
 import {
   canFire,
   collisionDamage,
@@ -136,6 +189,7 @@ import {
   BOT_FLEET_MAX,
   BOT_OWNER,
   BOT_RELOAD_TIME,
+  BOT_REPAIR_TIME,
   BOT_WAVE_SIZE,
   computeBotInput,
   computeTaxiInput,
@@ -160,6 +214,10 @@ interface Projectile {
   origin?: WorldPos;
   armed?: boolean;
   age?: number;
+  /** mina parada dentro do buraco da toca das minhocas */
+  inHole?: boolean;
+  /** id da nave que disparou (a minhoca se vinga dela) */
+  shooter?: string;
 }
 
 /**
@@ -176,6 +234,45 @@ interface WeaponState {
   offset2: number;
   locked2: boolean;
 }
+
+/** Rota de um transporte em entrega automática. */
+interface Freighter {
+  mode: "ore" | "rations";
+  /** onde carrega (estação de mineração ou base inicial) e para onde leva */
+  pickup: string;
+  dest: string;
+  leg: "load" | "out" | "back";
+}
+
+/** Prefixo dos alvos de mira que são drones (o resto são naves e estruturas). */
+const DRONE_PREFIX = "drone:";
+/** alvo de mira numa minhoca: "worm:<id>:<gomo>" */
+const WORM_PREFIX = "worm:";
+/** alvo de mira numa mina dentro da toca: "mine:<id do projétil>" */
+const MINE_PREFIX = "mine:";
+/** bot caçando a minhoca: distância em que para de chegar perto e atira (u) */
+const BOT_WORM_STANDOFF = 3000;
+
+/** Drone de ração (logistics.ts). "home" = guardado na central. */
+interface Drone extends WorldPos {
+  id: string;
+  owner: string;
+  center: string;
+  angle: number;
+  phase: "home" | "out" | "back";
+  target: string;
+  cargo: number;
+  hp: number;
+}
+
+/** O que o jogador fez na partida (tela de fim de jogo). */
+interface PlayerStats {
+  joinedAt: number;
+  built: Partial<Record<StructureType, number>>;
+  produced: Partial<Record<ProducibleKind, number>>;
+  turrets: number;
+}
+const freshStats = (now: number): PlayerStats => ({ joinedAt: now, built: {}, produced: {}, turrets: 0 });
 
 /** Frota máxima de bots por padrão (QG dos bots em Ceres; 0 = sem bots). */
 const DEFAULT_BOTS = BOT_FLEET_MAX;
@@ -232,6 +329,15 @@ export class MatchRoom extends Room<MatchState> {
   private elapsed = 0;
   /** projéteis ativos (id → estado) */
   private projSeq = 0;
+  /**
+   * Transportes em ENTREGA AUTOMÁTICA (id da nave → rota): minério da estação
+   * de mineração para a base inicial, ou rações da base para a central.
+   */
+  private freighters = new Map<string, Freighter>();
+  /** piloto esperando numa estrutura, SEM nave (sessionId → id da estrutura) */
+  private waitingAt = new Map<string, string>();
+  /** o que cada jogador fez na partida (tela de fim de jogo) */
+  private stats = new Map<string, PlayerStats>();
   /** turretas prontas por estrutura (id → quantidade) */
   private turrets = new Map<string, number>();
   /** obra de turreta em curso por estrutura: o builder travado e o progresso (0..1) */
@@ -249,7 +355,27 @@ export class MatchRoom extends Room<MatchState> {
    */
   private combatRng: () => number = Math.random;
   /** timer por centro de distribuição (structId → segundos até próximo drone) */
-  private rationDroneTimers = new Map<string, number>();
+  /** refinaria de bordo de cada builder: lotes na fila e tempo do lote atual */
+  private refine = new Map<string, { queue: number; t: number }>();
+  /** minério escavado pela broca de cada estação desde o último ciclo de rações */
+  private drillCycle = new Map<string, number>();
+  /** consertos em andamento: estrutura → builder que conserta e o HP já pago em kits */
+  private repairJobs = new Map<string, { shipId: string; credit: number; claim?: string }>();
+  /** minhocas gigantes vivas (shared/worms.ts) */
+  private worms = new Map<string, Worm>();
+  private wormSeq = 0;
+  /** TOCA aberta do ninho de Ceres (null = ninho dormindo ou toca tapada) e s até a próxima minhoca */
+  private hole: { padId: string; pos: WorldPos; radius: number; seal: number } | null = null;
+  /** tremores em curso: a estação de Ceres que chegou ao nível 2, o dono e os s desde então */
+  private quake: { stationId: string; padId: string; owner: string; t: number } | null = null;
+  private nestTimer = 0;
+  /** naves que bateram no corpo de uma minhoca: s até poder tomar dano de novo */
+  private wormBodyHits = new Map<string, number>();
+  /** drones de ração em voo / em casa, e as melhorias e reposições de cada central */
+  private drones = new Map<string, Drone>();
+  private droneSeq = 0;
+  private droneUpgrades = new Map<string, Record<DroneTrack, number>>();
+  private droneRebuild = new Map<string, number>();
   /**
    * Naves em modo ataque (ou descendo para ele) → a estação atacada e o raio
    * do asteroide dela: a zona fora da qual a nave sobe sozinha ao cruzeiro.
@@ -287,6 +413,8 @@ export class MatchRoom extends Room<MatchState> {
 
     this.onMessage(MSG_INPUT, (client: Client, input: ShipInput) => {
       const active = this.activeShip.get(client.sessionId);
+      // no escape pod quem pilota é o piloto automático
+      if (active && this.sim.ships.get(active)?.kind === "pod") return;
       if (active) {
         this.rawInputs.set(active, input);
         this.sim.setInput(active, input);
@@ -343,6 +471,18 @@ export class MatchRoom extends Room<MatchState> {
       this.tryBuildTurret(client.sessionId);
     });
 
+    this.onMessage(MSG_RESTART, (client: Client) => {
+      this.restartPlayer(client.sessionId);
+    });
+
+    this.onMessage(MSG_TRANSFER, (client: Client, cmd: TransferCommand) => {
+      this.tryTransfer(client.sessionId, cmd?.item, cmd?.dir);
+    });
+
+    this.onMessage(MSG_DRONE_UPGRADE, (client: Client, cmd: DroneUpgradeCommand) => {
+      this.tryDroneUpgrade(client.sessionId, cmd?.track);
+    });
+
     // metadata exibida na lista do lobby (título da sala)
     void this.setMetadata({
       title: sanitizeLabel(options.title, `Arena ${seed.toString(16).slice(0, 4)}`, 24),
@@ -376,7 +516,8 @@ export class MatchRoom extends Room<MatchState> {
     p.activeShip = id;
     p.name = sanitizeLabel(options.name, "Piloto", 20);
     this.state.players.set(client.sessionId, p);
-    this.sim.playerOre.set(client.sessionId, 0);
+    ship.kits = STARTING_KITS; // não há carteira: o jogador começa com kits a bordo
+    this.stats.set(client.sessionId, freshStats(this.elapsed));
     // o jogador RECEBE a Base Inicial no asteroide livre mais próximo do spawn
     this.grantInitialBase(client.sessionId, ship);
     // atualiza a contagem de jogadores exibida no lobby
@@ -445,8 +586,8 @@ export class MatchRoom extends Room<MatchState> {
       }
     }
     this.activeShip.delete(client.sessionId);
+    this.waitingAt.delete(client.sessionId);
     this.state.players.delete(client.sessionId);
-    this.sim.playerOre.delete(client.sessionId);
     // atualiza a contagem de jogadores exibida no lobby
     void updateLobby(this);
     console.log(`[room] ${client.sessionId} saiu`);
@@ -616,6 +757,9 @@ export class MatchRoom extends Room<MatchState> {
       const structs = [...this.sim.structures.values()].filter((s) => s.asteroidId === near.id);
       const own = structs.find((s) => s.owner === sessionId);
       if (own && this.landAtBay(ship, own)) return;
+      // RUÍNA: só o builder pousa — para recuperá-la com [G]
+      const ruin = ship.kind === "builder" ? structs.find((s) => s.owner === RUIN_OWNER) : undefined;
+      if (ruin && this.landAtBay(ship, ruin)) return;
       if (structs.length === 0 && (ship.kind === "builder" || ship.kind === "mining")) {
         this.landOnAsteroid(ship, near);
         return;
@@ -631,8 +775,8 @@ export class MatchRoom extends Room<MatchState> {
     const pad = this.ceresPlatformNear(ship);
     if (pad) {
       const built = [...this.sim.structures.values()].find((st) => st.asteroidId === pad.id);
-      if (built?.owner === sessionId && this.landAtBay(ship, built)) return;
-      if (!built && (ship.kind === "builder" || ship.kind === "mining")) {
+      if (built && (built.owner === sessionId || (built.owner === RUIN_OWNER && ship.kind === "builder")) && this.landAtBay(ship, built)) return;
+      if (!built && this.hole?.padId !== pad.id && (ship.kind === "builder" || ship.kind === "mining")) {
         this.startLanding(ship, ceresPlatformPos(this.sim.seed, pad), 0);
         ship.anchoredAsteroidId = pad.id;
         ship.hqId = "";
@@ -672,16 +816,16 @@ export class MatchRoom extends Room<MatchState> {
     if (!ship || ship.kind !== "builder" || !ship.anchored) return;
     const st = this.sim.structures.get(ship.hqId);
     if (!st || st.owner !== sessionId || st.type !== "miningStation") return;
-    if (!st.asteroidId.startsWith(CERES_PLATFORM_PREFIX)) return;
-    if (st.level >= CERES_STATION_MAX_LEVEL) return;
-    const cost = ceresStationUpgradeCost(st.level);
-    if (this.sim.getOre(sessionId) < cost) return;
-    this.sim.spendOre(sessionId, cost);
+    const cost = stationUpgradeCost(st.level);
+    if (cost === null || st.level >= CERES_STATION_MAX_LEVEL) return;
+    if (!this.payKits(ship, st, cost)) return;
     const oldMax = structureMaxHp(st.type, st.level);
     st.level += 1;
-    st.spiderBays += CERES_STATION_SPIDER_BAYS_PER_LEVEL;
+    // em Ceres, cada nível também abre vagas de aranha (e anexos no render)
+    if (st.asteroidId.startsWith(CERES_PLATFORM_PREFIX)) st.spiderBays += CERES_STATION_SPIDER_BAYS_PER_LEVEL;
     st.hp += structureMaxHp(st.type, st.level) - oldMax;
     console.log(`[room] ${sessionId} evoluiu a estação ${st.id} para o nível ${st.level}`);
+    if (st.asteroidId.startsWith(CERES_PLATFORM_PREFIX) && st.level >= WORM_WAKE_LEVEL && !this.hole && !this.quake) this.startQuake(st);
   }
 
   /**
@@ -742,8 +886,12 @@ export class MatchRoom extends Room<MatchState> {
    * nave — a mesma zona que `superviseAttackMode` usa para mantê-la no modo.
    */
   private enemyStationZoneAt(ship: ShipState, sessionId: string): { structId: string; radius: number } | null {
+    // a TOCA das minhocas também: é sobre ela que se lançam as minas para tapá-la
+    if (this.hole && dist(ship, this.hole.pos) <= this.hole.radius + ATTACK_ZONE_MARGIN) {
+      return { structId: WORM_HOLE_ID, radius: this.hole.radius };
+    }
     for (const st of this.sim.structures.values()) {
-      if (st.owner === sessionId) continue;
+      if (!this.hostileStructure(sessionId, st)) continue;
       const radius = this.siteRadius(st);
       if (radius === null) continue;
       if (dist(ship, st) <= radius + ATTACK_ZONE_MARGIN) return { structId: st.id, radius };
@@ -778,16 +926,31 @@ export class MatchRoom extends Room<MatchState> {
         this.attackTargets.delete(id);
         continue;
       }
-      const struct = this.sim.structures.get(target.structId);
-      if (!struct || dist(ship, struct) > target.radius + ATTACK_ZONE_MARGIN) {
+      const site = this.attackSitePos(target.structId);
+      if (!site || dist(ship, site) > target.radius + ATTACK_ZONE_MARGIN) {
         beginLayerChange(ship, "cruise");
         this.attackTargets.delete(id);
       }
     }
   }
 
+  /** Centro do alvo do modo ataque: a estrutura, ou a toca das minhocas (WORM_HOLE_ID). */
+  private attackSitePos(id: string): WorldPos | null {
+    if (id === WORM_HOLE_ID) return this.hole?.pos ?? null;
+    return this.sim.structures.get(id) ?? null;
+  }
+
   /** Troca a nave ativa por uma do hangar da estrutura ancorada. */
   private trySwap(sessionId: string): void {
+    // a pé na estação: embarca na nave guardada ali (ordem das vagas)
+    const waiting = this.sim.structures.get(this.waitingAt.get(sessionId) ?? "");
+    if (waiting) {
+      const here = [...this.sim.ships]
+        .filter(([, s]) => s.owner === sessionId && s.hqId === waiting.id && s.stored)
+        .sort(([, a], [, b]) => a.bay - b.bay);
+      if (here.length > 0) this.boardShip(sessionId, here[0][0], here[0][1], waiting);
+      return;
+    }
     const active = this.activeShipOf(sessionId);
     if (!active || !active.anchored) return;
     const struct = this.sim.structures.get(active.hqId) ?? this.nearestOwnStructure(sessionId, active, DOCK_RANGE);
@@ -830,6 +993,14 @@ export class MatchRoom extends Room<MatchState> {
    */
   private tryAutoMine(sessionId: string): void {
     const active = this.activeShipOf(sessionId);
+    if (active?.kind === "transport") {
+      this.tryAutoTransport(sessionId);
+      return;
+    }
+    if (active?.kind === "builder") {
+      this.tryRepair(sessionId);
+      return;
+    }
     if (!active || active.kind !== "mining" || !active.anchored) return;
     const station = this.nearestOwnStructure(sessionId, active, DOCK_RANGE, "miningStation");
     if (!station) return;
@@ -840,9 +1011,11 @@ export class MatchRoom extends Room<MatchState> {
     // raio do asteroide hospedeiro (para a aranha caminhar na superfície)
     const astRadius = this.siteRadius(station) ?? 400;
 
-    // transfere o controle para outra nave ANTES de largar a mineradora
+    // o piloto DESEMBARCA e fica esperando na estação (sem nave): dali chama
+    // um táxi de qualquer hangar ou embarca numa nave guardada ali
     const activeId = this.activeShip.get(sessionId)!;
-    if (!this.transferControl(sessionId, activeId)) return; // não pode ficar sem nave
+    this.activeShip.delete(sessionId);
+    this.waitingAt.set(sessionId, station.id);
 
     active.autoMining = true;
     active.stationId = station.id;
@@ -886,7 +1059,7 @@ export class MatchRoom extends Room<MatchState> {
     if (action === "buildmine" && ship.kind === "builder") {
       // constrói estação de mineração no asteroide pousado
       const spec = STRUCTURE_SPECS["miningStation"];
-      if (this.sim.getOre(sessionId) < spec.cost) return;
+      if (!this.hasKits(ship, spec.cost)) return;
 
       // o local em que o builder pousou: asteroide vazio ou plataforma de Ceres
       const ast = this.landedSite(ship);
@@ -902,7 +1075,7 @@ export class MatchRoom extends Room<MatchState> {
       const expandedBays = STATION_EXPANDED_BAYS;
       const spiderBays = STATION_SPIDER_BAYS[cls];
 
-      this.sim.spendOre(sessionId, spec.cost);
+      this.spendKits(ship, spec.cost);
       const id = `st-${this.structSeq++}`;
       this.sim.addStructure({
         id, type: "miningStation", owner: sessionId,
@@ -921,6 +1094,7 @@ export class MatchRoom extends Room<MatchState> {
 
       // o builder sai do centro do asteroide e pousa na vaga livre da estrutura nova
       this.settleAfterBuild(ship, id);
+      this.onBuilt(sessionId, id);
       console.log(`[room] ${sessionId} construiu miningStation (via pouso) em ${cls} — builder a caminho da vaga`);
     }
 
@@ -929,7 +1103,7 @@ export class MatchRoom extends Room<MatchState> {
 
     if (action === "buildhq" && ship.kind === "builder" && !onCeres) {
       const spec = STRUCTURE_SPECS["hq"];
-      if (this.sim.getOre(sessionId) < spec.cost) return;
+      if (!this.hasKits(ship, spec.cost)) return;
       // o local em que o builder pousou: asteroide vazio ou plataforma de Ceres
       const ast = this.landedSite(ship);
       if (!ast) return;
@@ -939,7 +1113,7 @@ export class MatchRoom extends Room<MatchState> {
       const { angle, cls } = ast;
       const shipBays = HQ_SHIP_BAYS;
       const expandedBays = HQ_EXPANDED_BAYS;
-      this.sim.spendOre(sessionId, spec.cost);
+      this.spendKits(ship, spec.cost);
       const id = `st-${this.structSeq++}`;
       this.sim.addStructure({
         id, type: "hq", owner: sessionId,
@@ -957,12 +1131,13 @@ export class MatchRoom extends Room<MatchState> {
       this.state.structures.set(id, ss);
       // o builder sai do centro do asteroide e pousa na vaga livre da estrutura nova
       this.settleAfterBuild(ship, id);
+      this.onBuilt(sessionId, id);
       console.log(`[room] ${sessionId} construiu hq (via pouso) em ${cls}`);
     }
 
     if (action === "buildration" && ship.kind === "builder" && !onCeres) {
       const spec = STRUCTURE_SPECS["rationCenter"];
-      if (this.sim.getOre(sessionId) < spec.cost) return;
+      if (!this.hasKits(ship, spec.cost)) return;
       // o local em que o builder pousou: asteroide vazio ou plataforma de Ceres
       const ast = this.landedSite(ship);
       if (!ast) return;
@@ -970,7 +1145,7 @@ export class MatchRoom extends Room<MatchState> {
         if (st.asteroidId === ast.id) return;
       }
       const { angle, cls } = ast;
-      this.sim.spendOre(sessionId, spec.cost);
+      this.spendKits(ship, spec.cost);
       const id = `st-${this.structSeq++}`;
       this.sim.addStructure({
         id, type: "rationCenter", owner: sessionId,
@@ -987,9 +1162,9 @@ export class MatchRoom extends Room<MatchState> {
       ss.shipBays = RATION_CENTER_SHIP_BAYS; ss.expandedBays = RATION_CENTER_EXPANDED_BAYS;
       ss.spiderBays = 0; ss.nextShipBay = 0; ss.nextSpiderBay = 0;
       this.state.structures.set(id, ss);
-      this.rationDroneTimers.set(id, RATION_DRONE_INTERVAL);
       // o builder sai do centro do asteroide e pousa na vaga livre da estrutura nova
       this.settleAfterBuild(ship, id);
+      this.onBuilt(sessionId, id);
       console.log(`[room] ${sessionId} construiu rationCenter em ${cls}`);
     }
   }
@@ -1002,11 +1177,75 @@ export class MatchRoom extends Room<MatchState> {
     const ship = this.activeShipOf(sessionId);
     if (!ship || ship.kind !== "builder" || !ship.anchored) return;
     const station = this.sim.structures.get(ship.hqId);
-    if (!station || station.type !== "miningStation") return;
+    if (!station || station.type !== "miningStation" || station.owner !== sessionId) return;
     ship.mining = !ship.mining;
   }
 
   // ── turretas (turrets.ts) ──────────────────────────────────────────
+
+  /**
+   * [G] no builder atracado numa estrutura PRÓPRIA danificada: liga/desliga o
+   * conserto automático (stepRepair). Precisa de algum kit — no porão ou no
+   * buffer da estrutura.
+   */
+  private tryRepair(sessionId: string): void {
+    const shipId = this.activeShip.get(sessionId);
+    const ship = this.activeShipOf(sessionId);
+    if (!shipId || !ship || ship.kind !== "builder" || !ship.anchored || ship.stored) return;
+    const st = this.sim.structures.get(ship.hqId);
+    if (!st || (st.owner !== sessionId && st.owner !== RUIN_OWNER)) return;
+    const job = this.repairJobs.get(st.id);
+    if (job) {
+      if (job.shipId === shipId) this.repairJobs.delete(st.id);
+      return;
+    }
+    // ruína: a recuperação vale mesmo de HP cheio, paga só com o porão (o
+    // buffer dela é do espólio e fica como está)
+    if (st.owner === RUIN_OWNER) {
+      this.repairJobs.set(st.id, { shipId, credit: 0, claim: sessionId });
+      return;
+    }
+    if (st.hp >= structureMaxHp(st.type, st.level) || ship.kits + st.kitStore < 1) return;
+    this.repairJobs.set(st.id, { shipId, credit: 0 });
+  }
+
+  /**
+   * Conserto: REPAIR_RATE HP/s, pagando 1 kit a cada REPAIR_HP_PER_KIT HP — do
+   * porão do builder primeiro, depois do buffer da estrutura. Termina no HP
+   * cheio, sem kits, ou quando o builder sai da vaga.
+   */
+  private stepRepair(dt: number): void {
+    for (const [stId, job] of [...this.repairJobs]) {
+      const st = this.sim.structures.get(stId);
+      const ship = this.sim.ships.get(job.shipId);
+      if (!st || !ship || !ship.anchored || ship.stored || ship.hqId !== stId) {
+        this.repairJobs.delete(stId);
+        continue;
+      }
+      const max = structureMaxHp(st.type, st.level);
+      let heal = Math.min(REPAIR_RATE * dt, max - st.hp);
+      while (job.credit < heal) {
+        if (ship.kits >= 1) ship.kits -= 1;
+        else if (!job.claim && st.kitStore >= 1) st.kitStore -= 1;
+        else break;
+        job.credit += REPAIR_HP_PER_KIT;
+      }
+      heal = Math.min(heal, job.credit);
+      st.hp += heal;
+      job.credit -= heal;
+      if (st.hp >= max && job.claim) this.claimRuin(st, job.claim);
+      if (st.hp >= max || heal <= 0) this.repairJobs.delete(stId);
+    }
+  }
+
+  /**
+   * RUÍNA RECUPERADA: volta a funcionar como estrutura do jogador, com o
+   * buffer (minério, kits, rações) que tinha — agora no inventário dele.
+   */
+  private claimRuin(st: Structure, sessionId: string): void {
+    st.owner = sessionId;
+    console.log(`[room] ${sessionId} recuperou a ruína ${st.id} (${st.type})`);
+  }
 
   /** O builder `shipId` está construindo uma turreta (e por isso travado na vaga)? */
   private buildingTurret(shipId: string): boolean {
@@ -1015,28 +1254,125 @@ export class MatchRoom extends Room<MatchState> {
   }
 
   /**
-   * [E] no builder atracado: enche o PORÃO de minério — do estoque da estação
-   * de mineração, ou da carteira na base inicial e no QG (o minério já
-   * "entregue"). É desse porão que sai o custo das turretas.
+   * [E] no builder: põe um lote de REFINE_ORE minério do PORÃO na refinaria de
+   * bordo, que rende REFINE_KITS kits em REFINE_TIME s (stepRefine). Vale em
+   * qualquer lugar — pousado minerando inclusive. Os lotes fazem fila; os kits
+   * (contando a fila) cabem no porão (holdRoom: teto do item e do total).
    */
   private loadBuilderOre(sessionId: string, ship: ShipState): void {
-    if (!ship.anchored) return;
-    const struct = this.sim.structures.get(ship.hqId);
-    if (!struct || struct.owner !== sessionId) return;
-    const space = BUILDER_ORE_CAP - (ship.cargoKind === "ore" ? ship.cargoAmount : 0);
-    if (space <= 0 || (ship.cargoKind !== "" && ship.cargoKind !== "ore")) return;
-    let moved = 0;
-    if (struct.type === "miningStation") {
-      moved = Math.min(space, struct.oreStore);
-      struct.oreStore -= moved;
-    } else if (struct.type === "initialBase" || struct.type === "hq") {
-      moved = Math.min(space, Math.floor(this.sim.getOre(sessionId)));
-      if (moved > 0) this.sim.spendOre(sessionId, moved);
-    }
+    const shipId = this.activeShip.get(sessionId);
+    if (!shipId || ship.cargoKind !== "ore" || ship.cargoAmount < REFINE_ORE) return;
+    const job = this.refine.get(shipId) ?? { queue: 0, t: 0 };
+    if (holdRoom(ship, "kits") < (job.queue + 1) * REFINE_KITS) return;
+    ship.cargoAmount -= REFINE_ORE;
+    if (ship.cargoAmount <= 0) { ship.cargoKind = ""; ship.cargoAmount = 0; }
+    job.queue++;
+    this.refine.set(shipId, job);
+  }
+
+  /** [E] na nave de mineração atracada: descarrega o porão no buffer da estrutura. */
+  private unloadOre(sessionId: string, ship: ShipState): void {
+    if (!ship.anchored || ship.cargoKind !== "ore" || ship.cargoAmount <= 0) return;
+    const st = this.sim.structures.get(ship.hqId);
+    if (!st || st.owner !== sessionId) return;
+    const moved = Math.min(ship.cargoAmount, Math.max(0, this.oreCap(st) - st.oreStore));
     if (moved <= 0) return;
-    ship.cargoKind = "ore";
-    ship.cargoAmount = (ship.cargoAmount || 0) + moved;
-    console.log(`[room] ${sessionId} builder carregou ${Math.round(moved)} de minério em ${struct.id}`);
+    st.oreStore += moved;
+    ship.cargoAmount -= moved;
+    if (ship.cargoAmount <= 0) { ship.cargoKind = ""; ship.cargoAmount = 0; }
+  }
+
+  /** Capacidade do buffer de minério de uma estrutura. */
+  private oreCap(st: Structure): number {
+    return st.type === "miningStation" ? stationOreCap(st.level) : STRUCTURE_ORE_CAP;
+  }
+
+  /**
+   * [O]/[P]/[K]/[L]: o builder atracado numa estrutura própria retira ou
+   * deposita minério e kits no buffer dela (base inicial, QG, estação de
+   * mineração), respeitando o porão e o buffer.
+   */
+  private tryTransfer(sessionId: string, item?: "ore" | "kits" | "rations", dir?: "withdraw" | "deposit"): void {
+    const ship = this.activeShipOf(sessionId);
+    if (!ship || ship.kind !== "builder" || !ship.anchored) return;
+    const st = this.sim.structures.get(ship.hqId);
+    if (!st || st.owner !== sessionId) return;
+    // [J] rações: carrega onde elas nascem/estocam (base, central), descarrega
+    // onde são consumidas (estação de mineração, QG)
+    if (item === "rations") {
+      // na central de rações o [J] vale nos dois sentidos: chegando COM rações,
+      // descarrega (abastece os drones); de porão sem rações, carrega
+      const unload = st.type === "miningStation" || st.type === "hq" || (st.type === "rationCenter" && ship.rations > 0);
+      if (!unload && (st.type === "initialBase" || st.type === "rationCenter")) {
+        const moved = Math.min(holdRoom(ship, "rations"), Math.floor(st.rationStore));
+        if (moved > 0) { st.rationStore -= moved; ship.rations += moved; }
+      } else if (unload) {
+        const moved = Math.min(ship.rations, Math.max(0, RATION_STORE_CAP - Math.floor(st.rationStore)));
+        if (moved > 0) { st.rationStore += moved; ship.rations -= moved; }
+      }
+      return;
+    }
+    if (st.type !== "initialBase" && st.type !== "hq" && st.type !== "miningStation") return;
+    if (item === "ore") {
+      const hold = ship.cargoKind === "ore" ? ship.cargoAmount : 0;
+      if (ship.cargoKind !== "" && ship.cargoKind !== "ore") return;
+      const moved = dir === "withdraw"
+        ? Math.min(holdRoom(ship, "ore"), Math.floor(st.oreStore))
+        : Math.min(hold, Math.max(0, this.oreCap(st) - st.oreStore));
+      if (!(moved > 0)) return;
+      st.oreStore += dir === "withdraw" ? -moved : moved;
+      ship.cargoAmount = hold + (dir === "withdraw" ? moved : -moved);
+      ship.cargoKind = ship.cargoAmount > 0 ? "ore" : "";
+    } else if (item === "kits") {
+      const moved = dir === "withdraw"
+        ? Math.min(holdRoom(ship, "kits"), st.kitStore)
+        : Math.min(ship.kits, Math.max(0, STRUCTURE_KIT_CAP - st.kitStore));
+      if (!(moved > 0)) return;
+      st.kitStore += dir === "withdraw" ? -moved : moved;
+      ship.kits += dir === "withdraw" ? moved : -moved;
+    }
+  }
+
+  /** Refinarias de bordo: cada lote vira REFINE_KITS kits após REFINE_TIME s. */
+  private stepRefine(dt: number): void {
+    for (const [id, job] of [...this.refine]) {
+      const ship = this.sim.ships.get(id);
+      if (!ship) {
+        this.refine.delete(id);
+        continue;
+      }
+      job.t += dt;
+      while (job.queue > 0 && job.t >= REFINE_TIME) {
+        job.t -= REFINE_TIME;
+        job.queue--;
+        ship.kits += Math.min(REFINE_KITS, holdRoom(ship, "kits"));
+      }
+      if (job.queue === 0) this.refine.delete(id);
+    }
+  }
+
+  /** O builder tem `cost` kits no porão? */
+  private hasKits(ship: ShipState, cost: number): boolean {
+    return ship.kits >= cost;
+  }
+
+  /** Tira `cost` kits do porão do builder (false se não houver). */
+  private spendKits(ship: ShipState, cost: number): boolean {
+    if (!this.hasKits(ship, cost)) return false;
+    ship.kits -= cost;
+    return true;
+  }
+
+  /**
+   * Paga `cost` kits de uma obra NA estrutura `st` (turreta, evolução): primeiro
+   * com o buffer dela, o que faltar com o porão do builder. false se não der.
+   */
+  private payKits(ship: ShipState, st: Structure, cost: number): boolean {
+    if (st.kitStore + ship.kits < cost) return false;
+    const fromStore = Math.min(st.kitStore, cost);
+    st.kitStore -= fromStore;
+    ship.kits -= cost - fromStore;
+    return true;
   }
 
   /**
@@ -1052,9 +1388,7 @@ export class MatchRoom extends Room<MatchState> {
     if (!struct || struct.owner !== sessionId) return;
     if (this.turretJobs.has(struct.id) || this.buildingTurret(shipId)) return;
     if ((this.turrets.get(struct.id) ?? 0) >= TURRET_MAX) return;
-    if (ship.cargoKind !== "ore" || ship.cargoAmount < TURRET_COST) return;
-    ship.cargoAmount -= TURRET_COST;
-    if (ship.cargoAmount <= 0) { ship.cargoKind = ""; ship.cargoAmount = 0; }
+    if (!this.payKits(ship, struct, TURRET_COST)) return;
     ship.mining = false;
     this.turretJobs.set(struct.id, { shipId, progress: 0 });
     console.log(`[room] ${sessionId} começou turreta ${(this.turrets.get(struct.id) ?? 0) + 1} em ${struct.id}`);
@@ -1077,6 +1411,7 @@ export class MatchRoom extends Room<MatchState> {
       if (job.progress < 1) continue;
       this.turretJobs.delete(structId);
       this.turrets.set(structId, (this.turrets.get(structId) ?? 0) + 1);
+      this.stat(ship.owner).turrets++;
       const piloted = [...this.activeShip.values()].includes(job.shipId);
       if (!piloted) {
         ship.anchored = false;
@@ -1105,7 +1440,7 @@ export class MatchRoom extends Room<MatchState> {
       }
       for (let i = 0; i < count; i++) {
         cds[i] = Math.max(0, (cds[i] ?? 0) - dt);
-        if (cds[i] > 0 || attackers.length === 0) continue;
+        if (cds[i] > 0 || (attackers.length === 0 && this.worms.size === 0)) continue;
         const from = turretWorldPos(st, i);
         let best: [string, ShipState] | null = null;
         let bd = TURRET_RANGE;
@@ -1114,7 +1449,18 @@ export class MatchRoom extends Room<MatchState> {
           const d = dist(from, a[1]);
           if (d <= bd) { bd = d; best = a; }
         }
-        if (!best) continue;
+        if (!best) {
+          const wt = this.wormInRange(from, TURRET_RANGE);
+          if (!wt) continue;
+          cds[i] = TURRET_COOLDOWN;
+          const seg = wt.worm.segs[wt.seg];
+          this.broadcast(MSG_FX, {
+            kind: "laser", sx: from.sx, sy: from.sy, x: from.x, y: from.y,
+            tsx: seg.sx, tsy: seg.sy, tx: seg.x, ty: seg.y, from: "turret", src: structId,
+          } satisfies FxEvent);
+          this.damageWorm(wt.id, TURRET_DAMAGE, undefined, structId);
+          continue;
+        }
         cds[i] = TURRET_COOLDOWN;
         const [, t] = best;
         this.broadcast(MSG_FX, {
@@ -1199,10 +1545,10 @@ export class MatchRoom extends Room<MatchState> {
     for (const [id, bot] of this.bots) {
       const s = this.sim.ships.get(id);
       if (!s || bot.phase !== "reload" || bot.reload > 0) continue;
-      if (!s.anchored || s.hqId !== hq.id || s.ammo < BOT_AMMO) continue;
+      if (!s.anchored || s.hqId !== hq.id || s.ammo < BOT_AMMO || s.hp < SHIP_HP_MAX) continue;
       ready.push([id, s, bot]);
     }
-    if (ready.length < BOT_WAVE_SIZE || !this.raidTargetOf(ready[0][1])) return;
+    if (ready.length < BOT_WAVE_SIZE || !(this.botWormTarget(ready[0][1]) || this.raidTargetOf(ready[0][1]))) return;
     ready.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     for (const [, s, bot] of ready.slice(0, BOT_WAVE_SIZE)) {
       this.liftOff(s);
@@ -1211,16 +1557,64 @@ export class MatchRoom extends Room<MatchState> {
     console.log(`[room] QG dos bots lançou um grupo de ${BOT_WAVE_SIZE}`);
   }
 
-  /** Estrutura de jogador mais perto do bot (em qualquer ponto da arena). */
+  /**
+   * A estrutura `st` é alvo de quem é `attacker`? As inimigas, sim; as RUÍNAS
+   * de jogadores eliminados, só dos bots (que as caçam como qualquer outra).
+   */
+  private hostileStructure(attacker: string, st: Structure): boolean {
+    if (st.owner === attacker) return false;
+    return st.owner !== RUIN_OWNER || attacker === BOT_OWNER;
+  }
+
+  /** Estrutura de jogador (ou ruína) mais perto do bot (em qualquer ponto da arena). */
   private raidTargetOf(ship: ShipState): Structure | null {
     let best: Structure | null = null;
     let bd = Infinity;
     for (const st of this.sim.structures.values()) {
-      if (st.owner === ship.owner) continue;
+      if (!this.hostileStructure(ship.owner, st)) continue;
       const d = dist(ship, st);
       if (d < bd) { bd = d; best = st; }
     }
     return best;
+  }
+
+  /** Gomo exposto mais perto de qualquer minhoca fora da toca (o alvo prioritário do bot), ou null. */
+  private botWormTarget(ship: ShipState): WorldPos | null {
+    let best: WorldPos | null = null;
+    let bd = Infinity;
+    for (const w of this.worms.values()) {
+      if (w.den >= 0) continue;
+      const i = this.nearestExposedSeg(w, ship);
+      if (i < 0) continue;
+      const d = dist(ship, w.segs[i]);
+      if (d < bd) { bd = d; best = w.segs[i]; }
+    }
+    return best;
+  }
+
+  /**
+   * Bot caçando a minhoca: em cruzeiro, chega a uma distância segura do gomo
+   * exposto, encara e dispara com a mira assentada nela.
+   */
+  private wormRaidInput(id: string, ship: ShipState, bot: BotState, seg: WorldPos): ShipInput {
+    const { dx, dy } = relVec(ship, seg);
+    const facing = Math.atan2(dy, dx);
+    if (ship.layerTo) return faceInput(ship, facing);
+    if (ship.layer !== "cruise") {
+      this.leaveAttack(id, ship);
+      return { thrust: false, turn: 0, mine: false };
+    }
+    if (Math.hypot(dx, dy) > BOT_WORM_STANDOFF) return seekInput(ship, seg, { arriveRadius: BOT_WORM_STANDOFF * 0.8 });
+    const w = this.weaponOf(id);
+    const tp = w.target.startsWith(WORM_PREFIX) ? this.targetPos(w.target) : null;
+    if (tp) {
+      const err = Math.abs(desiredOffset(ship, { id: w.target, pos: tp, vx: 0, vy: 0 }, "missile") - w.offset);
+      if (err < BOT_AIM_TOLERANCE && this.elapsed >= bot.nextShot && ship.fireCooldown <= 0) {
+        this.fireShip(id);
+        bot.nextShot = this.elapsed + BOT_FIRE_INTERVAL;
+      }
+    }
+    return faceInput(ship, facing);
   }
 
   /** Sai do modo ataque (sobe ao cruzeiro). */
@@ -1244,11 +1638,15 @@ export class MatchRoom extends Room<MatchState> {
         // recarrega e espera na vaga — quem decide a saída é launchWave
         bot.reload = Math.max(0, bot.reload - dt);
         if (bot.reload <= 0) ship.ammo = BOT_AMMO;
+        ship.hp = Math.min(SHIP_HP_MAX, ship.hp + (SHIP_HP_MAX / BOT_REPAIR_TIME) * dt);
         return idle;
       }
     }
 
     if (bot.phase === "raid") {
+      // a MINHOCA é o alvo prioritário dos bots
+      const worm = ship.ammo > 0 ? this.botWormTarget(ship) : null;
+      if (worm) return this.wormRaidInput(id, ship, bot, worm);
       const target = ship.ammo > 0 ? this.raidTargetOf(ship) : null;
       if (!target) {
         this.leaveAttack(id, ship);
@@ -1351,8 +1749,24 @@ export class MatchRoom extends Room<MatchState> {
     }
     if (level === "surface") {
       for (const st of this.sim.structures.values()) {
-        if (st.owner === ship.owner) continue;
+        if (!this.hostileStructure(ship.owner, st)) continue;
         out.push({ id: st.id, pos: st, vx: 0, vy: 0 });
+      }
+    }
+    // minas no buraco da toca: alvo dos mísseis para tapá-la
+    if (level === "surface") {
+      for (const [pid, p] of this.projectiles) if (p.inHole) out.push({ id: MINE_PREFIX + pid, pos: p, vx: 0, vy: 0 });
+    }
+    // minhocas: o gomo exposto mais perto, em qualquer nível
+    for (const [id, w] of this.worms) {
+      const i = this.nearestExposedSeg(w, ship);
+      if (i >= 0) out.push({ id: `${WORM_PREFIX}${id}:${i}`, pos: w.segs[i], vx: 0, vy: 0 });
+    }
+    // drones de ração inimigos em voo (cruzeiro)
+    if (level === "cruise") {
+      for (const [id, d] of this.drones) {
+        if (d.owner === ship.owner || d.phase === "home") continue;
+        out.push({ id: DRONE_PREFIX + id, pos: d, vx: 0, vy: 0 });
       }
     }
     return out;
@@ -1360,6 +1774,18 @@ export class MatchRoom extends Room<MatchState> {
 
   /** Posição atual de um alvo (nave ou estrutura), ou null se sumiu. */
   private targetPos(id: string): (WorldPos & { vx: number; vy: number }) | null {
+    if (id.startsWith(MINE_PREFIX)) {
+      const m = this.projectiles.get(id.slice(MINE_PREFIX.length));
+      return m ? { sx: m.sx, sy: m.sy, x: m.x, y: m.y, vx: 0, vy: 0 } : null;
+    }
+    if (id.startsWith(WORM_PREFIX)) {
+      const seg = this.wormSegOf(id);
+      return seg ? { sx: seg.sx, sy: seg.sy, x: seg.x, y: seg.y, vx: 0, vy: 0 } : null;
+    }
+    if (id.startsWith(DRONE_PREFIX)) {
+      const d = this.drones.get(id.slice(DRONE_PREFIX.length));
+      return d ? { sx: d.sx, sy: d.sy, x: d.x, y: d.y, vx: 0, vy: 0 } : null;
+    }
     const s = this.sim.ships.get(id);
     if (s) return s;
     const st = this.sim.structures.get(id);
@@ -1435,7 +1861,8 @@ export class MatchRoom extends Room<MatchState> {
       const tp = this.targetPos(w.target);
       if (!tp) return;
       ship.fireCooldown = LASER_COOLDOWN;
-      const on = this.sim.ships.has(w.target) ? "ship" as const : "structure" as const;
+      const on = this.sim.ships.has(w.target) ? "ship" as const
+        : w.target.startsWith(WORM_PREFIX) ? undefined : "structure" as const;
       guns.forEach((locked, i) => {
         if (!locked) return;
         const m = laserMount(ship.angle, i);
@@ -1447,6 +1874,8 @@ export class MatchRoom extends Room<MatchState> {
         } satisfies FxEvent);
         const victim = this.sim.ships.get(w.target);
         if (victim) this.damageShip([w.target, victim], LASER_DAMAGE);
+        else if (w.target.startsWith(DRONE_PREFIX)) this.damageDrone(w.target.slice(DRONE_PREFIX.length), LASER_DAMAGE);
+        else if (w.target.startsWith(WORM_PREFIX)) this.damageWorm(w.target.split(":")[1], LASER_DAMAGE, undefined, shipId);
         else {
           const st = this.sim.structures.get(w.target);
           if (st) this.damageStructure(st, LASER_DAMAGE);
@@ -1473,6 +1902,7 @@ export class MatchRoom extends Room<MatchState> {
     const proj: Projectile = {
       kind: w.weapon,
       owner,
+      shooter: shipId,
       level,
       sx: ship.sx, sy: ship.sy,
       x: ship.x + Math.cos(dir) * 30,
@@ -1539,6 +1969,11 @@ export class MatchRoom extends Room<MatchState> {
       this.loadBuilderOre(sessionId, ship);
       return;
     }
+    // nave de mineração atracada: descarrega o porão no buffer da estrutura
+    if (ship?.kind === "mining") {
+      this.unloadOre(sessionId, ship);
+      return;
+    }
     if (!ship || ship.kind !== "transport" || !ship.anchored) return;
     const struct = this.sim.structures.get(ship.hqId);
     if (!struct || struct.owner !== sessionId) return;
@@ -1557,11 +1992,13 @@ export class MatchRoom extends Room<MatchState> {
 
     // descarrega minério na base inicial → credita a carteira (envio à Terra)
     if (ship.cargoKind === "ore" && ship.cargoAmount > 0) {
-      if (struct.type === "initialBase") {
-        this.sim.addOre(sessionId, ship.cargoAmount);
-        console.log(`[room] ${sessionId} entregou ${Math.round(ship.cargoAmount)} de minério na base`);
-        ship.cargoKind = "";
-        ship.cargoAmount = 0;
+      if (struct.type === "initialBase" || struct.type === "hq") {
+        const moved = Math.min(ship.cargoAmount, Math.max(0, STRUCTURE_ORE_CAP - struct.oreStore));
+        if (moved <= 0) return;
+        struct.oreStore += moved;
+        ship.cargoAmount -= moved;
+        console.log(`[room] ${sessionId} entregou ${Math.round(moved)} de minério em ${struct.id}`);
+        if (ship.cargoAmount <= 0) { ship.cargoKind = ""; ship.cargoAmount = 0; }
       } else if (struct.type === "miningStation") {
         // devolve ao estoque da estação (desistiu da viagem)
         const space = stationOreCap(struct.level) - struct.oreStore;
@@ -1597,33 +2034,33 @@ export class MatchRoom extends Room<MatchState> {
    * próximo para a estrutura onde o jogador está ancorado, se houver vaga lá.
    */
   private tryTaxi(sessionId: string, shipId?: string): void {
+    // destino: a estação onde o piloto espera sem nave, ou a estrutura própria
+    // em que a nave dele está atracada
+    const waiting = this.sim.structures.get(this.waitingAt.get(sessionId) ?? "");
     const active = this.activeShipOf(sessionId);
-    if (!active || !active.anchored) return;
-    // táxi disponível ancorado numa ESTAÇÃO DE MINERAÇÃO ou BASE INICIAL
-    // próprias (ex.: da base, solicitar um transporte de um QG próximo)
-    const dest =
-      this.nearestOwnStructure(sessionId, active, DOCK_RANGE, "miningStation") ??
-      this.nearestOwnStructure(sessionId, active, DOCK_RANGE, "initialBase");
-    if (!dest) return;
+    const dest = waiting ?? (active?.anchored
+      ? this.sim.structures.get(active.hqId) ?? this.nearestOwnStructure(sessionId, active, DOCK_RANGE)
+      : undefined);
+    if (!dest || dest.owner !== sessionId) return;
 
     let best: { id: string; ship: ShipState; src: { id: string; sx: number; sy: number; x: number; y: number } } | null = null;
 
-    // nave escolhida pelo jogador — precisa estar guardada num QG
+    // nave escolhida pelo jogador — guardada em QUALQUER hangar próprio
     if (shipId) {
       const s = this.sim.ships.get(shipId);
       const src = s ? this.sim.structures.get(s.hqId) : undefined;
-      if (s && src && src.type === "hq" && s.owner === sessionId && s.stored) {
+      if (s && src && src.id !== dest.id && s.owner === sessionId && s.stored) {
         best = { id: shipId, ship: s, src };
       }
     }
 
-    // fallback: nave guardada no QG mais próximo da estação
+    // fallback: nave guardada no hangar mais próximo da estação
     if (!best) {
       let bestDist = Infinity;
       for (const [id, s] of this.sim.ships) {
         if (s.owner !== sessionId || !s.stored) continue;
         const src = this.sim.structures.get(s.hqId);
-        if (!src || src.type !== "hq") continue;
+        if (!src || src.id === dest.id) continue;
         const d = dist(src, dest);
         if (d < bestDist) {
           bestDist = d;
@@ -1631,7 +2068,7 @@ export class MatchRoom extends Room<MatchState> {
         }
       }
     }
-    if (!best) return; // nenhuma nave em QG
+    if (!best) return; // nenhuma nave guardada em outro hangar
     // vaga no destino compatível com a CLASSE da nave
     if (this.firstFreeShipBay(dest, best.ship.kind) < 0) return;
 
@@ -1684,23 +2121,6 @@ export class MatchRoom extends Room<MatchState> {
     return -1;
   }
 
-  /** Passa o controle do jogador para outra nave própria (prefere um builder). */
-  private transferControl(sessionId: string, excludeId: string): boolean {
-    let target: [string, ShipState] | null = null;
-    for (const [id, s] of this.sim.ships) {
-      if (id === excludeId || s.owner !== sessionId || s.autoMining) continue;
-      if (!target || (s.kind === "builder" && target[1].kind !== "builder")) target = [id, s];
-    }
-    if (!target) return false;
-    const [tid, ts] = target;
-    if (ts.stored) {
-      const struct = ts.hqId ? this.sim.structures.get(ts.hqId) : undefined;
-      if (struct) this.deployFromHangar(ts, struct);
-      else ts.stored = false;
-    }
-    this.activeShip.set(sessionId, tid);
-    return true;
-  }
 
   /**
    * Tira uma nave do hangar e a pousa na placa da PRÓPRIA vaga — a guardada
@@ -1773,7 +2193,7 @@ export class MatchRoom extends Room<MatchState> {
     // só o builder pode construir
     if (ship.kind !== "builder") return;
     const spec = STRUCTURE_SPECS[type];
-    if (!spec || this.sim.getOre(sessionId) < spec.cost) return;
+    if (!spec || !this.hasKits(ship, spec.cost)) return;
 
     const ast = this.sim.nearestAsteroid(ship, BUILD_ASTEROID_RANGE);
     if (!ast) return;
@@ -1793,7 +2213,7 @@ export class MatchRoom extends Room<MatchState> {
     const expandedBays = type === "hq" ? HQ_EXPANDED_BAYS : STATION_EXPANDED_BAYS;
     const spiderBays = type === "miningStation" ? STATION_SPIDER_BAYS[cls] : 0;
 
-    this.sim.spendOre(sessionId, spec.cost);
+    this.spendKits(ship, spec.cost);
     const id = `st-${this.structSeq++}`;
     this.sim.addStructure({
       id,
@@ -1835,6 +2255,7 @@ export class MatchRoom extends Room<MatchState> {
     // o builder pousa na vaga livre da estrutura recém-construída (a
     // mineração na estação liga só via toggle explícito, depois)
     this.settleAfterBuild(ship, id);
+    this.onBuilt(sessionId, id);
     console.log(
       `[room] ${sessionId} construiu ${type} em asteroide ${cls} (naves:${shipBays} aranhas:${spiderBays})`,
     );
@@ -1846,26 +2267,34 @@ export class MatchRoom extends Room<MatchState> {
    * mineração, a nave é construída no QG mais próximo dela).
    */
   private tryProduce(sessionId: string, kind?: ProduceCommand["kind"]): void {
-    const pilot = this.activeShipOf(sessionId);
-    if (!pilot || !kind) return;
+    if (!kind) return;
     const spec = SHIP_PRODUCTION[kind];
-    if (!spec || this.sim.getOre(sessionId) < spec.cost) return;
-    if (!pilot.anchored) return; // precisa estar ancorado numa estrutura
-
-    const hq = this.nearestOwnStructure(sessionId, pilot, Infinity, "hq");
+    if (!spec) return;
+    // no QG: atracado numa nave, ou a pé (esperando nele)
+    const waiting = this.sim.structures.get(this.waitingAt.get(sessionId) ?? "");
+    const pilot = this.activeShipOf(sessionId);
+    let hq: Structure | undefined;
+    if (waiting) hq = waiting.type === "hq" ? waiting : undefined;
+    else if (pilot?.anchored) hq = this.nearestOwnStructure(sessionId, pilot, Infinity, "hq") ?? undefined;
     if (!hq) return;
 
+    // a nave é paga com o minério do BUFFER do QG
+    if (hq.oreStore < spec.cost) return;
+    // sem rações, o QG não fabrica (cada nave consome RATIONS_PER_SHIP)
+    if (hq.rationStore < RATIONS_PER_SHIP) return;
     // capacidade = vagas de nave do QG compatíveis com a classe produzida
     const bay = this.firstFreeShipBay(hq, kind);
     if (bay < 0) return; // hangar cheio ou sem vaga compatível
 
-    this.sim.spendOre(sessionId, spec.cost);
+    hq.oreStore -= spec.cost;
     const id = `sh-${this.shipSeq++}`;
     const ship = this.spawnShip(id, hq, sessionId, kind);
     ship.hqId = hq.id;
     ship.stored = true;
     ship.bay = bay; // vaga calculada por firstFreeShipBay
     this.state.ships.set(id, this.mirrorSpawn(ship));
+    hq.rationStore -= RATIONS_PER_SHIP;
+    this.stat(sessionId).produced[kind] = (this.stat(sessionId).produced[kind] ?? 0) + 1;
     console.log(`[room] ${sessionId} fabricou ${kind} — vaga ${ship.bay} do QG ${hq.id}`);
   }
 
@@ -1900,7 +2329,7 @@ export class MatchRoom extends Room<MatchState> {
   private structureHitBy(proj: Projectile, reach: number): Structure | null {
     if (proj.level !== "surface") return null;
     for (const st of this.sim.structures.values()) {
-      if (st.owner === proj.owner) continue;
+      if (!this.hostileStructure(proj.owner, st)) continue;
       if (dist(proj, st) <= STRUCTURE_SPECS[st.type].radius + reach) return st;
     }
     return null;
@@ -1938,7 +2367,7 @@ export class MatchRoom extends Room<MatchState> {
     for (const [id, target] of this.attackTargets) {
       if (this.bots.has(id)) continue;
       const ship = this.sim.ships.get(id);
-      const st = this.sim.structures.get(target.structId);
+      const st = this.attackSitePos(target.structId);
       if (!ship || !st) continue;
       const raw = this.rawInputs.get(id) ?? { thrust: false, turn: 0, mine: false };
       this.sim.setInput(id, attackModeInput(ship, st, this.attackHoldRadius(target.radius), raw));
@@ -1966,9 +2395,21 @@ export class MatchRoom extends Room<MatchState> {
       const d = dist(proj, s);
       if (d <= MINE_BLAST_RADIUS) this.damageShip([id, s], falloff(d), true);
     }
+    for (const [id, d] of [...this.drones]) {
+      if (proj.level !== "cruise" || d.owner === proj.owner || d.phase === "home") continue;
+      const r = dist(proj, d);
+      if (r <= MINE_BLAST_RADIUS) this.damageDrone(id, falloff(r), true);
+    }
+    // minhocas: pelo gomo exposto mais perto da explosão
+    for (const [id, w] of [...this.worms]) {
+      const i = this.nearestExposedSeg(w, proj);
+      if (i < 0) continue;
+      const r = Math.max(0, dist(proj, w.segs[i]) - wormRadiusAt(i));
+      if (r <= MINE_BLAST_RADIUS) this.damageWorm(id, falloff(r), undefined, proj.shooter);
+    }
     if (proj.level !== "surface") return;
     for (const st of [...this.sim.structures.values()]) {
-      if (st.owner === proj.owner) continue;
+      if (!this.hostileStructure(proj.owner, st)) continue;
       const d = Math.max(0, dist(proj, st) - STRUCTURE_SPECS[st.type].radius);
       if (d <= MINE_BLAST_RADIUS) this.damageStructure(st, falloff(d), true);
     }
@@ -2013,17 +2454,24 @@ export class MatchRoom extends Room<MatchState> {
   private destroyStructure(id: string): void {
     const st = this.sim.structures.get(id);
     if (!st) return;
+    const piloted = new Set(this.activeShip.values());
     const doomed = new Set(
       [...this.sim.ships]
-        .filter(([, s]) => (s.stored && s.hqId === id) || (s.autoMining && s.stationId === id))
+        .filter(([sid, s]) =>
+          (s.stored && s.hqId === id) || (s.autoMining && s.stationId === id) ||
+          // a nave PILOTADA atracada nela explode junto: o jogador sai num pod
+          (piloted.has(sid) && s.hqId === id && (s.anchored || s.landingPhase === "landing")))
         .map(([sid]) => sid),
     );
     this.fx("structureDown", st, { on: "structure", id: st.id });
     this.sim.structures.delete(id);
     this.state.structures.delete(id);
-    this.rationDroneTimers.delete(id);
+    this.droneUpgrades.delete(id);
+    this.droneRebuild.delete(id);
+    for (const [did, d] of [...this.drones]) if (d.center === id) this.removeDrone(did);
     this.turrets.delete(id);
     this.turretJobs.delete(id);
+    this.repairJobs.delete(id);
     if (id === this.botHqId) this.botHqId = "";
     this.turretCooldowns.delete(id);
     // a estrutura sai ANTES das naves: se o controle de um jogador passar a
@@ -2031,6 +2479,12 @@ export class MatchRoom extends Room<MatchState> {
     // atracar) e explode na volta seguinte, que o passa adiante de novo — ele
     // termina numa nave que sobrevive, ou em nenhuma
     for (const sid of doomed) this.destroyShip(sid);
+    // quem esperava a pé nela é expelido num escape pod
+    for (const [sid, at] of [...this.waitingAt]) {
+      if (at !== id) continue;
+      this.waitingAt.delete(sid);
+      this.ejectPlayer(sid, st);
+    }
     for (const s of this.sim.ships.values()) {
       if (s.hqId === id && !s.stored && (s.anchored || s.landingPhase === "landing")) this.liftOff(s);
     }
@@ -2043,9 +2497,15 @@ export class MatchRoom extends Room<MatchState> {
     if (!ship) return;
     // a guardada explode na VAGA dela, dentro do hangar
     this.fxOnShip("shipDown", shipId, ship);
+    // a vaga dela fica livre já: o builder de reposição pode nascer nela
+    ship.bay = -1;
+    ship.anchored = false;
+    ship.stored = false;
     for (const [sid, active] of this.activeShip) {
       if (active === shipId) {
-        this.transferControl(sid, shipId);
+        // o jogador é EXPELIDO num escape pod, que voa sozinho até um QG
+        // (ou um builder guardado); sem destino, fim de jogo — ver ejectPlayer
+        if (ship.kind !== "pod") this.ejectPlayer(sid, ship);
         break;
       }
     }
@@ -2055,8 +2515,898 @@ export class MatchRoom extends Room<MatchState> {
     this.weapons.delete(shipId);
     this.bots.delete(shipId);
     this.rawInputs.delete(shipId);
+    this.freighters.delete(shipId);
     this.state.ships.delete(shipId);
     console.log(`[room] nave ${shipId} destruída`);
+  }
+
+  // ── entrega automática dos transportes ─────────────────────────────
+
+  /**
+   * [G] no transporte atracado: entra em ENTREGA AUTOMÁTICA, em laço —
+   *  - numa estação de mineração: minério da estação → base inicial (que o
+   *    credita na carteira);
+   *  - na base inicial: rações da base → central de rações.
+   * O piloto desembarca: vai para a próxima nave do hangar dali, ou fica a pé.
+   */
+  private tryAutoTransport(sessionId: string): void {
+    const shipId = this.activeShip.get(sessionId);
+    const ship = this.activeShipOf(sessionId);
+    if (!shipId || !ship || ship.kind !== "transport" || !ship.anchored) return;
+    const st = this.sim.structures.get(ship.hqId);
+    if (!st || st.owner !== sessionId) return;
+    const own = [...this.sim.structures.values()].filter((x) => x.owner === sessionId);
+    const nearestOf = (type: StructureType) => own.filter((x) => x.type === type)
+      .sort((a, b) => dist(st, a) - dist(st, b))[0];
+    let mode: Freighter["mode"];
+    let dest: Structure | undefined;
+    if (st.type === "miningStation") { mode = "ore"; dest = nearestOf("hq") ?? nearestOf("initialBase"); }
+    else if (st.type === "initialBase") { mode = "rations"; dest = nearestOf("rationCenter"); }
+    else return;
+    if (!dest) return;
+    this.freighters.set(shipId, { mode, pickup: st.id, dest: dest.id, leg: "load" });
+    // o piloto desembarca: próxima nave do hangar daqui, ou a pé
+    this.activeShip.delete(sessionId);
+    const here = [...this.sim.ships]
+      .filter(([, x]) => x.owner === sessionId && x.hqId === st.id && x.stored)
+      .sort(([, a], [, b]) => a.bay - b.bay);
+    if (here.length > 0) this.boardShip(sessionId, here[0][0], here[0][1], st);
+    else this.waitingAt.set(sessionId, st.id);
+    console.log(`[room] ${sessionId} transporte ${shipId} em entrega automática de ${mode}: ${st.id} ⇄ ${dest.id}`);
+  }
+
+  /**
+   * Um passo das rotas: atracado no ponto de coleta, carrega o que houver
+   * (até TRANSPORT_CARGO_CAP) e decola; no destino, descarrega e volta;
+   * de volta, atraca numa vaga livre e recomeça. Destino perdido: volta e
+   * PARA no ponto de coleta. Ponto de coleta perdido: a rota acaba ali.
+   * Voa pelo corredor do táxi (sem colisão, 2×).
+   */
+  private stepFreighters(): void {
+    for (const [id, f] of [...this.freighters]) {
+      const ship = this.sim.ships.get(id);
+      const pickup = this.sim.structures.get(f.pickup);
+      if (!ship || !pickup || pickup.owner !== ship.owner) {
+        if (ship) ship.taxiTo = "";
+        this.freighters.delete(id);
+        continue;
+      }
+      const dest = this.sim.structures.get(f.dest);
+      const destOk = !!dest && dest.owner === ship.owner;
+      if (f.leg === "load") {
+        if (!destOk) {
+          this.freighters.delete(id); // para aqui, atracado
+          continue;
+        }
+        const avail = Math.floor(f.mode === "ore" ? pickup.oreStore : pickup.rationStore);
+        if (avail < 1 || !ship.anchored) continue; // espera carga
+        const amount = Math.min(TRANSPORT_CARGO_CAP, avail);
+        if (f.mode === "ore") pickup.oreStore -= amount;
+        else pickup.rationStore -= amount;
+        ship.cargoKind = f.mode;
+        ship.cargoAmount = amount;
+        this.liftOff(ship);
+        ship.taxiTo = dest!.id;
+        f.leg = "out";
+        continue;
+      }
+      if (f.leg === "out") {
+        if (!destOk) {
+          f.leg = "back";
+          ship.taxiTo = pickup.id;
+          continue;
+        }
+        if (dist(ship, dest!) > DOCK_RANGE) {
+          this.sim.setInput(id, computeTaxiInput(ship, dest!));
+          continue;
+        }
+        if (f.mode === "ore") dest!.oreStore = Math.min(STRUCTURE_ORE_CAP, dest!.oreStore + ship.cargoAmount);
+        else dest!.rationStore = Math.min(RATION_STORE_CAP, dest!.rationStore + ship.cargoAmount);
+        ship.cargoKind = "";
+        ship.cargoAmount = 0;
+        f.leg = "back";
+        ship.taxiTo = pickup.id;
+        continue;
+      }
+      // volta ao ponto de coleta
+      if (dist(ship, pickup) > DOCK_RANGE) {
+        this.sim.setInput(id, computeTaxiInput(ship, pickup));
+        continue;
+      }
+      const bay = this.firstFreeShipBay(pickup, ship.kind);
+      if (bay < 0) {
+        this.sim.setInput(id, { thrust: false, turn: 0, mine: false }); // espera vaga
+        continue;
+      }
+      ship.taxiTo = "";
+      ship.bay = bay;
+      this.dockAtBay(ship, pickup);
+      // carga que não chegou (destino perdido) volta ao estoque
+      if (ship.cargoAmount > 0) {
+        if (f.mode === "ore") pickup.oreStore += ship.cargoAmount;
+        else pickup.rationStore = Math.min(RATION_STORE_CAP, pickup.rationStore + ship.cargoAmount);
+        ship.cargoKind = "";
+        ship.cargoAmount = 0;
+      }
+      f.leg = "load";
+      if (!destOk) this.freighters.delete(id);
+    }
+  }
+
+  // ── drones de ração (logistics.ts) ───────────────────────────────
+
+  private spawnDrone(center: Structure): void {
+    const id = `dr-${this.droneSeq++}`;
+    this.drones.set(id, {
+      id, owner: center.owner, center: center.id,
+      sx: center.sx, sy: center.sy, x: center.x, y: center.y, angle: 0,
+      phase: "home", target: "", cargo: 0, hp: DRONE_HP,
+    });
+  }
+
+  private removeDrone(id: string): void {
+    this.drones.delete(id);
+    this.state.drones.delete(id);
+  }
+
+  /** Drone inimigo (em voo, no cruzeiro) ao alcance do projétil. */
+  private droneHitBy(proj: Projectile, reach: number): string | null {
+    if (proj.level !== "cruise") return null;
+    for (const [id, d] of this.drones) {
+      if (d.owner === proj.owner || d.phase === "home") continue;
+      if (dist(proj, d) <= reach) return id;
+    }
+    return null;
+  }
+
+  /** Dano num drone; abatido, a carga se perde e a central o repõe depois. */
+  private damageDrone(id: string, damage: number, explode = false): void {
+    const d = this.drones.get(id);
+    if (!d || !(damage > 0)) return;
+    if (explode) this.fx("hit", d);
+    d.hp -= damage;
+    if (d.hp > 0) return;
+    this.fx("shipDown", d);
+    this.removeDrone(id);
+    console.log(`[room] drone ${id} de ${d.center} abatido`);
+  }
+
+  /**
+   * [1]/[2]/[3] com o builder atracado na central de rações própria: compra
+   * o próximo nível de uma melhoria dos drones (número, velocidade, carga),
+   * pagando kits do porão.
+   */
+  private tryDroneUpgrade(sessionId: string, track?: DroneTrack): void {
+    if (!track || !DRONE_TRACKS.includes(track)) return;
+    const ship = this.activeShipOf(sessionId);
+    if (!ship || ship.kind !== "builder" || !ship.anchored) return;
+    const st = this.sim.structures.get(ship.hqId);
+    if (!st || st.owner !== sessionId || st.type !== "rationCenter") return;
+    const lv = this.droneUpgrades.get(st.id) ?? { drones: 0, speed: 0, cargo: 0 };
+    const cost = droneUpgradeCost(lv[track]);
+    if (cost === null || !this.spendKits(ship, cost)) return;
+    lv[track]++;
+    this.droneUpgrades.set(st.id, lv);
+    if (track === "drones") this.spawnDrone(st); // o drone novo sai na hora
+    console.log(`[room] ${sessionId} melhorou ${track} dos drones de ${st.id} → nível ${lv[track]}`);
+  }
+
+  /**
+   * Frota de drones de cada central: em casa, carrega e sai para a estação
+   * ou QG do dono mais necessitado (menos rações, contando o que já está a
+   * caminho); entrega e volta. Voa reto, no cruzeiro, na velocidade da
+   * melhoria. A central repõe um drone abatido após DRONE_REBUILD_TIME.
+   */
+  private stepDrones(dt: number): void {
+    // reposição
+    for (const [id, center] of this.sim.structures) {
+      if (center.type !== "rationCenter" || center.owner === RUIN_OWNER) continue;
+      const lv = this.droneUpgrades.get(id) ?? { drones: 0, speed: 0, cargo: 0 };
+      if (!this.droneUpgrades.has(id)) this.droneUpgrades.set(id, lv);
+      const have = [...this.drones.values()].filter((d) => d.center === id).length;
+      if (have >= droneStats(lv).count) {
+        this.droneRebuild.delete(id);
+        continue;
+      }
+      const t = (this.droneRebuild.get(id) ?? DRONE_REBUILD_TIME) - dt;
+      if (t > 0) this.droneRebuild.set(id, t);
+      else {
+        this.droneRebuild.delete(id);
+        this.spawnDrone(center);
+      }
+    }
+    const incoming = new Map<string, number>();
+    for (const d of this.drones.values()) if (d.phase === "out") incoming.set(d.target, (incoming.get(d.target) ?? 0) + d.cargo);
+    for (const [id, d] of [...this.drones]) {
+      const center = this.sim.structures.get(d.center);
+      if (!center || center.owner !== d.owner) {
+        this.removeDrone(id);
+        continue;
+      }
+      const stats = droneStats(this.droneUpgrades.get(center.id) ?? { drones: 0, speed: 0, cargo: 0 });
+      if (d.phase === "home") {
+        Object.assign(d, { sx: center.sx, sy: center.sy, x: center.x, y: center.y });
+        if (center.rationStore < 1) continue;
+        let best: Structure | null = null;
+        let need = Infinity;
+        for (const st of this.sim.structures.values()) {
+          if (st.owner !== d.owner || (st.type !== "miningStation" && st.type !== "hq")) continue;
+          const level = st.rationStore + (incoming.get(st.id) ?? 0);
+          if (level >= RATION_STORE_CAP) continue;
+          if (level < need) { need = level; best = st; }
+        }
+        if (!best) continue;
+        d.cargo = Math.min(stats.cargo, center.rationStore, RATION_STORE_CAP - need);
+        if (d.cargo <= 0) continue;
+        center.rationStore -= d.cargo;
+        d.target = best.id;
+        d.phase = "out";
+        incoming.set(best.id, need + d.cargo);
+        continue;
+      }
+      // em voo: para o alvo (ida) ou para casa (volta)
+      const dest = d.phase === "out" ? this.sim.structures.get(d.target) : center;
+      if (!dest || dest.owner !== d.owner) {
+        d.phase = "back";
+        continue;
+      }
+      const { dx, dy } = relVec(d, dest);
+      const r = Math.hypot(dx, dy);
+      const step = stats.speed * dt;
+      if (r > step) {
+        d.x += (dx / r) * step;
+        d.y += (dy / r) * step;
+        d.angle = Math.atan2(dy, dx);
+        normalizePos(d);
+        continue;
+      }
+      if (d.phase === "out") {
+        dest.rationStore = Math.min(RATION_STORE_CAP, dest.rationStore + d.cargo);
+        d.cargo = 0;
+        d.phase = "back";
+      } else {
+        // em casa: o que sobrou (alvo perdido no caminho) volta ao estoque
+        center.rationStore = Math.min(RATION_STORE_CAP, center.rationStore + d.cargo);
+        d.cargo = 0;
+        d.phase = "home";
+      }
+    }
+    // espelho: só os drones em voo aparecem
+    for (const [id, d] of this.drones) {
+      if (d.phase === "home") {
+        this.state.drones.delete(id);
+        continue;
+      }
+      let ds = this.state.drones.get(id);
+      if (!ds) {
+        ds = new DroneSchema();
+        ds.owner = d.owner;
+        ds.center = d.center;
+        this.state.drones.set(id, ds);
+      }
+      ds.sx = d.sx; ds.sy = d.sy; ds.x = d.x; ds.y = d.y;
+      ds.angle = d.angle;
+      ds.cargo = d.cargo;
+    }
+  }
+
+  // ── minhocas gigantes (shared/worms.ts) ───────────────────────────
+
+  /**
+   * Tremores (stepQuake) e, com a TOCA aberta (breachNest), uma minhoca nova a
+   * cada WORM_SPAWN_INTERVAL (até WORM_MAX vivas — morta ou recolhida uma, a
+   * próxima espera o intervalo inteiro).
+   */
+  private stepWorms(dt: number): void {
+    this.stepQuake(dt);
+    if (this.hole) {
+      if (this.worms.size >= WORM_MAX) this.nestTimer = WORM_SPAWN_INTERVAL;
+      else if ((this.nestTimer -= dt) <= 0) {
+        this.spawnWorm();
+        this.nestTimer = WORM_SPAWN_INTERVAL;
+      }
+    }
+    this.state.wormHole = this.hole?.padId ?? "";
+    this.state.wormHoleSeal = this.hole?.seal ?? 0;
+    for (const [id, t] of [...this.wormBodyHits]) {
+      if (t - dt <= 0) this.wormBodyHits.delete(id);
+      else this.wormBodyHits.set(id, t - dt);
+    }
+    for (const [id, w] of [...this.worms]) this.stepWorm(id, w, dt);
+    // espelho: só as que estão fora da toca
+    for (const id of [...this.state.worms.keys()]) if (!(this.worms.get(id)?.den === -1)) this.state.worms.delete(id);
+    for (const [id, w] of this.worms) {
+      if (w.den >= 0) continue;
+      let ws = this.state.worms.get(id);
+      if (!ws) {
+        ws = new WormSchema();
+        this.state.worms.set(id, ws);
+      }
+      ws.sx = w.sx; ws.sy = w.sy; ws.x = w.x; ws.y = w.y;
+      ws.angle = w.angle; ws.hp = w.hp;
+      ws.breach = w.breach; ws.mouth = w.mouth;
+      for (let i = 1; i < w.segs.length; i++) {
+        const { dx, dy } = relVec(w, w.segs[i]);
+        const k = (i - 1) * 2;
+        if (ws.segs.length <= k) ws.segs.push(dx, dy);
+        else { ws.segs[k] = dx; ws.segs[k + 1] = dy; }
+      }
+    }
+  }
+
+  /** O ninho ACORDA com o nível WORM_WAKE_LEVEL numa estação de Ceres: começam os tremores. */
+  private startQuake(st: Structure): void {
+    this.quake = { stationId: st.id, padId: st.asteroidId, owner: st.owner, t: 0 };
+    console.log(`[room] o ninho de Ceres acordou sob ${st.id}: tremores`);
+  }
+
+  /**
+   * Tremores: alerta ao dono em WORM_QUAKE_WARN_TIME e WORM_QUAKE_DANGER_TIME;
+   * em WORM_QUAKE_BREACH_TIME a minhoca rompe a cratera (breachNest).
+   */
+  private stepQuake(dt: number): void {
+    const q = this.quake;
+    if (!q) return;
+    const t0 = q.t;
+    q.t += dt;
+    const crossed = (at: number) => t0 < at && q.t >= at;
+    if (crossed(WORM_QUAKE_WARN_TIME)) {
+      this.alert(q.owner, { text: "Sua estação de mineração em Ceres sente tremores", level: "warn" });
+    }
+    if (crossed(WORM_QUAKE_DANGER_TIME)) {
+      this.alert(q.owner, { text: "A estação de mineração está em perigo! Evacuar", level: "danger" });
+    }
+    if (q.t >= WORM_QUAKE_BREACH_TIME) this.breachNest(q);
+  }
+
+  /** Alerta a um jogador (faixa no centro da tela e alarme). */
+  private alert(sessionId: string, ev: AlertEvent): void {
+    for (const c of this.clients ?? []) if (c.sessionId === sessionId) c.send(MSG_ALERT, ev);
+  }
+
+  /**
+   * A minhoca ROMPE a cratera: a estação explode com as naves do hangar (e a
+   * que ficou atracada nela — o alerta mandou evacuar), a cratera fica como a
+   * TOCA e a primeira minhoca sai dela na hora.
+   */
+  private breachNest(q: { stationId: string; padId: string }): void {
+    this.quake = null;
+    const pad = ceresPlatforms(this.sim.seed).find((p) => p.id === q.padId);
+    if (!pad) return;
+    if (this.sim.structures.has(q.stationId)) this.destroyStructure(q.stationId);
+    this.hole = { padId: pad.id, pos: ceresPlatformPos(this.sim.seed, pad), radius: pad.radius, seal: 0 };
+    this.spawnWorm();
+    this.nestTimer = WORM_SPAWN_INTERVAL;
+    console.log(`[room] a minhoca rompeu a cratera em ${pad.id}: a toca está aberta`);
+  }
+
+  /** Mina parada no buraco da toca ao alcance do míssil. */
+  private holeMineHitBy(proj: Projectile): boolean {
+    if (proj.level !== "surface") return false;
+    for (const p of this.projectiles.values()) if (p.inHole && dist(proj, p) <= MISSILE_RADIUS + 60) return true;
+    return false;
+  }
+
+  /**
+   * Detonação no buraco da toca: uma mina leva todas as que estão nele, e
+   * cada uma conta para tapá-lo; somadas WORM_HOLE_SEAL_MINES, a toca desaba.
+   */
+  private blastHole(): void {
+    let n = 0;
+    for (const [pid, p] of [...this.projectiles]) {
+      if (!p.inHole) continue;
+      this.projectiles.delete(pid);
+      this.state.projectiles.delete(pid);
+      this.detonate(p);
+      n++;
+    }
+    const hole = this.hole;
+    if (!hole || n === 0) return;
+    hole.seal += n;
+    console.log(`[room] ${n} mina(s) detonada(s) na toca (${hole.seal}/${WORM_HOLE_SEAL_MINES})`);
+    if (hole.seal < WORM_HOLE_SEAL_MINES) return;
+    // TAPADA: nenhuma minhoca sai mais; as de fora se enterram em Ceres ao fim
+    // da ronda, e a plataforma volta a aceitar construção
+    this.fx("structureDown", hole.pos);
+    this.hole = null;
+    this.nestTimer = 0;
+    console.log(`[room] a toca das minhocas em ${hole.padId} foi tapada`);
+  }
+
+  /** Uma minhoca sai da toca (ou do núcleo de Ceres, sem toca), num rumo qualquer. */
+  spawnWorm(): string {
+    const id = `worm-${this.wormSeq++}`;
+    const w = makeWorm(this.hole?.pos ?? ceresPosition(this.sim.seed), this.combatRng() * Math.PI * 2);
+    this.worms.set(id, w);
+    console.log(`[room] minhoca ${id} saiu do ninho de Ceres`);
+    return id;
+  }
+
+  private removeWorm(id: string): void {
+    this.worms.delete(id);
+    this.state.worms.delete(id);
+  }
+
+  /** Nave que a minhoca pode engolir: no mundo (não guardada) e não um pod. */
+  private wormEdible(s: ShipState): boolean {
+    return !s.stored && s.kind !== "pod";
+  }
+
+  /** O alvo `id` da minhoca (nave ou estrutura), com o raio do corpo dele, ou null se sumiu. */
+  private wormTarget(id: string): { pos: WorldPos; radius: number; struct?: Structure } | null {
+    const s = this.sim.ships.get(id);
+    if (s) return this.wormEdible(s) ? { pos: s, radius: SHIP_RADIUS } : null;
+    const st = this.sim.structures.get(id);
+    if (st && st.owner !== RUIN_OWNER) return { pos: st, radius: STRUCTURE_SPECS[st.type].radius, struct: st };
+    return null;
+  }
+
+  /** Presa mais perto da cabeça, ao alcance do faro: estruturas e naves de jogadores e dos bots. */
+  private wormPickTarget(w: Worm): string {
+    // VINGANÇA: quem a feriu há pouco, o mais perto
+    let best = "";
+    let bd = Infinity;
+    for (const [aid, at] of [...w.attackers]) {
+      if (this.elapsed - at > WORM_REVENGE_MEMORY) {
+        w.attackers.delete(aid);
+        continue;
+      }
+      const t = this.wormTarget(aid);
+      if (!t) continue;
+      const d = dist(w, t.pos);
+      if (d < bd) { bd = d; best = aid; }
+    }
+    if (best) return best;
+    bd = WORM_SENSE_RANGE;
+    for (const [id, s] of this.sim.ships) {
+      if (!this.wormEdible(s)) continue;
+      const d = dist(w, s);
+      if (d < bd) { bd = d; best = id; }
+    }
+    for (const [id, st] of this.sim.structures) {
+      if (st.owner === RUIN_OWNER || w.besieged.has(id)) continue;
+      const d = dist(w, st);
+      if (d < bd) { bd = d; best = id; }
+    }
+    return best;
+  }
+
+  /**
+   * Um passo da minhoca: durante a ronda (WORM_ROAM_TIME) caça a presa mais
+   * perto (reavaliada a cada 1 s) — desacelera perto dela e quando ela está
+   * para trás, para fazer a curva — e, sem presa ao alcance, vagueia; acabada
+   * a ronda, volta para a toca e entra. Estrutura ela CERCA (circula raspando
+   * por WORM_SIEGE_TIME); a CABEÇA engole a nave que alcança; o CORPO EXPOSTO
+   * fere quem bate nele.
+   */
+  private stepWorm(id: string, w: Worm, dt: number): void {
+    const seed = this.sim.seed;
+    // DENTRO DA TOCA: descansa; tapada a toca, fica presa lá para sempre
+    if (w.den >= 0) {
+      if (!this.hole) {
+        this.removeWorm(id);
+        return;
+      }
+      w.den -= dt;
+      if (w.den <= 0) this.emergeWorm(w, this.hole.pos);
+      return;
+    }
+    w.bite = Math.max(0, w.bite - dt);
+    w.roam -= dt;
+    w.retarget -= dt;
+    if (w.roam <= 0) w.target = "";
+    // cercando, mantém o alvo (o afastamento entre investidas não é desistência;
+    // só a vingança — damageWorm — ou o alvo sumir interrompem)
+    else if ((w.retarget <= 0 && w.siege < 0) || !this.wormTarget(w.target)) {
+      const next = this.wormPickTarget(w);
+      if (next !== w.target) {
+        w.siege = -1;
+        w.pass = "in";
+      }
+      w.target = next;
+      w.retarget = 1;
+    }
+    const tp = this.wormTarget(w.target);
+    let near = false;
+    if (tp) {
+      // caçando: a excursão em curso perde o sentido
+      w.route = [];
+      w.back = [];
+      w.away = false;
+    }
+    if (tp?.struct) {
+      // INVESTIDAS: vai na estrutura, TOCA nela (dano sorteado entre o prédio
+      // e o hangar), passa direto e se afasta; a WORM_RAM_RETREAT dá a volta e
+      // investe de novo — enquanto durar o cerco
+      const st = tp.struct;
+      const d = dist(w, st);
+      near = d < tp.radius + 1500;
+      if (w.pass === "out") {
+        moveWorm(w, null, WORM_SPEED, dt); // segue reto, afastando-se
+        if (d >= tp.radius + WORM_RAM_RETREAT) w.pass = "in";
+      } else {
+        moveWorm(w, st, WORM_SPEED, dt);
+        if (dist(w, st) <= tp.radius + WORM_HEAD_RADIUS) {
+          this.damageStructure(st, WORM_RAM_DAMAGE, true);
+          w.pass = "out";
+        }
+      }
+      // o cerco conta a partir da primeira aproximação
+      if (w.siege < 0 && d < tp.radius + WORM_RAM_RETREAT + 1500) w.siege = WORM_SIEGE_TIME;
+      if (w.siege >= 0) {
+        w.siege -= dt;
+        if (w.siege <= 0) {
+          // cerco acabou: procura outra presa
+          w.besieged.add(st.id);
+          w.target = "";
+          w.retarget = 0;
+          w.siege = -1;
+        }
+      }
+    } else if (tp) {
+      // NAVE: persegue e engole — desacelera perto dela e quando ela está para trás
+      const { dx, dy } = relVec(w, tp.pos);
+      const d = Math.hypot(dx, dy);
+      near = d < WORM_MOUTH_RADIUS + tp.radius + 1500;
+      const ahead = Math.cos(Math.atan2(dy, dx) - w.angle);
+      const speed = WORM_SPEED * Math.min(1, Math.max(0.25, d / 3000)) * (0.4 + 0.6 * Math.max(0, ahead));
+      moveWorm(w, tp.pos, speed, dt);
+    } else if (w.roam <= 0) {
+      // fim da ronda: volta para a toca (pelo caminho da excursão, se estava
+      // fora) e entra para descansar; tapada a toca, enterra-se em Ceres
+      if (w.away) {
+        w.route = w.back;
+        w.back = [];
+        w.away = false;
+      }
+      const home = this.hole?.pos ?? ceresPosition(seed);
+      if (w.route.length > 0 && dist(w, w.route[0]) < 1200) w.route.shift();
+      if (this.hole && dist(w, home) < 800) {
+        this.enterDen(id, w);
+        return;
+      }
+      if (!this.hole && dist(w, home) < CERES_RADIUS - 3000) {
+        this.removeWorm(id);
+        return;
+      }
+      moveWorm(w, w.route[0] ?? home, WORM_SPEED, dt);
+    } else {
+      // sem presa ao alcance: EXCURSÃO — da borda de Ceres salta para a rocha
+      // mais próxima e volta pelo mesmo caminho; depois, outra
+      if (w.route.length > 0 && dist(w, w.route[0]) < 1200) w.route.shift();
+      if (w.route.length === 0) {
+        if (w.away) {
+          w.route = w.back;
+          w.back = [];
+          w.away = false;
+        } else {
+          const plan = this.wormExcursion();
+          w.route = plan.out;
+          w.back = plan.back;
+          w.away = true;
+        }
+      }
+      moveWorm(w, w.route[0], WORM_SPEED * 0.6, dt);
+    }
+    const k = 1 - Math.exp(-4 * dt);
+    w.mouth += ((near ? 1 : 0) - w.mouth) * k;
+    w.breach += ((near ? 1 : 0) - w.breach) * k;
+    for (let i = 0; i < w.segs.length; i++) {
+      w.exposed[i] = (i <= 2 && w.breach > 0.5) || !wormBodyAt(seed, w.segs[i]);
+    }
+
+    // a CABEÇA engole inteira a nave que alcança
+    for (const [sid, s] of [...this.sim.ships]) {
+      if (!this.wormEdible(s) || dist(w, s) > WORM_MOUTH_RADIUS + SHIP_RADIUS) continue;
+      this.fx("shipDown", s);
+      console.log(`[room] minhoca ${id} engoliu ${s.kind} ${sid} de ${s.owner || "bots"}`);
+      this.destroyShip(sid);
+    }
+    // o CORPO exposto fere quem bate nele
+    for (const [sid, s] of [...this.sim.ships]) {
+      if (!this.wormEdible(s) || this.wormBodyHits.has(sid)) continue;
+      if (dist(w, s) > w.segs.length * WORM_SPACING + WORM_MOUTH_RADIUS) continue;
+      for (let i = 1; i < w.segs.length; i++) {
+        if (!w.exposed[i] || dist(w.segs[i], s) > wormRadiusAt(i) + SHIP_RADIUS) continue;
+        this.wormBodyHits.set(sid, WORM_BODY_COOLDOWN);
+        this.damageShip([sid, s], WORM_BODY_DAMAGE, true);
+        break;
+      }
+    }
+  }
+
+  /**
+   * Uma excursão a partir da toca: o ponto da BORDA de Ceres numa direção
+   * sorteada perto da da toca e a rocha mais próxima dele lá fora (sem rocha
+   * à vista, um salto no vácuo). Volta pelo mesmo caminho: borda → toca.
+   */
+  private wormExcursion(): { out: WorldPos[]; back: WorldPos[] } {
+    const seed = this.sim.seed;
+    const c = ceresPosition(seed);
+    const home = this.hole?.pos ?? c;
+    const { dx, dy } = relVec(c, home);
+    const base = Math.hypot(dx, dy) > 1 ? Math.atan2(dy, dx) : this.combatRng() * Math.PI * 2;
+    const a = base + (this.combatRng() - 0.5) * 1.4;
+    const at = (r: number) => {
+      const p = { sx: c.sx, sy: c.sy, x: c.x + Math.cos(a) * r, y: c.y + Math.sin(a) * r };
+      normalizePos(p);
+      return p;
+    };
+    const edge = at(CERES_RADIUS - 900);
+    const look = at(CERES_RADIUS + 3000);
+    let rock: WorldPos = at(CERES_RADIUS + 4000);
+    let bd = Infinity;
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        for (const r of sectorAsteroids(seed, look.sx + ox, look.sy + oy)) {
+          const d = dist(edge, r);
+          if (d < bd && dist(c, r) > CERES_RADIUS + r.radius) { bd = d; rock = { sx: r.sx, sy: r.sy, x: r.x, y: r.y }; }
+        }
+      }
+    }
+    return { out: [edge, rock], back: [edge, home] };
+  }
+
+  /** Fim da ronda: entra na toca e descansa WORM_DEN_TIME (some do mapa). */
+  private enterDen(id: string, w: Worm): void {
+    w.den = WORM_DEN_TIME;
+    w.exposed.fill(false);
+    w.mouth = 0;
+    w.breach = 0;
+    this.state.worms.delete(id);
+  }
+
+  /** Volta à superfície pela toca para uma nova ronda (a corrente sai encolhida do buraco). */
+  private emergeWorm(w: Worm, at: WorldPos): void {
+    Object.assign(w, { sx: at.sx, sy: at.sy, x: at.x, y: at.y, angle: this.combatRng() * Math.PI * 2 });
+    for (const s of w.segs) Object.assign(s, { sx: at.sx, sy: at.sy, x: at.x, y: at.y });
+    Object.assign(w, { den: -1, roam: WORM_ROAM_TIME, target: "", retarget: 0, siege: -1, route: [], back: [], away: false });
+    w.besieged.clear();
+    w.attackers.clear();
+  }
+
+  /** Índice do gomo EXPOSTO mais perto de `p` (−1 = toda enterrada). */
+  private nearestExposedSeg(w: Worm, p: WorldPos): number {
+    let best = -1;
+    let bd = Infinity;
+    for (let i = 0; i < w.segs.length; i++) {
+      if (!w.exposed[i]) continue;
+      const d = dist(p, w.segs[i]);
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  }
+
+  /** Gomo apontado por um alvo de mira "worm:<id>:<i>" (null se a minhoca morreu). */
+  private wormSegOf(target: string): WorldPos | null {
+    const [, id, i] = target.split(":");
+    return this.worms.get(id)?.segs[Number(i)] ?? null;
+  }
+
+  /** Minhoca cujo corpo exposto o projétil toca (qualquer nível, qualquer dono). */
+  private wormHitBy(proj: WorldPos, reach: number): string | null {
+    for (const [id, w] of this.worms) {
+      for (let i = 0; i < w.segs.length; i++) {
+        if (w.exposed[i] && dist(proj, w.segs[i]) <= reach + wormRadiusAt(i)) return id;
+      }
+    }
+    return null;
+  }
+
+  /** Gomo exposto de alguma minhoca ao alcance de `from` (o mais perto). */
+  private wormInRange(from: WorldPos, range: number): { id: string; worm: Worm; seg: number } | null {
+    let out: { id: string; worm: Worm; seg: number } | null = null;
+    let bd = range;
+    for (const [id, w] of this.worms) {
+      const i = this.nearestExposedSeg(w, from);
+      if (i < 0) continue;
+      const d = dist(from, w.segs[i]) - wormRadiusAt(i);
+      if (d <= bd) { bd = d; out = { id, worm: w, seg: i }; }
+    }
+    return out;
+  }
+
+  /**
+   * Dano numa minhoca (`at`: onde o impacto explode); a zero, ela morre.
+   * `attacker` (nave ou estrutura da turreta): durante a ronda ela se volta
+   * contra o atacante mais perto (wormPickTarget, vingança).
+   */
+  private damageWorm(id: string, damage: number, at?: WorldPos, attacker?: string): void {
+    const w = this.worms.get(id);
+    if (!w || !(damage > 0)) return;
+    if (at) this.fx("hit", at);
+    w.hp -= damage;
+    if (attacker && w.roam > 0 && this.wormTarget(attacker)) {
+      w.attackers.set(attacker, this.elapsed);
+      w.besieged.delete(attacker);
+      const next = this.wormPickTarget(w);
+      if (next !== w.target) {
+        w.siege = -1;
+        w.pass = "in";
+      }
+      w.target = next;
+      w.retarget = 1;
+    }
+    if (w.hp > 0) return;
+    this.fx("structureDown", w);
+    for (let i = 4; i < w.segs.length; i += 6) if (w.exposed[i]) this.fx("shipDown", w.segs[i]);
+    this.removeWorm(id);
+    console.log(`[room] minhoca ${id} morreu`);
+  }
+
+  // ── escape pod e fim de jogo ──────────────────────────────────────
+
+  private stat(sessionId: string): PlayerStats {
+    let s = this.stats.get(sessionId);
+    if (!s) this.stats.set(sessionId, (s = freshStats(this.elapsed)));
+    return s;
+  }
+
+  /**
+   * Estrutura recém-construída: conta para o resumo do jogador; estação de
+   * mineração e QG nascem com STRUCTURE_START_RATIONS; a central de rações
+   * nasce com a sua frota de drones.
+   */
+  private onBuilt(sessionId: string, id: string): void {
+    const st = this.sim.structures.get(id);
+    if (!st) return;
+    const s = this.stat(sessionId);
+    s.built[st.type] = (s.built[st.type] ?? 0) + 1;
+    if (st.type === "miningStation" || st.type === "hq") st.rationStore = Math.max(st.rationStore, STRUCTURE_START_RATIONS);
+    if (st.type === "rationCenter") {
+      this.droneUpgrades.set(id, { drones: 0, speed: 0, cargo: 0 });
+      for (let k = 0; k < droneStats(this.droneUpgrades.get(id)!).count; k++) this.spawnDrone(st);
+    }
+  }
+
+  /**
+   * Para onde o escape pod vai: a estrutura PRÓPRIA mais próxima de `from`
+   * (qualquer tipo). Lá o piloto espera a pé. null = não sobrou nenhuma:
+   * fim de jogo.
+   */
+  private recoveryTarget(sessionId: string, from: WorldPos, skip = ""): Structure | null {
+    let best: Structure | null = null;
+    let bd = Infinity;
+    for (const st of this.sim.structures.values()) {
+      if (st.owner !== sessionId || st.id === skip) continue;
+      const d = dist(from, st);
+      if (d < bd) { bd = d; best = st; }
+    }
+    return best;
+  }
+
+  /** O piloto (a pé em `st`) embarca na nave `shipId` do hangar dela. */
+  private boardShip(sessionId: string, shipId: string, ship: ShipState, st: Structure): void {
+    this.deployFromHangar(ship, st);
+    this.activeShip.set(sessionId, shipId);
+    this.waitingAt.delete(sessionId);
+    console.log(`[room] ${sessionId} embarcou em ${ship.kind} (${shipId}) em ${st.id}`);
+  }
+
+  /**
+   * FIM DE JOGO por falta de meios: sem nenhum QG (para fabricar) e sem
+   * nenhum builder (para construir um), não há como se reerguer — mesmo com
+   * estações e outras naves de pé. Checado a cada tick.
+   */
+  private checkEliminations(): void {
+    for (const [sid, p] of this.state.players) {
+      if (p.eliminated) continue;
+      const hasHq = [...this.sim.structures.values()].some((st) => st.owner === sid && st.type === "hq");
+      const hasBuilder = [...this.sim.ships.values()].some((s) => s.owner === sid && s.kind === "builder");
+      if (!hasHq && !hasBuilder) this.eliminatePlayer(sid);
+    }
+  }
+
+  /**
+   * O jogador perdeu a nave (ou a estação em que estava atracado): é
+   * EXPELIDO num escape pod no lugar da explosão, que voa sozinho até o
+   * destino de recoveryTarget. Sem destino, fim de jogo.
+   */
+  private ejectPlayer(sessionId: string, at: WorldPos): void {
+    this.waitingAt.delete(sessionId);
+    const target = this.recoveryTarget(sessionId, at);
+    if (!target) {
+      this.eliminatePlayer(sessionId);
+      return;
+    }
+    const id = `pod-${this.shipSeq++}`;
+    const pod = this.sim.addShip(id, { sx: at.sx, sy: at.sy, x: at.x, y: at.y }, sessionId, "pod");
+    setLayer(pod, "cruise");
+    pod.taxiTo = target.id;
+    this.state.ships.set(id, this.mirrorSpawn(pod));
+    this.activeShip.set(sessionId, id);
+    console.log(`[room] ${sessionId} expelido num escape pod (${id}) → ${target.id} (${target.type})`);
+  }
+
+  /** Um passo do escape pod: voa (como o táxi) e, ao chegar, entrega o piloto. */
+  private stepPod(id: string, pod: ShipState): void {
+    let dest = this.sim.structures.get(pod.taxiTo);
+    if (!dest || dest.owner !== pod.owner) {
+      // o destino caiu no caminho: procura outro
+      const next = this.recoveryTarget(pod.owner, pod);
+      if (!next) {
+        this.removePod(id);
+        this.eliminatePlayer(pod.owner);
+        return;
+      }
+      pod.taxiTo = next.id;
+      dest = next;
+    }
+    if (dist(pod, dest) > DOCK_RANGE) {
+      this.sim.setInput(id, computeTaxiInput(pod, dest));
+      return;
+    }
+    // chegou: o piloto desce e espera a pé na estrutura
+    const owner = pod.owner;
+    this.removePod(id);
+    this.activeShip.delete(owner);
+    this.waitingAt.set(owner, dest.id);
+    console.log(`[room] ${owner} chegou de escape pod em ${dest.id} — esperando a pé`);
+  }
+
+  private removePod(id: string): void {
+    this.sim.removeShip(id);
+    this.state.ships.delete(id);
+    this.weapons.delete(id);
+    this.rawInputs.delete(id);
+  }
+
+  /**
+   * FIM DE JOGO do jogador: sem nave e sem como se reerguer. A frota que
+   * sobrou some, as estruturas viram RUÍNAS (RUIN_OWNER: ninguém ataca, nada
+   * produz, o asteroide continua ocupado) e o cliente mostra a tela de fim —
+   * tempo de sobrevivência e o que foi construído —, com as opções de
+   * assistir ou recomeçar (MSG_RESTART).
+   */
+  private eliminatePlayer(sessionId: string): void {
+    for (const [id, s] of [...this.sim.ships]) {
+      if (s.owner !== sessionId) continue;
+      this.sim.removeShip(id);
+      this.state.ships.delete(id);
+      this.spiders.delete(id);
+      this.attackTargets.delete(id);
+      this.weapons.delete(id);
+      this.rawInputs.delete(id);
+    }
+    for (const [did, d] of [...this.drones]) if (d.owner === sessionId) this.removeDrone(did);
+    let ruins = 0;
+    for (const st of this.sim.structures.values()) {
+      if (st.owner !== sessionId) continue;
+      st.owner = RUIN_OWNER;
+      this.turrets.delete(st.id);
+      this.turretJobs.delete(st.id);
+      this.turretCooldowns.delete(st.id);
+      ruins++;
+    }
+    this.activeShip.delete(sessionId);
+    this.waitingAt.delete(sessionId);
+    const stats = this.stat(sessionId);
+    const p = this.state.players.get(sessionId);
+    if (p) {
+      p.eliminated = true;
+      p.survival = this.elapsed - stats.joinedAt;
+      p.summary = JSON.stringify({ built: stats.built, produced: stats.produced, turrets: stats.turrets, ruins });
+    }
+    console.log(`[room] ${sessionId} ENCERRADO — ${Math.round(this.elapsed - stats.joinedAt)} s de partida, ${ruins} ruína(s)`);
+  }
+
+  /** Jogador encerrado recomeça: builder e base inicial novos num lugar aleatório. */
+  private restartPlayer(sessionId: string): void {
+    const p = this.state.players.get(sessionId);
+    if (!p?.eliminated) return;
+    p.eliminated = false;
+    p.survival = 0;
+    p.summary = "";
+    this.stats.set(sessionId, freshStats(this.elapsed));
+    this.waitingAt.delete(sessionId);
+    const base = this.spawns[Math.floor(Math.random() * this.spawns.length)];
+    const id = `p${this.shipSeq++}`;
+    const ship = this.spawnShip(id, base, sessionId, "builder");
+    ship.kits = STARTING_KITS;
+    this.state.ships.set(id, this.mirrorSpawn(ship));
+    this.activeShip.set(sessionId, id);
+    this.grantInitialBase(sessionId, ship);
+    console.log(`[room] ${sessionId} recomeçou em (${ship.sx}, ${ship.sy})`);
   }
 
   private mirrorSpawn(ship: ShipState): ShipSchema {
@@ -2095,7 +3445,6 @@ export class MatchRoom extends Room<MatchState> {
   private tick(dt: number) {
     this.elapsed += dt;
     // Animação de pouso/decolagem do builder
-    const LAND_DURATION = 1.5;
     for (const [, ship] of this.sim.ships) {
       if (ship.landingPhase === "landing") {
         ship.landingProgress = Math.min(1, ship.landingProgress + dt / LAND_DURATION);
@@ -2151,12 +3500,22 @@ export class MatchRoom extends Room<MatchState> {
       const rate = MINING_RATE_BY_KIND["builder"];
       station.oreStore = Math.min(cap, station.oreStore + rate * dt);
     }
-    // ESTAÇÕES DE CERES EVOLUÍDAS: as instalações de cada nível acima do 1
-    // extraem minério sozinhas, para o estoque LOCAL (o transporte leva à base)
+    // BROCA de toda estação de mineração: DRILL_BASE_RATE minério/s por nível,
+    // para o buffer local; parada sem rações, e cada DRILL_CYCLE_ORE escavado
+    // consome RATIONS_PER_MINING_CYCLE
     for (const st of this.sim.structures.values()) {
-      if (st.level <= 1 || st.type !== "miningStation") continue;
-      const rate = CERES_STATION_ORE_RATE_PER_LEVEL * (st.level - 1);
-      st.oreStore = Math.min(stationOreCap(st.level), st.oreStore + rate * dt);
+      if (st.type !== "miningStation" || st.owner === RUIN_OWNER || st.owner === BOT_OWNER) continue;
+      if (st.rationStore <= 0) continue;
+      const room = stationOreCap(st.level) - st.oreStore;
+      if (room <= 0) continue;
+      const mined = Math.min(room, DRILL_BASE_RATE * st.level * dt);
+      st.oreStore += mined;
+      let acc = (this.drillCycle.get(st.id) ?? 0) + mined;
+      while (acc >= DRILL_CYCLE_ORE) {
+        acc -= DRILL_CYCLE_ORE;
+        st.rationStore = Math.max(0, st.rationStore - RATIONS_PER_MINING_CYCLE);
+      }
+      this.drillCycle.set(st.id, acc);
     }
     // ARANHAS mineradoras → caminham pelo asteroide e descarregam no
     // estoque LOCAL da estação (param quando ele está cheio)
@@ -2171,14 +3530,25 @@ export class MatchRoom extends Room<MatchState> {
         ship.mining = false;
         continue;
       }
+      // sem rações para o próximo ciclo, a máquina para
+      if (station.rationStore < RATIONS_PER_MINING_CYCLE) {
+        ship.mining = false;
+        continue;
+      }
       const unloaded = stepSpider(ship, station, spider, dt);
       if (unloaded > 0) {
+        // fim de um ciclo de coleta: a equipe consome rações
+        station.rationStore = Math.max(0, station.rationStore - RATIONS_PER_MINING_CYCLE);
         station.oreStore = Math.min(stationOreCap(station.level), station.oreStore + unloaded);
       }
     }
+    // transportes em entrega automática
+    this.stepFreighters();
+    // escape pods: voam sozinhos até a estrutura própria mais próxima
+    for (const [id, ship] of [...this.sim.ships]) if (ship.kind === "pod") this.stepPod(id, ship);
     // IA do táxi → voa até o destino; ao chegar, estaciona na 1ª vaga livre
     for (const [id, ship] of this.sim.ships) {
-      if (!ship.taxiTo) continue;
+      if (!ship.taxiTo || ship.kind === "pod" || this.freighters.has(id)) continue;
       const dest = this.sim.structures.get(ship.taxiTo);
       if (!dest) {
         ship.taxiTo = "";
@@ -2195,6 +3565,8 @@ export class MatchRoom extends Room<MatchState> {
         ship.vy = 0;
         this.sim.setInput(id, { thrust: false, turn: 0, mine: false });
         console.log(`[room] táxi chegou: ${ship.kind} na vaga ${ship.bay} de ${ship.hqId}`);
+        // o dono esperava ali, a pé: embarca
+        if (this.waitingAt.get(ship.owner) === dest.id) this.boardShip(ship.owner, id, ship, dest);
       } else {
         this.sim.setInput(id, computeTaxiInput(ship, dest));
       }
@@ -2203,15 +3575,21 @@ export class MatchRoom extends Room<MatchState> {
     // nível de combate em que foi disparado (combat.ts) — cruzeiro com
     // cruzeiro; superfície e modo ataque com o nível das estações
     for (const [id, proj] of [...this.projectiles]) {
+      if (!this.projectiles.has(id)) continue; // detonada em cadeia neste tick (blastHole)
       let hit = false;
       if (proj.kind === "mine" && proj.armed) {
         // MINA ARMADA: parada; detona com nave inimiga por perto, ou some
         // sozinha depois de MINE_LIFETIME
         proj.age = (proj.age ?? 0) + dt;
-        if (this.shipHitBy(proj, MINE_TRIGGER_RADIUS)) {
+        if (this.shipHitBy(proj, MINE_TRIGGER_RADIUS) || this.droneHitBy(proj, MINE_TRIGGER_RADIUS) || this.wormHitBy(proj, MINE_TRIGGER_RADIUS)) {
+          // no buraco da toca, uma mina leva todas
+          if (proj.inHole) {
+            this.blastHole();
+            continue;
+          }
           this.detonate(proj);
           hit = true;
-        } else if (proj.age >= MINE_LIFETIME) hit = true;
+        } else if (!proj.inHole && proj.age >= MINE_LIFETIME) hit = true; // no buraco, espera o míssil
       } else {
         const step = Math.hypot(proj.vx, proj.vy) * dt;
         proj.x += proj.vx * dt;
@@ -2224,17 +3602,28 @@ export class MatchRoom extends Room<MatchState> {
           } else {
             const ship = this.shipHitBy(proj, MISSILE_RADIUS + SHIP_RADIUS);
             const struct = ship ? null : this.structureHitBy(proj, MISSILE_RADIUS);
-            hit = !!(ship || struct);
+            const drone = ship || struct ? null : this.droneHitBy(proj, MISSILE_RADIUS + DRONE_RADIUS);
+            const worm = ship || struct || drone ? null : this.wormHitBy(proj, MISSILE_RADIUS);
+            const holeMine = ship || struct || drone || worm ? false : this.holeMineHitBy(proj);
+            hit = !!(ship || struct || drone || worm || holeMine);
             if (ship) this.damageShip(ship, MISSILE_DAMAGE, true);
             else if (struct) this.damageStructure(struct, MISSILE_DAMAGE, true);
+            else if (drone) this.damageDrone(drone, MISSILE_DAMAGE, true);
+            else if (worm) this.damageWorm(worm, MISSILE_DAMAGE, proj, proj.shooter);
+            else if (holeMine) this.blastHole();
           }
         } else {
           // MINA EM VOO: inerte (só arma parada). Bate numa rocha → fixa-se
           // na superfície dela, no nível das estações; chega a
           // MINE_MAX_DISTANCE do lançamento → para e fica flutuando
-          const contact = this.mineContact(proj);
+          // na zona da toca a mina voa até o buraco e para DENTRO dele
+          const hole = this.hole;
+          const holeZone = !!hole && proj.level === "surface" && dist(proj, hole.pos) <= hole.radius + ATTACK_ZONE_MARGIN;
+          const inHole = holeZone && dist(proj, hole!.pos) <= WORM_HOLE_RADIUS;
+          const contact = holeZone ? null : this.mineContact(proj);
           const far = !contact && proj.origin && dist(proj.origin, proj) >= MINE_MAX_DISTANCE;
-          if (contact || far) {
+          if (contact || far || inHole) {
+            if (inHole) proj.inHole = true;
             if (contact) {
               proj.sx = contact.sx; proj.sy = contact.sy;
               proj.x = contact.x; proj.y = contact.y;
@@ -2273,32 +3662,11 @@ export class MatchRoom extends Room<MatchState> {
       if (ship.fireCooldown > 0) ship.fireCooldown = Math.max(0, ship.fireCooldown - dt);
       if (ship.grenadeCooldown > 0) ship.grenadeCooldown = Math.max(0, ship.grenadeCooldown - dt);
     }
-    // CENTRO DE DISTRIBUIÇÃO DE RAÇÕES: a cada RATION_DRONE_INTERVAL s,
-    // entrega RATION_DRONE_AMOUNT rações a cada estrutura própria dentro do alcance
-    for (const [id, center] of this.sim.structures) {
-      if (center.type !== "rationCenter") continue;
-      if (center.rationStore <= 0) continue;
-      let timer = this.rationDroneTimers.get(id) ?? RATION_DRONE_INTERVAL;
-      timer -= dt;
-      if (timer <= 0) {
-        timer = RATION_DRONE_INTERVAL;
-        for (const target of this.sim.structures.values()) {
-          if (target.id === id || target.owner !== center.owner) continue;
-          if (target.type === "rationCenter") continue;
-          const { dx, dy } = relVec(center, target);
-          if (Math.hypot(dx, dy) > RATION_DRONE_RANGE) continue;
-          const delivered = Math.min(RATION_DRONE_AMOUNT, center.rationStore);
-          if (delivered <= 0) break;
-          const space = RATION_STORE_CAP - target.rationStore;
-          const moved = Math.min(delivered, Math.max(0, space));
-          if (moved <= 0) continue;
-          target.rationStore += moved;
-          center.rationStore -= moved;
-          console.log(`[room] drone de rações: ${Math.round(moved)} de ${id} → ${target.id}`);
-        }
-      }
-      this.rationDroneTimers.set(id, timer);
-    }
+    // drones de ração e refinarias de bordo
+    this.stepDrones(dt);
+    this.stepWorms(dt);
+    this.stepRefine(dt);
+    this.stepRepair(dt);
     this.applyAttackMode();
     this.sim.tick(dt);
     // DANO DE COLISÃO: o impulso que o solver acumulou neste tick vira dano
@@ -2312,6 +3680,7 @@ export class MatchRoom extends Room<MatchState> {
       s.hullImpulse = 0;
       if (dmg > 0) this.damageShip([id, s], dmg);
     }
+    this.checkEliminations();
     // espelha sim-core → schema
     for (const [id, ship] of this.sim.ships) {
       const s = this.state.ships.get(id);
@@ -2348,6 +3717,11 @@ export class MatchRoom extends Room<MatchState> {
       s.layer = ship.layer;
       s.layerTo = ship.layerTo;
       s.layerProgress = ship.layerProgress;
+      const rf = this.refine.get(id);
+      s.refineQueue = rf?.queue ?? 0;
+      s.kits = ship.kits;
+      s.rations = ship.rations;
+      s.refineProgress = rf ? Math.min(1, rf.t / REFINE_TIME) : 0;
       const at = this.attackTargets.get(id);
       s.attackTarget = at?.structId ?? "";
       s.attackRadius = at ? this.attackHoldRadius(at.radius) : 0;
@@ -2389,11 +3763,17 @@ export class MatchRoom extends Room<MatchState> {
       s.turretBuild = job ? s.turrets : -1;
       s.turretProgress = job?.progress ?? 0;
       s.turretBuilder = job?.shipId ?? "";
+      s.repairing = this.repairJobs.has(id);
+      s.kitStore = st.kitStore;
+      const lv = this.droneUpgrades.get(id);
+      s.droneLv = lv?.drones ?? 0;
+      s.speedLv = lv?.speed ?? 0;
+      s.cargoLv = lv?.cargo ?? 0;
     }
-    // minério e nave ativa por jogador
+    // nave ativa e estado do jogador
     for (const [sid, p] of this.state.players) {
-      p.ore = this.sim.getOre(sid);
       p.activeShip = this.activeShip.get(sid) ?? "";
+      p.station = this.waitingAt.get(sid) ?? "";
     }
   }
 }

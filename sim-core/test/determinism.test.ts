@@ -1096,7 +1096,8 @@ describe("teto de dt: é propriedade da SIMULAÇÃO, não disciplina de quem cha
       shipBays: 6, expandedBays: 2, spiderBays: 0,
       nextShipBay: 0, nextSpiderBay: 0, oreStore: 0, rationStore: 0,
     });
-    const read = () => ({ ore: w.getOre("p1"), rations: w.structures.get("base-0")!.rationStore });
+    // sem carteira: a mineração pousada enche o PORÃO da nave
+    const read = () => ({ ore: m.cargoAmount, rations: w.structures.get("base-0")!.rationStore });
     return { w, read };
   };
 
@@ -2817,13 +2818,14 @@ describe("raio de giração ≤ raio do corpo, com o giro de antes", () => {
   // k² = ∫r²dm/m ≤ R²: é teorema. Os valores antigos (26/30/22/42) punham a
   // massa fora do casco de 20 u. Ficam aqui SÓ como régua do "giro de antes":
   // α = τ/(m·k²) e a rotação nominal são as de então.
-  const OLD: Record<ShipKind, { k: number; torque: number }> = {
+  // o escape pod nasceu já com k dentro do casco: não tem "giro de antes"
+  const OLD: Record<Exclude<ShipKind, "pod">, { k: number; torque: number }> = {
     builder: { k: 26, torque: 6300 },
     mining: { k: 30, torque: 8000 },
     attack: { k: 22, torque: 5400 },
     transport: { k: 42, torque: 11600 },
   };
-  const KINDS = Object.keys(OLD) as ShipKind[];
+  const KINDS = Object.keys(OLD) as Array<keyof typeof OLD>;
 
   it("toda classe tem k ≤ SHIP_RADIUS", () => {
     for (const k of KINDS) expect(SHIP_PHYSICS[k].gyration).toBeLessThanOrEqual(SHIP_RADIUS);
@@ -2886,6 +2888,7 @@ describe("estruturas", () => {
       rationStore: 0,
     });
     for (let i = 0; i < 20; i++) w.tick(1 / 20); // 1s
-    expect(w.getOre("p1")).toBe(0);
+    // a broca é da sala (MatchRoom); a simulação sozinha não escava nada
+    expect(w.structures.get("st-0")!.oreStore).toBe(0);
   });
 });

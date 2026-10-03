@@ -64,16 +64,21 @@ describe("sintetizador sfxr", () => {
 
 /** Motor falso: só registra o que tocaria. */
 function fakeEngine() {
-  const played: Array<{ name: SoundName; volume: number; pan: number }> = [];
+  const played: Array<{ name: SoundName | "landing" | "clank" | "takeoff"; volume: number; pan: number }> = [];
+  const state = { mining: false };
   const engine = {
     play: (name: SoundName, volume = 1, pan = 0) => played.push({ name, volume, pan }),
+    playLanding: () => played.push({ name: "landing", volume: 1, pan: 0 }),
+    playClank: () => played.push({ name: "clank", volume: 1, pan: 0 }),
+    playTakeoff: () => played.push({ name: "takeoff", volume: 1, pan: 0 }),
+    setMining: (on: boolean) => { state.mining = on; },
     setThrust: () => {},
   } as unknown as SoundEngine;
-  return { engine, played, names: () => played.map((p) => p.name) };
+  return { engine, played, state, names: () => played.map((p) => p.name) };
 }
 
 const ship = (o: Partial<DirectorShip> = {}): DirectorShip => ({
-  sx: 0, sy: 0, x: 5000, y: 5000, owner: "me", kind: "attack", anchored: false, landingPhase: "",
+  sx: 0, sy: 0, x: 5000, y: 5000, owner: "me", kind: "attack", anchored: false, landingPhase: "", mining: false,
   layerTo: "", weapon: "missile", aimLocked: false, hp: 100, cargoAmount: 0, attackTarget: "", ...o,
 });
 const struct = (o: Partial<DirectorStructure> = {}): DirectorStructure => ({
@@ -138,7 +143,28 @@ describe("direção do som", () => {
       ship({ weapon: "laser", layerTo: "surface" }),
     ];
     steps.forEach((s, i) => d.sync(snap({ p0: s }), listener, i));
-    expect(f.names()).toEqual(["select", "lock", "dock", "coin", "takeoff", "layerShift"]);
+    expect(f.names()).toEqual(["select", "lock", "clank", "coin", "takeoff", "layerShift"]);
+  });
+
+  it("pouso: o jato morrendo na descida e o CLANK ao tocar o chão; mineração liga e desliga o WOOSH", () => {
+    const f = fakeEngine();
+    const d = new SoundDirector(f.engine);
+    const steps: DirectorShip[] = [
+      ship({ kind: "builder" }),
+      ship({ kind: "builder", landingPhase: "landing" }),
+      ship({ kind: "builder", landingPhase: "landing" }),
+      ship({ kind: "builder", landingPhase: "landed" }),
+    ];
+    steps.forEach((s, i) => d.sync(snap({ p0: s }), listener, i));
+    expect(f.names()).toEqual(["landing", "clank"]);
+    d.sync(snap({ p0: ship({ kind: "builder", landingPhase: "landed", anchored: true, mining: true }) }), listener, 5);
+    expect(f.state.mining).toBe(true);
+    // minerando, o porão cresce a cada estado: sem moeda
+    d.sync(snap({ p0: ship({ kind: "builder", landingPhase: "landed", anchored: true, mining: true, cargoAmount: 40 }) }), listener, 5.5);
+    d.sync(snap({ p0: ship({ kind: "builder", landingPhase: "landed", anchored: true, mining: true, cargoAmount: 80 }) }), listener, 5.6);
+    expect(f.names()).toEqual(["landing", "clank"]);
+    d.sync(snap({ p0: ship({ kind: "builder", landingPhase: "landed" }) }), listener, 6);
+    expect(f.state.mining).toBe(false);
   });
 
   it("trocar de nave não é evento", () => {

@@ -29,14 +29,34 @@ import {
   MSG_WEAPON,
   laserMount,
   MSG_TURRET,
-  BUILDER_ORE_CAP,
+  MSG_RESTART,
+  normalizePos,
+  BUILDER_ITEM_CAP,
+  BUILDER_HOLD_TOTAL,
+  holdRoom,
+  RUIN_OWNER,
+  WORM_HOLE_ID,
+  WORM_HOLE_SEAL_MINES,
+  REFINE_TIME,
+  REPAIR_HP_PER_KIT,
+  TRANSPORT_CARGO_CAP,
+  REFINE_ORE,
+  REFINE_KITS,
+  MSG_DRONE_UPGRADE,
+  MSG_TRANSFER,
+  SHIP_ORE_HOLD,
+  DRILL_BASE_RATE,
+  stationUpgradeCost,
+  droneStats,
+  droneUpgradeCost,
   TURRET_COST,
   TURRET_MAX,
   turretWorldPos,
   MSG_FX,
+  MSG_ALERT,
+  type AlertEvent,
   MSG_UPGRADE,
   CERES_STATION_MAX_LEVEL,
-  ceresStationUpgradeCost,
   stationOreCap,
   MINE_BLAST_RADIUS,
   type FxEvent,
@@ -53,6 +73,7 @@ import {
   MISSILE_AMMO_MAX,
   MINE_AMMO_MAX,
   type WeaponKind,
+  type ProduceCommand,
   ceresPosition,
   relVec,
   dist,
@@ -71,19 +92,23 @@ import {
   attackModeInput,
   sectorAsteroids,
   syncLayer,
+  wormBodyAt,
   type ShipState,
   type Body,
 } from "@ceres/sim-core";
 import { Palette } from "../render/Palette";
-import { toScene } from "../render/coords";
-import { MASK_MAIN_ONLY, FP_CAMERA_MASK, EFFECTS_LAYER_Z, SHIP_LAYER_Z } from "../render/layers";
+import { toScene, toSceneAngle } from "../render/coords";
+import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
+import { MASK_MAIN_ONLY, FP_CAMERA_MASK, EFFECTS_LAYER_Z, SHIP_LAYER_Z, ROCK_FRONT_REACH } from "../render/layers";
 import { c3 } from "../render/lineUtils";
-import { KeyInput } from "../input";
+import { KeyInput, type KeyName } from "../input";
 import { MeshFactory } from "../render/MeshFactory";
 import { ShipRenderer } from "../render/ShipRenderer";
 import { ExplosionRenderer, type ExplosionHandle } from "../render/ExplosionRenderer";
 import { BeamRenderer } from "../render/BeamRenderer";
-import { CockpitInterior, PANEL_SCREEN, type RadarBlip } from "../render/CockpitInterior";
+import { DroneRenderer } from "../render/DroneRenderer";
+import { WormRenderer } from "../render/WormRenderer";
+import { CockpitInterior, PANEL_SCREEN, type CargoDashboard, type RadarBlip } from "../render/CockpitInterior";
 import { SoundEngine } from "../audio/SoundEngine";
 import { SoundDirector } from "../audio/SoundDirector";
 import { shipMeshData } from "../render/ShipMeshGenerator";
@@ -118,6 +143,10 @@ const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 0.25;
 /** atracada ou pousada, dá para chegar bem mais perto (ver o hangar de perto) */
 const ZOOM_MAX_DOCKED = 0.75;
+/** velocidade da câmera do espectador (px de tela por segundo ÷ zoom = u/s) */
+const SPECTATOR_SPEED = 900;
+/** espectador em primeira pessoa: giro de A/D (rad/s) */
+const SPECTATOR_TURN_RATE = 1.8;
 /** folga do casco atracado acima do chão da plataforma (cena, −z = para cima) */
 const DOCK_HULL_LIFT = 6;
 const ZOOM_WHEEL_STEP = 1.15;
@@ -320,6 +349,13 @@ interface ServerShip extends WorldPos {
   /** 2º canhão do laser (o 1º é aimOffset/aimLocked) */
   aimOffset2: number;
   aimLocked2: boolean;
+  /** refinaria do builder: lotes na fila e progresso do atual */
+  refineQueue: number;
+  refineProgress: number;
+  /** kits de construção a bordo (builder) */
+  kits: number;
+  /** rações a bordo (builder) */
+  rations: number;
   /** vaga ocupada na estrutura `hqId` (guardada ou pousada); −1 = nenhuma */
   bay: number;
   /**
@@ -365,6 +401,14 @@ interface ServerStructure extends WorldPos {
   turretBuild: number;
   turretProgress: number;
   turretBuilder: string;
+  /** um builder está consertando a estrutura ([G]) */
+  repairing: boolean;
+  /** kits guardados no buffer da estrutura */
+  kitStore: number;
+  /** central de rações: níveis das melhorias dos drones */
+  droneLv: number;
+  speedLv: number;
+  cargoLv: number;
 }
 
 /**
@@ -398,7 +442,6 @@ export class GameScene {
   /** id da nave ativa segundo o servidor, e a que a predição representa */
   private myShipId = "";
   private localShipId = "";
-  private myOre = 0;
   /** seleção atual de táxi (índice na lista de opções) */
   private taxiSel = 0;
   private taxiOpts: Array<{ id: string; kind: ShipKind; srcType: StructureType; srcDist: number }> = [];
@@ -430,8 +473,32 @@ export class GameScene {
   private presence = new Map<string, Presence>();
   /** explosões em curso: posição de MUNDO (a origem de render flutua), início e faíscas */
   private explosionRenderer!: ExplosionRenderer;
+  /** fim de jogo: encerrado, tempo de sobrevivência, resumo (JSON) e modo espectador */
+  private eliminated = false;
+  /** estrutura em que o piloto espera A PÉ, sem nave ("" = está numa nave) */
+  private myStation = "";
+  private survival = 0;
+  private summary = "";
+  private spectating = false;
+  /**
+   * Espectador: o olho de primeira pessoa num suporte próprio (sem nave para
+   * prendê-lo) — rumo, camada escolhida com [F] e a altitude suavizada.
+   */
+  private spectHeading = 0;
+  private spectLayer: "cruise" | "surface" = "cruise";
+  private spectAlt = 1;
+  private spectRig: TransformNode | null = null;
   /** traço 3D do laser, para o cockpit */
   private beamRenderer!: BeamRenderer;
+  /** drones de ração em voo (estado do servidor) e o seu render */
+  private droneRenderer!: DroneRenderer;
+  private serverDrones = new Map<string, WorldPos & { owner: string; angle: number; cargo: number }>();
+  /** minhocas gigantes: gomos no mundo (0 = cabeça), cabeça erguida e boca */
+  private serverWorms = new Map<string, { segs: WorldPos[]; breach: number; mouth: number }>();
+  private wormRenderer!: WormRenderer;
+  /** toca aberta das minhocas (id da plataforma de Ceres, "" = nenhuma) e minas já detonadas nela */
+  private wormHole = "";
+  private wormHoleSeal = 0;
   /** interior da cabine na câmera de cockpit (painel, radar, tela da vista de cima) */
   private cockpitInterior!: CockpitInterior;
   /** efeitos sonoros 8 bits (sfxr) e quem decide quando tocá-los */
@@ -713,6 +780,8 @@ export class GameScene {
     this.effectsRenderer = new EffectsRenderer(this.bScene, this.glow);
     this.explosionRenderer = new ExplosionRenderer(this.bScene, this.camera, this.glow);
     this.beamRenderer = new BeamRenderer(this.bScene);
+    this.droneRenderer = new DroneRenderer(this.bScene);
+    this.wormRenderer = new WormRenderer(this.bScene);
     this.cockpitInterior = new CockpitInterior(this.bScene, this.fpCamera, this.glow);
     // som: sintetizado agora; o áudio só liga no primeiro gesto (autoplay)
     this.sound = new SoundEngine();
@@ -740,6 +809,11 @@ export class GameScene {
     // callbacks do schema, que varia entre versões do colyseus.js
     this.room.onStateChange((state: any) => this.syncFromServer(state));
     // explosões: o servidor diz onde e o quê, na posição exata do acerto
+    // alertas a este jogador (ex.: os tremores da toca das minhocas)
+    this.room.onMessage(MSG_ALERT, (ev: AlertEvent) => {
+      this.hudRenderer.showAlert(ev.text, ev.level);
+      this.soundDirector.alarm();
+    });
     this.room.onMessage(MSG_FX, (ev: FxEvent) => {
       this.soundDirector.fx(ev, this.localShip, this.myShipId);
       if (ev.kind === "laser") {
@@ -803,6 +877,10 @@ export class GameScene {
         aimLocked: s.aimLocked ?? false,
         attackTarget: s.attackTarget ?? "",
         aimOffset2: s.aimOffset2 ?? 0,
+        refineQueue: s.refineQueue ?? 0,
+        kits: s.kits ?? 0,
+        rations: s.rations ?? 0,
+        refineProgress: s.refineProgress ?? 0,
         aimLocked2: s.aimLocked2 ?? false,
         attackRadius: s.attackRadius ?? 0,
         bay: s.bay ?? -1,
@@ -824,7 +902,17 @@ export class GameScene {
     const me = state.players?.get(this.room.sessionId);
     if (me) {
       this.myShipId = me.activeShip;
-      this.myOre = me.ore;
+      this.myStation = me.station ?? "";
+      const was = this.eliminated;
+      this.eliminated = !!me.eliminated;
+      this.survival = me.survival ?? 0;
+      this.summary = me.summary ?? "";
+      if (this.eliminated && !was) this.onEliminated();
+      if (!this.eliminated && was) {
+        this.spectating = false;
+        this.hudRenderer.hideEndScreen();
+        this.hudRenderer.setSpectatorBanner(null);
+      }
     }
 
     // estruturas (estáticas): upsert + remoção
@@ -838,7 +926,9 @@ export class GameScene {
         oreStore: st.oreStore ?? 0, rationStore: st.rationStore ?? 0,
         hp: st.hp ?? 0, maxHp: st.maxHp ?? 0, level: st.level ?? 1,
         turrets: st.turrets ?? 0, turretBuild: st.turretBuild ?? -1,
-        turretProgress: st.turretProgress ?? 0, turretBuilder: st.turretBuilder ?? "",
+        turretProgress: st.turretProgress ?? 0, turretBuilder: st.turretBuilder ?? "", repairing: st.repairing ?? false,
+        droneLv: st.droneLv ?? 0, speedLv: st.speedLv ?? 0, cargoLv: st.cargoLv ?? 0,
+        kitStore: st.kitStore ?? 0,
       });
     });
     for (const id of [...this.serverStructures.keys()]) {
@@ -879,6 +969,31 @@ export class GameScene {
       if (!seenPr.has(id)) this.serverProjectiles.delete(id);
     }
 
+    // drones de ração em voo
+    const seenDr = new Set<string>();
+    state.drones?.forEach((d: any, id: string) => {
+      seenDr.add(id);
+      this.serverDrones.set(id, { sx: d.sx, sy: d.sy, x: d.x, y: d.y, owner: d.owner, angle: d.angle, cargo: d.cargo });
+    });
+    for (const id of [...this.serverDrones.keys()]) if (!seenDr.has(id)) this.serverDrones.delete(id);
+
+    this.wormHole = state.wormHole ?? "";
+    this.wormHoleSeal = state.wormHoleSeal ?? 0;
+    // minhocas gigantes: cabeça + offsets dos gomos
+    const seenWm = new Set<string>();
+    state.worms?.forEach((w: any, id: string) => {
+      seenWm.add(id);
+      const segs: WorldPos[] = [{ sx: w.sx, sy: w.sy, x: w.x, y: w.y }];
+      const off: number[] = Array.from(w.segs ?? []);
+      for (let k = 0; k + 1 < off.length; k += 2) {
+        const p = { sx: w.sx, sy: w.sy, x: w.x + off[k], y: w.y + off[k + 1] };
+        normalizePos(p);
+        segs.push(p);
+      }
+      this.serverWorms.set(id, { segs, breach: w.breach ?? 0, mouth: w.mouth ?? 0 });
+    });
+    for (const id of [...this.serverWorms.keys()]) if (!seenWm.has(id)) this.serverWorms.delete(id);
+
     // som: o que mudou desde o último estado (disparos, minas, pouso...)
     this.soundDirector.sync({
       sessionId: this.room.sessionId,
@@ -902,8 +1017,10 @@ export class GameScene {
     if (me.aimTarget) {
       const rv = this.remotes.get(me.aimTarget);
       const st = this.serverStructures.get(me.aimTarget);
+      const dr = me.aimTarget.startsWith("drone:") ? this.serverDrones.get(me.aimTarget.slice(6)) : undefined;
       if (rv?.initialized) target = { x: rv.rx, y: rv.ry };
       else if (st) target = this.toRender(st);
+      else if (dr) target = this.toRender(dr);
     }
     const d = target ? Math.hypot(target.x - own.x, target.y - own.y) : AIM_IDLE_DIST;
     for (const g of this.gunAims(me, own, angle, d)) this.effectsRenderer.drawAim(g.x, g.y, AIM_SIZE, g.locked);
@@ -935,7 +1052,8 @@ export class GameScene {
    */
   private attackTranslated(input: ShipInput): ShipInput {
     const me = this.serverShips.get(this.myShipId);
-    const st = me?.attackTarget ? this.serverStructures.get(me.attackTarget) : undefined;
+    const st = me?.attackTarget === WORM_HOLE_ID ? this.wormHoleSite() ?? undefined
+      : me?.attackTarget ? this.serverStructures.get(me.attackTarget) : undefined;
     if (!me || !st || !this.localShip) return input;
     return attackModeInput(this.localShip, st, me.attackRadius, input);
   }
@@ -1069,13 +1187,157 @@ export class GameScene {
     }
     for (const st of this.serverStructures.values()) add(st, st.owner === this.room.sessionId ? "ownStructure" : "enemyStructure");
     for (const p of this.serverProjectiles.values()) add(p, "shot");
+    for (const d of this.serverDrones.values()) add(d, d.owner === this.room.sessionId ? "fleet" : "enemy");
+    for (const w of this.serverWorms.values()) w.segs.forEach((s, i) => { if (i % 3 === 0) add(s, i === 0 ? "wormHead" : "worm"); });
+    const hole = this.wormHoleSite();
+    if (hole) add(hole, "wormHead");
     return out;
+  }
+
+  /**
+   * z de cena da superfície do corpo (Ceres ou rocha) sob `p` — a esfera do
+   * corpo vista de cima —, ou null no vácuo. É onde a minhoca se enterra.
+   */
+  private groundZ(p: WorldPos): number | null {
+    const body = wormBodyAt(this.worldSeed, p);
+    if (!body) return null;
+    const zc = body.id === "ceres"
+      ? this.planetRenderer.centerZ() ?? CERES_RADIUS - ROCK_FRONT_REACH
+      : this.asteroidRenderer.centerZ(body.id) ?? body.radius * 1.07 - ROCK_FRONT_REACH;
+    return zc - Math.sqrt(Math.max(0, body.radius * body.radius - body.d * body.d));
+  }
+
+  /** Centro da toca aberta das minhocas (a plataforma dela), ou null. */
+  private wormHoleSite(): (WorldPos & { radius: number }) | null {
+    if (!this.wormHole) return null;
+    const pad = ceresPlatforms(this.worldSeed).find((p) => p.id === this.wormHole);
+    return pad ? { ...ceresPlatformPos(this.worldSeed, pad), radius: pad.radius } : null;
+  }
+
+  /** Nave própria na zona da toca (a do [F] modo ataque sobre ela)? */
+  private nearWormHole(): boolean {
+    const site = this.wormHoleSite();
+    return !!site && !!this.localShip && dist(this.localShip, site) <= site.radius + ATTACK_ZONE_MARGIN;
   }
 
   /** Teto do zoom agora: maior com a nave própria atracada numa vaga ou pousada. */
   private zoomMax(): number {
     const me = this.serverShips.get(this.myShipId);
-    return me && (me.anchored || me.landingPhase === "landed") ? ZOOM_MAX_DOCKED : ZOOM_MAX;
+    if (!me) return this.myStation ? ZOOM_MAX_DOCKED : ZOOM_MAX;
+    return me.anchored || me.landingPhase === "landed" ? ZOOM_MAX_DOCKED : ZOOM_MAX;
+  }
+
+  /**
+   * A PÉ numa estação (sem nave — pôs a mineradora para autominerar, ou
+   * chegou de escape pod): a câmera fica na estação e o mundo segue. [T]/[Y]
+   * escolhem e chamam um táxi de qualquer hangar (ao chegar, o piloto
+   * embarca), [C] embarca numa nave guardada ali e, num QG, [3]–[6] fabricam.
+   */
+  private updateOnFoot(dt: number): void {
+    const st = this.serverStructures.get(this.myStation);
+    const l = this.localShip!;
+    if (st) Object.assign(l, { sx: st.sx, sy: st.sy, x: st.x, y: st.y, vx: 0, vy: 0, av: 0 });
+    this.taxiOpts = this.computeTaxiOptions();
+    if (this.taxiOpts.length > 0) this.taxiSel %= this.taxiOpts.length;
+    else this.taxiSel = 0;
+    if (this.keys.justDown("T") && this.taxiOpts.length > 0) this.taxiSel = (this.taxiSel + 1) % this.taxiOpts.length;
+    if (this.keys.justDown("Y") && this.taxiOpts.length > 0) this.room.send(MSG_TAXI, { shipId: this.taxiOpts[this.taxiSel].id });
+    if (this.keys.justDown("C")) this.room.send(MSG_SWAP);
+    if (st?.stype === "hq") {
+      const make: Array<["THREE" | "FOUR" | "FIVE" | "SIX", ProduceCommand["kind"]]> = [
+        ["THREE", "mining"], ["FOUR", "attack"], ["FIVE", "builder"], ["SIX", "transport"],
+      ];
+      for (const [key, kind] of make) if (this.keys.justDown(key)) this.room.send(MSG_PRODUCE, { kind });
+    }
+    if (this.keys.justDown("M")) this.minimapFull = !this.minimapFull;
+    if (this.keys.justDown("N")) this.sound.toggleMute();
+    if (this.keys.isDown("PLUS")) this.zoomTarget = Math.min(this.zoomTarget * ZOOM_KEY_STEP, this.zoomMax());
+    if (this.keys.isDown("MINUS")) this.zoomTarget = Math.max(this.zoomTarget / ZOOM_KEY_STEP, ZOOM_MIN);
+    this.zoom = lerp(this.zoom, this.zoomTarget, ZOOM_SMOOTH);
+    this.updateOrtho();
+    if (l.sx !== this.origin.sx || l.sy !== this.origin.sy) this.setOrigin(l.sx, l.sy);
+    this.draw(dt, undefined, new SimWorld(this.worldSeed));
+  }
+
+  /** Fim de jogo: mostra a tela com o tempo e o que foi construído. */
+  private onEliminated(): void {
+    const label: Record<string, string> = {
+      initialBase: "base inicial", hq: "QG", miningStation: "estação de mineração", rationCenter: "centro de rações",
+      builder: "builder", mining: "nave de mineração", attack: "nave de ataque", transport: "nave de transporte",
+    };
+    const lines: string[] = [];
+    try {
+      const s = JSON.parse(this.summary || "{}") as { built?: Record<string, number>; produced?: Record<string, number>; turrets?: number; ruins?: number };
+      for (const [k, n] of Object.entries(s.built ?? {})) lines.push(`${n}× ${label[k] ?? k} construída(s)`);
+      for (const [k, n] of Object.entries(s.produced ?? {})) lines.push(`${n}× ${label[k] ?? k} fabricada(s)`);
+      if (s.turrets) lines.push(`${s.turrets}× turreta(s)`);
+      if (s.ruins) lines.push(`${s.ruins} estrutura(s) ficaram como ruínas`);
+    } catch {
+      /* resumo ilegível: só o tempo */
+    }
+    this.hudRenderer.showEndScreen({ survival: this.survival, lines },
+      () => {
+        this.spectating = true;
+        this.hudRenderer.hideEndScreen();
+        this.updateSpectatorBanner();
+      },
+      () => this.room.send(MSG_RESTART));
+  }
+
+  /** Faixa do espectador com a vista e a camada atuais. */
+  private updateSpectatorBanner(): void {
+    const view = this.cockpitFull ? "primeira pessoa" : "de cima";
+    const layer = this.spectLayer === "cruise" ? "cruzeiro" : "superfície";
+    this.hudRenderer.setSpectatorBanner(
+      `ESPECTADOR · WASD/setas movem · [V] vista: ${view} · [F] camada: ${layer} · [R] recomeçar`);
+  }
+
+  /**
+   * Modo espectador (ou atrás da tela de fim): sem nave, a câmera voa solta
+   * — WASD/setas, mais rápida no zoom afastado — e o mundo segue sendo
+   * desenhado. [V] alterna a vista de cima ↔ primeira pessoa (os viewports,
+   * como na nave); [F] alterna a camada do olho (cruzeiro ↔ superfície). Na
+   * primeira pessoa, W/S andam para a frente/trás e A/D viram. [R] recomeça.
+   */
+  private updateSpectator(dt: number): void {
+    const l = this.localShip!;
+    if (this.spectating) {
+      const v = SPECTATOR_SPEED / this.zoom;
+      const k = (a: KeyName, b: KeyName) => (this.keys.isDown(a) || this.keys.isDown(b) ? 1 : 0);
+      if (this.cockpitFull) {
+        // primeira pessoa: anda no rumo do olho e vira com A/D
+        this.spectHeading += (k("D", "RIGHT") - k("A", "LEFT")) * SPECTATOR_TURN_RATE * dt;
+        const f = (k("W", "UP") - k("S", "S")) * v * dt;
+        l.x += Math.cos(this.spectHeading) * f;
+        l.y += Math.sin(this.spectHeading) * f;
+      } else {
+        const mx = k("D", "RIGHT") - k("A", "LEFT");
+        const my = k("S", "S") - k("W", "UP");
+        l.x += mx * v * dt;
+        l.y += my * v * dt;
+        // o olho de primeira pessoa olha para onde a câmera anda
+        if (mx || my) this.spectHeading = Math.atan2(my, mx);
+      }
+      normalizePos(l);
+      if (this.keys.justDown("V")) {
+        this.setCockpitFull(!this.cockpitFull);
+        this.updateSpectatorBanner();
+      }
+      if (this.keys.justDown("F")) {
+        this.spectLayer = this.spectLayer === "cruise" ? "surface" : "cruise";
+        this.updateSpectatorBanner();
+      }
+      if (this.keys.justDown("R")) this.room.send(MSG_RESTART);
+    }
+    this.spectAlt += ((this.spectLayer === "cruise" ? 1 : 0) - this.spectAlt) * Math.min(1, dt * 3);
+    l.vx = 0;
+    l.vy = 0;
+    if (this.keys.isDown("PLUS")) this.zoomTarget = Math.min(this.zoomTarget * ZOOM_KEY_STEP, ZOOM_MAX);
+    if (this.keys.isDown("MINUS")) this.zoomTarget = Math.max(this.zoomTarget / ZOOM_KEY_STEP, ZOOM_MIN);
+    this.zoom = lerp(this.zoom, this.zoomTarget, ZOOM_SMOOTH);
+    this.updateOrtho();
+    if (l.sx !== this.origin.sx || l.sy !== this.origin.sy) this.setOrigin(l.sx, l.sy);
+    this.draw(dt, undefined, new SimWorld(this.worldSeed));
   }
 
   /** Posição de render de uma nave: a predita (a minha), a suavizada (remota) ou a do servidor. */
@@ -1110,10 +1372,12 @@ export class GameScene {
 
   private computeTaxiOptions() {
     const opts: GameScene["taxiOpts"] = [];
+    // onde o piloto está: a pé numa estação, ou atracado
+    const here = this.myStation || this.serverShips.get(this.myShipId)?.hqId || "";
     for (const [id, s] of this.serverShips) {
       if (s.owner !== this.room.sessionId || !s.stored) continue;
       const src = this.serverStructures.get(s.hqId);
-      if (!src || src.stype !== "hq") continue;
+      if (!src || src.owner !== this.room.sessionId || s.hqId === here) continue;
       opts.push({ id, kind: s.kind, srcType: src.stype, srcDist: dist(this.localShip!, src) });
     }
     opts.sort((a, b) => a.srcDist - b.srcDist);
@@ -1157,7 +1421,12 @@ export class GameScene {
   update(dt: number) {
     // (re)inicializa a predição quando a nave ativa aparece ou muda (troca)
     const mineServer = this.myShipId ? this.serverShips.get(this.myShipId) : undefined;
-    if (!mineServer) return;
+    if (!mineServer) {
+      // encerrado: o mundo segue (modo espectador, ou atrás da tela de fim)
+      if (this.eliminated && this.localShip) this.updateSpectator(dt);
+      else if (this.myStation && this.localShip) this.updateOnFoot(dt);
+      return;
+    }
     if (this.localShipId !== this.myShipId) this.initActiveShip(mineServer);
     if (!this.localShip) return;
     // a camada da nave própria segue a do servidor (quem troca de camada é o
@@ -1252,9 +1521,22 @@ export class GameScene {
       }
       // [E] carga/descarga do transporte pousado (contexto no servidor);
       // no builder atracado, enche o porão de minério
-      if ((mineServer.kind === "transport" || mineServer.kind === "builder") && mineServer.anchored
+      if ((mineServer.kind === "builder" ||
+        ((mineServer.kind === "transport" || mineServer.kind === "mining") && mineServer.anchored))
         && this.keys.justDown("E")) {
         this.room.send(MSG_CARGO);
+      }
+      // builder atracado: troca minério e kits com o buffer da estrutura; [J]
+      // rações (carrega na base/central, descarrega na estação/QG — o servidor decide)
+      if (mineServer.kind === "builder" && mineServer.anchored) {
+        const moves = [["O", "ore", "withdraw"], ["P", "ore", "deposit"], ["K", "kits", "withdraw"], ["L", "kits", "deposit"], ["J", "rations", "withdraw"]] as const;
+        for (const [key, item, dir] of moves) if (this.keys.justDown(key)) this.room.send(MSG_TRANSFER, { item, dir });
+      }
+      // [1]/[2]/[3] builder atracado na central de rações: melhorias dos drones
+      if (mineServer.kind === "builder" && mineServer.anchored &&
+        this.serverStructures.get(mineServer.hqId)?.stype === "rationCenter") {
+        const tracks = [["ONE", "drones"], ["TWO", "speed"], ["THREE", "cargo"]] as const;
+        for (const [key, track] of tracks) if (this.keys.justDown(key)) this.room.send(MSG_DRONE_UPGRADE, { track });
       }
       // [B] builder atracado: constrói uma turreta (o servidor valida tudo)
       if (mineServer.kind === "builder" && mineServer.anchored && this.keys.justDown("B")) {
@@ -1302,6 +1584,8 @@ export class GameScene {
       if (this.keys.justDown("SPACE")) {
         this.room.send(MSG_LAND_ACTION, { action: "mine" });
       }
+      // o builder refina o porão enquanto minera
+      if (mineServer.kind === "builder" && this.keys.justDown("E")) this.room.send(MSG_CARGO);
       if (this.keys.justDown("ONE")) {
         this.room.send(MSG_LAND_ACTION, { action: "buildmine" });
       }
@@ -1318,11 +1602,16 @@ export class GameScene {
 
     const anchored = mineServer.anchored;
     // em pouso/pousado/decolando: sala controla a posição — congela a predição
-    const frozen = anchored || isLanding || isLanded;
+    // no escape pod o servidor pilota: a nave própria só acompanha o estado dele
+    const podRide = mineServer.kind === "pod";
+    const frozen = anchored || isLanding || isLanded || podRide;
 
     // input → predição local (mesmo passo de física do servidor) → envio
     const input = frozen ? { thrust: false, turn: 0 as const, mine: false } : this.readInput();
-    if (frozen) {
+    if (podRide) {
+      const l = this.localShip;
+      Object.assign(l, { sx: mineServer.sx, sy: mineServer.sy, x: mineServer.x, y: mineServer.y, vx: mineServer.vx, vy: mineServer.vy, angle: mineServer.angle, av: mineServer.av });
+    } else if (frozen) {
       // mesmo congelamento do servidor (SimWorld.tick): zera também a
       // velocidade ANGULAR, senão a nave retoma o giro que tinha ao atracar
       freezeShip(this.localShip);
@@ -1586,6 +1875,7 @@ export class GameScene {
     let best: { pos: WorldPos; radius: number } | null = null;
     let bestEdge = maxEdge;
     for (const p of ceresPlatforms(this.worldSeed)) {
+      if (p.id === this.wormHole) continue; // a toca das minhocas não aceita pouso
       const pos = ceresPlatformPos(this.worldSeed, p);
       const edge = dist(this.localShip, pos) - p.radius;
       if (edge <= bestEdge) {
@@ -1605,6 +1895,29 @@ export class GameScene {
     if (s.anchoredAsteroidId.startsWith(CERES_PLATFORM_PREFIX)) return this.planetRenderer.platformZ(s.anchoredAsteroidId);
     if (s.anchoredAsteroidId) return this.asteroidRenderer.platformZ(s.anchoredAsteroidId);
     return null;
+  }
+
+  /** O que o dashboard de carga do cockpit mostra para a nave `s`. */
+  private cargoDashboard(s: ServerShip | undefined): CargoDashboard | null {
+    if (!s) return null;
+    const ore = s.cargoKind === "ore" ? s.cargoAmount : 0;
+    const builder = s.kind === "builder";
+    const transport = s.kind === "transport";
+    return {
+      kind: s.kind,
+      ore,
+      oreCap: builder ? BUILDER_ITEM_CAP : s.kind === "mining" ? SHIP_ORE_HOLD : transport ? TRANSPORT_CARGO_CAP : 0,
+      rations: builder ? s.rations : s.cargoKind === "rations" ? s.cargoAmount : 0,
+      rationsCap: builder ? BUILDER_ITEM_CAP : transport ? TRANSPORT_CARGO_CAP : 0,
+      kits: builder ? s.kits : 0,
+      kitsCap: builder ? BUILDER_ITEM_CAP : 0,
+      holdCap: builder ? BUILDER_HOLD_TOTAL : 0,
+      refineQueue: builder ? s.refineQueue : 0,
+      refineProgress: s.refineProgress,
+      refineTime: REFINE_TIME,
+      refineOre: REFINE_ORE,
+      refineKits: REFINE_KITS,
+    };
   }
 
   /** Liga/desliga a vista de cockpit em tela cheia (ver `cockpitFull`). */
@@ -1702,7 +2015,7 @@ export class GameScene {
       : undefined;
     this.shipRenderer.update(this.myShipId, {
       x: own.x, y: own.y, angle: ownAngle,
-      kind: this.localShip!.kind, tint: COLOR_OWN, visible: true,
+      kind: this.localShip!.kind, tint: COLOR_OWN, visible: !this.eliminated && !!mineAuth,
       scale: ownPresence?.scale,
       z: mineAuth ? this.dockedZ(mineAuth, ownPresence?.dock ?? 0) : undefined,
     });
@@ -1717,7 +2030,9 @@ export class GameScene {
     // cockpit: prende a câmera de primeira pessoa à cabine da nave própria
     // (o root muda quando a malha é recriada na troca de classe; o olho
     // muda com a classe — reatribuir por frame é barato e cobre os dois)
-    const cockpit = this.shipRenderer.getCockpit(this.myShipId);
+    // espectador: a nave eliminada pode seguir registrada (escondida) — a
+    // câmera de primeira pessoa vai para o suporte do espectador, não para ela
+    const cockpit = this.spectating ? null : this.shipRenderer.getCockpit(this.myShipId);
     if (cockpit) {
       if (this.fpCamera.parent !== cockpit.root) this.fpCamera.parent = cockpit.root;
       // altura e inclinação do olho pela altitude aparente (cruzeiro ↔ superfície)
@@ -1735,8 +2050,11 @@ export class GameScene {
       const atkId = mineAuth?.attackTarget ?? "";
       if (atkId) this.fpAttackId = atkId;
       this.fpAttack += ((atkId ? 1 : 0) - this.fpAttack) * Math.min(1, dt * FP_ATTACK_BLEND_RATE);
-      const atkSt = this.fpAttack > 0.001 ? this.serverStructures.get(this.fpAttackId) : undefined;
-      const atkFloor = atkSt ? this.structureRenderer.platformZ(this.fpAttackId) : null;
+      const atkHole = this.fpAttackId === WORM_HOLE_ID;
+      const atkSt = this.fpAttack <= 0.001 ? undefined
+        : atkHole ? this.wormHoleSite() ?? undefined : this.serverStructures.get(this.fpAttackId);
+      const atkFloor = !atkSt ? null
+        : atkHole ? this.planetRenderer.platformZ(this.wormHole) : this.structureRenderer.platformZ(this.fpAttackId);
       let look: { yaw: number; pitch: number } | null = null;
       if (atkSt && atkFloor !== null) {
         const eyeZ = atkFloor - FP_ATTACK_EYE_HEIGHT;
@@ -1765,13 +2083,28 @@ export class GameScene {
       // farol na mesma cabine, emitindo pelo nariz (direção +X já fixada)
       if (this.headlight.parent !== cockpit.root) this.headlight.parent = cockpit.root;
       this.headlight.position.copyFromFloats(cockpit.eye.x, cockpit.eye.y, cockpit.eye.z);
+    } else if (this.spectating) {
+      // ESPECTADOR: sem cabine, o olho mora num suporte no ponto da câmera,
+      // virado para o rumo do espectador, na altura da camada escolhida ([F])
+      this.spectRig ??= new TransformNode("spectRig", this.bScene);
+      if (this.fpCamera.parent !== this.spectRig) this.fpCamera.parent = this.spectRig;
+      this.spectRig.position.set(camPos.x, camPos.y, SHIP_LAYER_Z);
+      this.spectRig.rotation.z = toSceneAngle(this.spectHeading);
+      const alt = this.spectAlt;
+      this.fpCamera.position.copyFromFloats(0, 0, -FP_CRUISE_LIFT * alt + FP_SURFACE_DROP * (1 - alt));
+      this.fpPitch = FP_SURFACE_PITCH + (FP_CRUISE_PITCH - FP_SURFACE_PITCH) * alt;
+      this.fpCamera.rotationQuaternion = this.fpRotation(this.fpPitch);
+      this.hudRenderer.setGunReticles(null);
     }
     // interior da cabine: completo em tela cheia, estático no quadro pequeno
     {
       const vp = this.fpCamera.viewport;
       const aspect = (vp.width * this.engine.getRenderWidth()) / Math.max(1, vp.height * this.engine.getRenderHeight());
-      this.cockpitInterior.layout(this.cockpitFull, aspect, !!cockpit);
-      if (this.cockpitFull) this.cockpitInterior.updateRadar(this.radarBlips(ownAngle), tt);
+      this.cockpitInterior.layout(this.cockpitFull, aspect, !!cockpit || this.spectating);
+      if (this.cockpitFull) {
+        this.cockpitInterior.updateRadar(this.radarBlips(!cockpit && this.spectating ? this.spectHeading : ownAngle), tt);
+        this.cockpitInterior.updateDashboard(this.cargoDashboard(mineAuth), tt);
+      }
     }
 
     const zoom = this.zoom;
@@ -1855,6 +2188,7 @@ export class GameScene {
         id, stype: st.stype,
         shipBays: st.shipBays, expandedBays: st.expandedBays,
         own: st.owner === this.room.sessionId,
+        ruin: st.owner === RUIN_OWNER,
         angle: st.angle,
         level: st.level,
         // anexos da estação evoluída se espalham pela plataforma de Ceres
@@ -1875,7 +2209,8 @@ export class GameScene {
       }
       // barra de HP: sempre na inimiga; na própria, só quando avariada
       const own = st.owner === this.room.sessionId;
-      if (st.maxHp > 0 && (!own || st.hp < st.maxHp)) {
+      // ruína: sem energia, sem barra de vida
+      if (st.maxHp > 0 && st.owner !== RUIN_OWNER && (!own || st.hp < st.maxHp)) {
         const R = STRUCTURE_SPECS[st.stype].radius;
         const p = this.toRender(st);
         // acima do prédio na tela (y do jogo cresce para baixo)
@@ -1899,6 +2234,30 @@ export class GameScene {
         this.effectsRenderer.drawMiningBeam(own.x, own.y, t.x, t.y, tt);
       }
     }
+
+    // drones de ração
+    for (const [id, d] of this.serverDrones) {
+      const p = this.toRender(d);
+      this.droneRenderer.update(id, p.x, p.y, d.angle, d.owner === this.room.sessionId, d.cargo > 0);
+    }
+    this.droneRenderer.retain(new Set(this.serverDrones.keys()));
+
+    // minhocas gigantes: o chão sob cada gomo (superfície do corpo, ou vácuo)
+    for (const [id, w] of this.serverWorms) {
+      this.wormRenderer.update(id, {
+        pts: w.segs.map((s) => this.toRender(s)),
+        ground: w.segs.map((s) => this.groundZ(s)),
+        breach: w.breach,
+        mouth: w.mouth,
+      });
+    }
+    this.wormRenderer.retain(new Set(this.serverWorms.keys()));
+    const holeSite = this.wormHoleSite();
+    this.wormRenderer.setHole(holeSite ? {
+      ...this.toRender(holeSite),
+      z: this.planetRenderer.platformZ(this.wormHole) ?? SHIP_LAYER_Z,
+      seal: this.wormHoleSeal,
+    } : null);
 
     // projéteis
     for (const proj of this.serverProjectiles.values()) {
@@ -1976,9 +2335,10 @@ export class GameScene {
     this.beamRenderer.end();
 
     // ── coleta de dados para HUD ──
-    const ore = Math.floor(this.myOre);
+    // não há carteira: o minério mostrado é o do porão da nave ativa
+    const ore = mineAuth?.cargoKind === "ore" ? Math.floor(mineAuth.cargoAmount) : 0;
     const activeKind = this.serverShips.get(this.myShipId)?.kind ?? "builder";
-    const kindLabel: Record<ShipKind, string> = { builder: "builder", mining: "mineração", attack: "ataque", transport: "transporte" };
+    const kindLabel: Record<ShipKind, string> = { builder: "builder", mining: "mineração", attack: "ataque", transport: "transporte", pod: "escape pod" };
 
     let hasHq = false;
     let nearOwnStation = false;
@@ -2008,29 +2368,33 @@ export class GameScene {
     const p5 = SHIP_PRODUCTION.builder;
     const p6 = SHIP_PRODUCTION.transport;
     const mark = (ok: boolean) => (ok ? "» " : "  ");
-    const need = !hasHq ? " — needs HQ" : !anchored ? " — land [F]" : "";
+    const need = !hasHq ? " — needs HQ" : !anchored && !this.myStation ? " — land [F]" : "";
     const hint3 = `[3] ${p3.label} (${p3.cost})${need}`;
     const hint4 = `[4] ${p4.label} (${p4.cost})${need}`;
     const hint5 = `[5] ${p5.label} (${p5.cost})${need}`;
     const hint6 = `[6] ${p6.label} (${p6.cost})${need}`;
-    const anchoredInHq = anchored && (() => {
+    // a pé numa estação (sem nave): pede táxi, embarca ([C]), fabrica no QG
+    const onFoot = !mineAuth && this.myStation ? this.serverStructures.get(this.myStation) : undefined;
+    const anchoredInHq = (anchored && (() => {
       const hqId = mineAuth?.hqId ?? "";
       const st = this.serverStructures.get(hqId);
       return !!st && st.stype === "hq";
-    })();
+    })()) || onFoot?.stype === "hq";
     // camada de voo da nave própria (a da predição, que segue o servidor)
     const lay = this.localShip!;
-    const layerTag = anchored || (mineAuth?.landingPhase ?? "") !== "" ? ""
+    const layerTag = onFoot || anchored || (mineAuth?.landingPhase ?? "") !== "" ? ""
       : lay.layerTo === "cruise" ? "  ▲ CLIMBING"
       : lay.layerTo ? "  ▼ DESCENDING"
+      : lay.layer === "attack" && mineAuth?.attackTarget === WORM_HOLE_ID
+        ? `  ✖ WORM HOLE · sealed ${this.wormHoleSeal}/${WORM_HOLE_SEAL_MINES} · [3] mines into the hole, then [1] missiles on the mines`
       : lay.layer === "attack" ? "  ✖ STATION ATTACK · A/D circle · W/S approach/retreat"
       : lay.layer === "surface" ? "  ▼ SURFACE"
       : "  ▲ CRUISE";
     // builder em obra de turreta: travado na vaga, sem decolar
-    const lockedByTurret = [...this.serverStructures.values()].some((st) => st.turretBuilder === this.myShipId);
+    const lockedByTurret = [...this.serverStructures.values()].some((st) => !!this.myShipId && st.turretBuilder === this.myShipId);
     const anchorTag = anchored ? (lockedByTurret ? "  ⚓ LANDED · 🔒 building" : "  ⚓ LANDED · [F] take off") : layerTag;
     const canAnchor = !anchored && this.inLandZone;
-    const anchorHint = canAnchor
+    const anchorHint = onFoot ? "" : canAnchor
       ? nearOwnStruct !== null
         ? nearStructFree > 0
           ? `  » [F] land (${nearStructFree} free slot${nearStructFree !== 1 ? "s" : ""})`
@@ -2041,38 +2405,62 @@ export class GameScene {
       : this.isFlying && !(mineAuth?.layerTo)
         ? mineAuth?.layer === "attack" ? "  » [F] leave attack"
           : mineAuth?.layer === "surface" ? "  » [F] climb to cruise"
+          : activeKind === "attack" && this.nearWormHole() ? "  » [F] attack worm hole"
           : activeKind === "attack" && this.nearEnemyStation() ? "  » [F] attack station"
           : "  » [F] descend"
         : "";
-    const swapHint = anchored && !this.isFlying && hangarTotal > 0 ? `  » [C] switch (hangar: ${hangarTotal})` : "";
+    const hereStored = onFoot ? [...this.serverShips.values()].filter((sh) => sh.stored && sh.hqId === this.myStation).length : 0;
+    const swapHint = onFoot
+      ? `  ⚓ ON FOOT at ${onFoot.stype === "hq" ? "HQ" : "station"} (no ship)${hereStored > 0 ? `  » [C] board (${hereStored} here)` : ""}`
+      : anchored && !this.isFlying && hangarTotal > 0 ? `  » [C] switch (hangar: ${hangarTotal})` : "";
     const canAuto = activeKind === "mining" && anchored && !this.isFlying && nearOwnStation;
-    const autoHint = canAuto ? "  » [G] auto-mine in this station" : "";
+    // transporte atracado: [G] entrega automática em laço (estação → base, base → central)
+    const dockedAt = anchored ? this.serverStructures.get(mineAuth?.hqId ?? "") : undefined;
+    const ownHas = (type: StructureType) => [...this.serverStructures.values()].some((x) => x.owner === this.room.sessionId && x.stype === type);
+    const autoRoute = activeKind !== "transport" || !dockedAt || dockedAt.owner !== this.room.sessionId ? ""
+      : dockedAt.stype === "miningStation" && ownHas("initialBase") ? "  » [G] auto-deliver ore → base"
+      : dockedAt.stype === "initialBase" && ownHas("rationCenter") ? "  » [G] auto-deliver food → food center"
+      : "";
+    const autoHint = canAuto ? "  » [G] auto-mine in this station" : autoRoute;
     const anchoredStationStruct = anchored ? (() => {
       const st = this.serverStructures.get(mineAuth?.hqId ?? "");
       return (st && st.stype === "miningStation") ? st : null;
     })() : null;
     const builderMining = anchoredStationStruct && (mineAuth?.mining ?? false);
     const stationBufferHint =
-      anchoredStationStruct && activeKind === "builder"
+      anchoredStationStruct && anchoredStationStruct.owner === this.room.sessionId && activeKind === "builder"
         ? (builderMining ? "  » [ESP] stop mining" : "  » [ESP] start mining")
         : "";
     const anchoredStruct = anchored ? this.serverStructures.get(mineAuth?.hqId ?? "") ?? null : null;
     let storeHint = "";
-    if (anchoredStruct) {
+    if (anchoredStruct?.owner === RUIN_OWNER) {
+      storeHint = `  ·  ⚠ RUINS — no power · ${Math.floor(anchoredStruct.oreStore)} ore · ${anchoredStruct.kitStore} kits · food: ${Math.floor(anchoredStruct.rationStore)}`;
+    } else if (anchoredStruct) {
       if (anchoredStruct.stype === "miningStation") {
-        storeHint = `  ·  Buffer: ${Math.floor(anchoredStruct.oreStore)}/${stationOreCap(anchoredStruct.level)} ores · food: ${Math.floor(anchoredStruct.rationStore)}`;
-        // estação de Ceres: nível e evolução (builder atracado nela)
-        if (anchoredStruct.asteroidId.startsWith(CERES_PLATFORM_PREFIX)) {
-          const lv = anchoredStruct.level;
-          storeHint += `  ·  Lv.${lv}`;
-          if (activeKind === "builder" && lv < CERES_STATION_MAX_LEVEL) {
-            storeHint += `  » [U] upgrade to Lv.${lv + 1} (${ceresStationUpgradeCost(lv)})`;
-          }
+        storeHint = `  ·  Buffer: ${Math.floor(anchoredStruct.oreStore)}/${stationOreCap(anchoredStruct.level)} ore · ${anchoredStruct.kitStore} kits · food: ${Math.floor(anchoredStruct.rationStore)}` +
+          `  ·  drill Lv.${anchoredStruct.level} (${DRILL_BASE_RATE * anchoredStruct.level}/s)`;
+        if (anchoredStruct.rationStore < 10) storeHint += "  ⚠ no food — machines stopped";
+        // evolução (toda estação de mineração; o builder atracado paga em kits)
+        const up = stationUpgradeCost(anchoredStruct.level);
+        if (activeKind === "builder" && up !== null && anchoredStruct.level < CERES_STATION_MAX_LEVEL) {
+          storeHint += `  » [U] upgrade to Lv.${anchoredStruct.level + 1} (${up} kits)`;
         }
       } else if (anchoredStruct.stype === "initialBase") {
-        storeHint = `  ·  Base — food: ${Math.floor(anchoredStruct.rationStore)} (from Earth)`;
+        storeHint = `  ·  Base — ${Math.floor(anchoredStruct.oreStore)} ore · ${anchoredStruct.kitStore} kits · food: ${Math.floor(anchoredStruct.rationStore)} (from Earth)`;
       } else if (anchoredStruct.stype === "hq") {
-        storeHint = `  ·  HQ — food: ${Math.floor(anchoredStruct.rationStore)}`;
+        storeHint = `  ·  HQ — ${Math.floor(anchoredStruct.oreStore)} ore · ${anchoredStruct.kitStore} kits · food: ${Math.floor(anchoredStruct.rationStore)}`;
+        if (anchoredStruct.rationStore < 10) storeHint += "  ⚠ no food — no ship production";
+      } else if (anchoredStruct.stype === "rationCenter") {
+        const lv = { drones: anchoredStruct.droneLv, speed: anchoredStruct.speedLv, cargo: anchoredStruct.cargoLv };
+        const ds = droneStats(lv);
+        storeHint = `  ·  Food center — store: ${Math.floor(anchoredStruct.rationStore)} · drones ${ds.count} · ×${ds.speed / 900} speed · ${ds.cargo}/trip`;
+        if (activeKind === "builder") {
+          const up = (key: string, label: string, level: number) => {
+            const c = droneUpgradeCost(level);
+            return c === null ? `  · ${label} max` : `  » [${key}] ${label} (${c} kits)`;
+          };
+          storeHint += up("1", "+drone", lv.drones) + up("2", "speed", lv.speed) + up("3", "cargo", lv.cargo);
+        }
       }
     }
     let ammoHint = "";
@@ -2097,35 +2485,72 @@ export class GameScene {
         else if (ck === "" && st === "initialBase" && anchoredStruct.rationStore > 0) cargoHint += "  » [E] load food";
       }
     }
-    if (activeKind === "builder") {
-      const hold = mineAuth?.cargoKind === "ore" ? Math.floor(mineAuth?.cargoAmount ?? 0) : 0;
-      cargoHint = `  ·  Hold: ${hold}/${BUILDER_ORE_CAP} ore`;
-      const job = [...this.serverStructures.values()].find((st) => st.turretBuilder === this.myShipId);
+    if (activeKind === "mining") {
+      cargoHint = `  ·  Hold: ${ore}/${SHIP_ORE_HOLD} ore`;
+      if (anchored && ore > 0) cargoHint += "  » [E] unload ore here";
+    }
+    if (activeKind === "pod") {
+      const dest = this.serverStructures.get(mineAuth?.taxiTo ?? "");
+      const km = dest && mineAuth ? (dist(mineAuth, dest) / 1000).toFixed(1) : "?";
+      cargoHint = `  ·  ⚠ ESCAPE POD → ${dest?.stype === "hq" ? "QG" : "hangar com builder"} (${km} km) — piloto automático`;
+    }
+    if (activeKind === "builder" && !onFoot) {
+      const hold = mineAuth?.kits ?? 0;
+      const food = mineAuth?.rations ?? 0;
+      cargoHint = `  ·  Hold: ${ore} ore · ${hold} kits · ${food} food — ${ore + hold + food}/${BUILDER_HOLD_TOTAL} (max ${BUILDER_ITEM_CAP} each)`;
+      const queue = mineAuth?.refineQueue ?? 0;
+      if (queue > 0) cargoHint += `  ·  ⚙ refining ${Math.floor((mineAuth?.refineProgress ?? 0) * 100)}% (${queue} batch${queue > 1 ? "es" : ""})`;
+      if (ore >= REFINE_ORE && mineAuth && holdRoom(mineAuth, "kits") >= (queue + 1) * REFINE_KITS) cargoHint += `  » [E] refine ${REFINE_ORE} ore → ${REFINE_KITS} kits`;
+      const job = [...this.serverStructures.values()].find((st) => !!this.myShipId && st.turretBuilder === this.myShipId);
       if (job) {
         cargoHint += `  ·  ⚙ Building turret ${Math.floor(job.turretProgress * 100)}% — locked here ([C] switch / call a taxi)`;
       } else if (anchoredStruct && anchoredStruct.owner === this.room.sessionId) {
-        const fromWallet = anchoredStruct.stype === "initialBase" || anchoredStruct.stype === "hq";
-        const avail = anchoredStruct.stype === "miningStation" ? anchoredStruct.oreStore : fromWallet ? ore : 0;
-        if (hold < BUILDER_ORE_CAP && avail >= 1) cargoHint += "  » [E] load ore";
+        const buffers = anchoredStruct.stype === "initialBase" || anchoredStruct.stype === "hq" || anchoredStruct.stype === "miningStation";
+        if (buffers) cargoHint += "  · [O]/[P] ore · [K]/[L] kits";
+        const stype = anchoredStruct.stype;
+        // [J]: na central, descarrega quem chega com rações e carrega quem chega sem
+        const unloadsHere = stype === "miningStation" || stype === "hq" || (stype === "rationCenter" && food > 0);
+        if (unloadsHere && food > 0) cargoHint += "  · [J] unload food";
+        else if ((stype === "initialBase" || stype === "rationCenter") && anchoredStruct.rationStore >= 1 && mineAuth && holdRoom(mineAuth, "rations") > 0) cargoHint += "  · [J] load food";
+        // [G] conserto automático (kits do porão, depois do buffer)
+        if (anchoredStruct.repairing) {
+          cargoHint += `  ·  🔧 repairing ${Math.floor((anchoredStruct.hp / Math.max(1, anchoredStruct.maxHp)) * 100)}% — [G] stop`;
+        } else if (anchoredStruct.hp < anchoredStruct.maxHp) {
+          const kitsHere = hold + anchoredStruct.kitStore;
+          const need = Math.ceil((anchoredStruct.maxHp - anchoredStruct.hp) / REPAIR_HP_PER_KIT);
+          cargoHint += `  ${kitsHere >= 1 ? "»" : "·"} [G] repair (${need} kits)`;
+        }
         if (anchoredStruct.turretBuild >= 0) cargoHint += "  ·  turret under construction";
         else if (anchoredStruct.turrets < TURRET_MAX) {
-          cargoHint += `  ${hold >= TURRET_COST ? "»" : "·"} [B] turret ${anchoredStruct.turrets}/${TURRET_MAX} (${TURRET_COST} ore)`;
+          const kitsHere = hold + anchoredStruct.kitStore;
+          cargoHint += `  ${kitsHere >= TURRET_COST ? "»" : "·"} [B] turret ${anchoredStruct.turrets}/${TURRET_MAX} (${TURRET_COST} kits)`;
         } else cargoHint += `  ·  turrets ${TURRET_MAX}/${TURRET_MAX}`;
+      } else if (anchoredStruct?.owner === RUIN_OWNER) {
+        // RUÍNA: aqui só se recupera a estrutura ([G], kits do porão)
+        if (anchoredStruct.repairing) {
+          cargoHint += `  ·  🔧 restoring ${Math.floor((anchoredStruct.hp / Math.max(1, anchoredStruct.maxHp)) * 100)}% — [G] stop`;
+        } else {
+          const need = Math.ceil(Math.max(0, anchoredStruct.maxHp - anchoredStruct.hp) / REPAIR_HP_PER_KIT);
+          cargoHint += `  » [G] restore this station (${need} kits from the hold)`;
+        }
       }
     }
     let taxiLine = "";
-    if (anchored && nearOwnStation && this.taxiOpts.length > 0) {
+    if (((anchored && nearOwnStation) || onFoot) && this.taxiOpts.length > 0) {
       const o = this.taxiOpts[this.taxiSel];
       const km = (o.srcDist / 1000).toFixed(1);
       taxiLine =
-        `\nTaxi ▸ ${kindLabel[o.kind]} (HQ at ${km}k)  ` +
+        `\nTaxi ▸ ${kindLabel[o.kind]} (${o.srcType === "hq" ? "HQ" : "hangar"} at ${km}k)  ` +
         `·  [T] change selection (${this.taxiSel + 1}/${this.taxiOpts.length})  ·  [Y] call (2× speed)`;
     }
 
+    // naves são pagas com o minério do buffer do QG em que se está
+    const prodHq = onFoot?.stype === "hq" ? onFoot : anchoredStruct?.stype === "hq" ? anchoredStruct : undefined;
+    const hqOre = Math.floor(prodHq?.oreStore ?? 0);
     const prodLine = anchoredInHq
-      ? `\n${mark(ore >= p3.cost)}${hint3}   ${mark(ore >= p4.cost)}${hint4}   ${mark(ore >= p5.cost)}${hint5}   ${mark(ore >= p6.cost)}${hint6}`
+      ? `\n${mark(hqOre >= p3.cost)}${hint3}   ${mark(hqOre >= p4.cost)}${hint4}   ${mark(hqOre >= p5.cost)}${hint5}   ${mark(hqOre >= p6.cost)}${hint6}`
       : "";
-    const landHint = canAnchor ? " · [F] land" : "";
+    const landHint = canAnchor && !onFoot ? " · [F] land" : "";
 
     const shipData: HudShipData = {
       kind: activeKind,
@@ -2143,6 +2568,7 @@ export class GameScene {
     };
     const ctxData: HudContextData = {
       ore,
+      kits: mineAuth?.kits ?? 0,
       zoom,
       isFlying: this.isFlying,
       inLandZone: this.inLandZone,
@@ -2167,6 +2593,10 @@ export class GameScene {
       own,
       angle: this.localShip!.angle,
       remotes: [...this.remotes.values()],
+      worms: [...this.serverWorms.values()].flatMap((w) => w.segs.filter((_, i) => i % 3 === 0).map((s) => {
+        const p = this.toRender(s);
+        return { rx: p.x, ry: p.y };
+      })),
       asteroids: this.asteroidRenderer.nearbyPositions,
       ceres: this.ceres,
       mapCenter: this.mapCenter,

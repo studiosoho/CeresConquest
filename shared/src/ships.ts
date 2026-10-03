@@ -4,8 +4,10 @@
 // - attack:    fabricada no QG; combate (munição perfurante + granada).
 // - transport: fabricada no QG; carrega minério (estação → base inicial)
 //              e rações (base inicial → QG/estação).
+// - pod:       ESCAPE POD — não é fabricado: leva o jogador que perdeu a
+//              nave (ou a estação em que estava) até um QG; voa sozinho.
 
-export type ShipKind = "builder" | "mining" | "attack" | "transport";
+export type ShipKind = "builder" | "mining" | "attack" | "transport" | "pod";
 
 /** Classes fabricáveis no QG. */
 export type ProducibleKind = "builder" | "mining" | "attack" | "transport";
@@ -25,7 +27,7 @@ export const SHIP_PRODUCTION: Record<ProducibleKind, ShipProductionSpec> = {
 
 // ── Carga (nave de transporte) ────────────────────────────────────────
 /** Tipo de carga no porão ("" = vazio). */
-export type CargoKind = "" | "ore" | "rations";
+export type CargoKind = "" | "ore" | "rations" | "kits";
 /** Capacidade do porão da nave de transporte (minério OU rações). */
 export const TRANSPORT_CARGO_CAP = 500;
 
@@ -161,6 +163,12 @@ const PHYSICS_SPECS: Record<ShipKind, ShipPhysicsSpec> = {
     mass: 2.6, gyration: 19, thrust: 1560, rcsThrust: 250, torque: 11600 * (19 / 42) ** 2,
     maxTurnRate: 1.15, maxSpeed: 4000 * SHIP_TOP_SPEED_FACTOR, spoolTime: 1.4, restitution: 0.30,
   },
+  // Escape pod: cápsula leve, só motor e RCS de serviço — quem pilota é o
+  // piloto automático (voa como o táxi, sem colisão).
+  pod: {
+    mass: 0.35, gyration: 6, thrust: 560, rcsThrust: 120, torque: 2400 * (6 / 12) ** 2,
+    maxTurnRate: 3.0, maxSpeed: 5200 * SHIP_TOP_SPEED_FACTOR, spoolTime: 0.4, restitution: 0.50,
+  },
 };
 
 /** Deriva o perfil completo a partir das grandezas escolhidas. */
@@ -192,6 +200,7 @@ export const SHIP_PHYSICS: Record<ShipKind, ShipPhysics> = {
   mining: derive(PHYSICS_SPECS.mining),
   attack: derive(PHYSICS_SPECS.attack),
   transport: derive(PHYSICS_SPECS.transport),
+  pod: derive(PHYSICS_SPECS.pod),
 };
 
 /** Perfil físico de uma classe; sem classe conhecida, usa o de referência. */
@@ -263,6 +272,7 @@ export const MINING_RATE_BY_KIND: Record<ShipKind, number> = {
   mining: MINING_RATE,
   attack: 0,
   transport: 0,
+  pod: 0,
 };
 
 /** A aranha mineradora minera 1,5× mais rápido que a nave mineradora. */
@@ -275,6 +285,8 @@ export const SPIDER_MINE_TIME = 5;
 
 /** Distância máxima até a própria estrutura para ancorar. */
 export const DOCK_RANGE = 500;
+/** duração da animação de pouso (numa vaga ou num asteroide), em s */
+export const LAND_DURATION = 1.5;
 
 /** Naves em taxiamento voam no dobro da velocidade (e sem colisão). */
 export const TAXI_SPEED_MULT = 2;

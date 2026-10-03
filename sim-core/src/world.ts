@@ -2,11 +2,12 @@ import {
   MINING_RANGE,
   MINING_RATE_BY_KIND,
   NEUTRAL_INPUT,
-  STRUCTURE_SPECS,
+  holdRoom,
   structureMaxHp,
   TAXI_SPEED_MULT,
   PHYSICS_SUBSTEP,
   BASE_RATION_INCOME,
+  RUIN_OWNER,
   RATION_STORE_CAP,
   ceresPosition,
   normalizePos,
@@ -37,8 +38,6 @@ export class SimWorld {
   readonly seed: number;
   readonly ships = new Map<string, ShipState>();
   readonly structures = new Map<string, Structure>();
-  /** minério por jogador (sessionId → quantidade) */
-  readonly playerOre = new Map<string, number>();
   /** posição de Ceres — derivada da semente (igual em servidor e cliente) */
   readonly ceres: WorldPos;
   private readonly inputs = new Map<string, ShipInput>();
@@ -56,22 +55,6 @@ export class SimWorld {
   constructor(seed: number) {
     this.seed = seed;
     this.ceres = ceresPosition(seed);
-  }
-
-  getOre(owner: string): number {
-    return this.playerOre.get(owner) ?? 0;
-  }
-
-  addOre(owner: string, amount: number): void {
-    if (!owner) return;
-    this.playerOre.set(owner, this.getOre(owner) + amount);
-  }
-
-  /** Gasta minério se houver saldo; devolve true se debitou. */
-  spendOre(owner: string, amount: number): boolean {
-    if (this.getOre(owner) < amount) return false;
-    this.playerOre.set(owner, this.getOre(owner) - amount);
-    return true;
   }
 
   /** Define a fronteira circular do mapa (centro + raio em unidades). */
@@ -96,9 +79,9 @@ export class SimWorld {
    * cheio do tipo nesse nível (structureMaxHp) — a fonte única do valor.
    * Devolve a estrutura guardada.
    */
-  addStructure(st: Omit<Structure, "hp" | "level"> & { hp?: number; level?: number }): Structure {
+  addStructure(st: Omit<Structure, "hp" | "level" | "kitStore"> & { hp?: number; level?: number; kitStore?: number }): Structure {
     const level = st.level ?? 1;
-    const full: Structure = { ...st, level, hp: st.hp ?? structureMaxHp(st.type, level) };
+    const full: Structure = { ...st, level, kitStore: st.kitStore ?? 0, hp: st.hp ?? structureMaxHp(st.type, level) };
     this.structures.set(full.id, full);
     return full;
   }
@@ -167,10 +150,14 @@ export class SimWorld {
       if (ship.landingPhase !== "") {
         freezeShip(ship); // zera também a velocidade ANGULAR e o spool
         ship.mining = false;
+        // minerando pousada: o minério vai para o PORÃO da nave (não há
+        // carteira global), dentro do espaço do porão (holdRoom) — cheio, para
         if (ship.landingPhase === "landed" && ship.anchored) {
           const rate = MINING_RATE_BY_KIND[ship.kind];
-          if (rate > 0) {
-            this.addOre(ship.owner, rate * dt);
+          const room = holdRoom(ship, "ore");
+          if (rate > 0 && room > 0) {
+            ship.cargoKind = "ore";
+            ship.cargoAmount += Math.min(room, rate * dt);
             ship.mining = true;
           }
         }
@@ -255,12 +242,9 @@ export class SimWorld {
       for (const f of flying) normalizePos(f.ship);
     }
 
-    // estruturas autônomas produzem minério para o dono
     for (const st of this.structures.values()) {
-      const rate = STRUCTURE_SPECS[st.type].productionRate;
-      if (rate > 0) this.addOre(st.owner, rate * dt);
-      // base inicial recebe rações da Terra continuamente
-      if (st.type === "initialBase") {
+      // base inicial recebe rações da Terra continuamente — em ruínas, não
+      if (st.type === "initialBase" && st.owner !== RUIN_OWNER) {
         st.rationStore = Math.min(RATION_STORE_CAP, st.rationStore + BASE_RATION_INCOME * dt);
       }
     }

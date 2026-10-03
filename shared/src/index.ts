@@ -7,6 +7,8 @@ export * from "./ships";
 export * from "./layers";
 export * from "./weapons";
 export * from "./turrets";
+export * from "./logistics";
+export * from "./worms";
 export * from "./asteroids";
 export * from "./constants";
 export * from "./coords";
