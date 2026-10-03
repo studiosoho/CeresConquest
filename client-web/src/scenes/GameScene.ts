@@ -83,6 +83,7 @@ import { MeshFactory } from "../render/MeshFactory";
 import { ShipRenderer } from "../render/ShipRenderer";
 import { ExplosionRenderer, type ExplosionHandle } from "../render/ExplosionRenderer";
 import { BeamRenderer } from "../render/BeamRenderer";
+import { CockpitInterior, PANEL_SCREEN, type RadarBlip } from "../render/CockpitInterior";
 import { SoundEngine } from "../audio/SoundEngine";
 import { SoundDirector } from "../audio/SoundDirector";
 import { shipMeshData } from "../render/ShipMeshGenerator";
@@ -431,6 +432,8 @@ export class GameScene {
   private explosionRenderer!: ExplosionRenderer;
   /** traço 3D do laser, para o cockpit */
   private beamRenderer!: BeamRenderer;
+  /** interior da cabine na câmera de cockpit (painel, radar, tela da vista de cima) */
+  private cockpitInterior!: CockpitInterior;
   /** efeitos sonoros 8 bits (sfxr) e quem decide quando tocá-los */
   private sound!: SoundEngine;
   private soundDirector!: SoundDirector;
@@ -710,6 +713,7 @@ export class GameScene {
     this.effectsRenderer = new EffectsRenderer(this.bScene, this.glow);
     this.explosionRenderer = new ExplosionRenderer(this.bScene, this.camera, this.glow);
     this.beamRenderer = new BeamRenderer(this.bScene);
+    this.cockpitInterior = new CockpitInterior(this.bScene, this.fpCamera, this.glow);
     // som: sintetizado agora; o áudio só liga no primeiro gesto (autoplay)
     this.sound = new SoundEngine();
     this.soundDirector = new SoundDirector(this.sound);
@@ -1044,6 +1048,28 @@ export class GameScene {
       if (s.z < 0 || s.z > 1) return null; // atrás da câmera
       return { xPct: (s.x / w) * 100, yPct: (s.y / h) * 100, locked: g.locked };
     });
+  }
+
+  /**
+   * Contatos do radar do painel: naves (frota própria / inimigas), estruturas
+   * e tiros em volta, na moldura da nave — frente para cima.
+   */
+  private radarBlips(angle: number): RadarBlip[] {
+    const me = this.localShip;
+    if (!me) return [];
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const out: RadarBlip[] = [];
+    const add = (p: WorldPos, kind: RadarBlip["kind"]) => {
+      const { dx, dy } = relVec(me, p);
+      out.push({ fwd: dx * c + dy * s, right: -dx * s + dy * c, kind });
+    };
+    for (const [id, sh] of this.serverShips) {
+      if (id === this.myShipId || sh.stored) continue;
+      add(sh, sh.owner === this.room.sessionId ? "fleet" : "enemy");
+    }
+    for (const st of this.serverStructures.values()) add(st, st.owner === this.room.sessionId ? "ownStructure" : "enemyStructure");
+    for (const p of this.serverProjectiles.values()) add(p, "shot");
+    return out;
   }
 
   /** Teto do zoom agora: maior com a nave própria atracada numa vaga ou pousada. */
@@ -1586,6 +1612,8 @@ export class GameScene {
     this.cockpitFull = on;
     const full = { x: 0, y: 0, w: 1, h: 1 };
     const inset = { x: FP_VIEW.left, y: FP_VIEW.bottom, w: FP_VIEW.width, h: FP_VIEW.height };
+    // em tela cheia a vista de cima vai para a TELA do painel da cabine
+    const panel = { x: PANEL_SCREEN.left, y: PANEL_SCREEN.bottom, w: PANEL_SCREEN.width, h: PANEL_SCREEN.height };
     const put = (cam: Camera, v: typeof full) => {
       cam.viewport.x = v.x;
       cam.viewport.y = v.y;
@@ -1593,7 +1621,9 @@ export class GameScene {
       cam.viewport.height = v.h;
     };
     put(this.fpCamera, on ? full : inset);
-    put(this.camera, on ? inset : full);
+    put(this.camera, on ? panel : full);
+    // a moldura DOM é a do quadro pequeno; em tela cheia a moldura é a do painel
+    this.hudRenderer.setCockpitFrameVisible(!on);
     // quem desenha por último fica por cima: o quadro pequeno vai depois
     this.bScene.activeCameras = on ? [this.fpCamera, this.camera] : [this.camera, this.fpCamera];
     this.setGlowCamera(on ? this.fpCamera : this.camera);
@@ -1735,6 +1765,13 @@ export class GameScene {
       // farol na mesma cabine, emitindo pelo nariz (direção +X já fixada)
       if (this.headlight.parent !== cockpit.root) this.headlight.parent = cockpit.root;
       this.headlight.position.copyFromFloats(cockpit.eye.x, cockpit.eye.y, cockpit.eye.z);
+    }
+    // interior da cabine: completo em tela cheia, estático no quadro pequeno
+    {
+      const vp = this.fpCamera.viewport;
+      const aspect = (vp.width * this.engine.getRenderWidth()) / Math.max(1, vp.height * this.engine.getRenderHeight());
+      this.cockpitInterior.layout(this.cockpitFull, aspect, !!cockpit);
+      if (this.cockpitFull) this.cockpitInterior.updateRadar(this.radarBlips(ownAngle), tt);
     }
 
     const zoom = this.zoom;

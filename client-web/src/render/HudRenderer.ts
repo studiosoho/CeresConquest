@@ -162,6 +162,7 @@ export class HudRenderer {
   private reticle: HTMLDivElement | null = null;
   /** retículos dos canhões do laser (cockpit em tela cheia) */
   private gunReticles: HTMLDivElement[] = [];
+  private cockpitFrame: HTMLDivElement | null = null;
 
   setReticle(visible: boolean, topPct = 50): void {
     if (!this.reticle) {
@@ -207,8 +208,14 @@ export class HudRenderer {
     });
   }
 
+  /** Moldura do quadro do cockpit (só com a vista principal de cima). */
+  setCockpitFrameVisible(visible: boolean): void {
+    if (this.cockpitFrame) this.cockpitFrame.style.display = visible ? "block" : "none";
+  }
+
   initCockpitFrame(view: { left: number; bottom: number; width: number; height: number }): void {
     const frame = document.createElement("div");
+    this.cockpitFrame = frame;
     frame.style.cssText =
       `position:absolute;left:${view.left * 100}%;bottom:${view.bottom * 100}%;` +
       `width:${view.width * 100}%;height:${view.height * 100}%;` +
