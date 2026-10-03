@@ -294,12 +294,59 @@ export class HudRenderer {
     this.alertTimer = setTimeout(() => { b.style.display = "none"; }, level === "danger" ? 9000 : 6000);
   }
 
+  private matchBar: HTMLDivElement | null = null;
+  private resultBox: HTMLDivElement | null = null;
+
+  /** Barra da PARTIDA no topo: modo, tempo, o seu placar e o líder (null esconde). */
+  setMatchBar(text: string | null): void {
+    if (!this.matchBar) {
+      const b = document.createElement("div");
+      b.style.cssText =
+        "position:absolute;left:50%;top:10px;transform:translateX(-50%);padding:5px 14px;font:bold 12px monospace;" +
+        `white-space:nowrap;pointer-events:none;background:${cssColor(0x05080c, 0.7)};color:${cssColor(Palette.ui.text)};` +
+        `border:1px solid ${cssColor(Palette.ui.minimapBorder, 0.5)};`;
+      this.root.appendChild(b);
+      this.matchBar = b;
+    }
+    this.matchBar.style.display = text ? "block" : "none";
+    if (text) this.matchBar.textContent = text;
+  }
+
+  /**
+   * RESULTADO da partida: quem venceu e o placar de todos (classificados).
+   * "FECHAR" deixa o mundo rodando por trás.
+   */
+  showMatchResult(data: { title: string; subtitle: string; rows: Array<{ name: string; detail: string; me: boolean }> }): void {
+    this.resultBox?.remove();
+    const box = document.createElement("div");
+    box.style.cssText =
+      "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);min-width:360px;padding:22px 28px;z-index:5;" +
+      `background:${cssColor(0x05080c, 0.92)};border:1px solid ${cssColor(Palette.structure.own, 0.8)};` +
+      `color:${cssColor(Palette.ui.text)};font:13px monospace;text-align:center;pointer-events:auto;`;
+    const rows = data.rows.map((r, i) =>
+      `<div style="display:flex;gap:14px;justify-content:space-between;padding:3px 0;${r.me ? "font-weight:bold" : "opacity:.85"}">` +
+      `<span>${i + 1}. ${r.name}</span><span>${r.detail}</span></div>`).join("");
+    box.innerHTML =
+      `<div style="font-size:22px;letter-spacing:3px;color:${cssColor(Palette.structure.own)};margin-bottom:4px">${data.title}</div>` +
+      `<div style="opacity:.8;margin-bottom:14px">${data.subtitle}</div>` +
+      `<div style="text-align:left;margin-bottom:16px">${rows}</div>`;
+    const close = document.createElement("button");
+    close.textContent = "FECHAR";
+    close.style.cssText =
+      `padding:7px 16px;font:12px monospace;letter-spacing:1px;cursor:pointer;background:${cssColor(0x10202a)};` +
+      `color:${cssColor(Palette.ui.text)};border:1px solid ${cssColor(Palette.ui.minimapBorder, 0.8)};`;
+    close.onclick = () => box.remove();
+    box.appendChild(close);
+    this.root.appendChild(box);
+    this.resultBox = box;
+  }
+
   /** Faixa do modo espectador (null esconde). */
   setSpectatorBanner(text: string | null): void {
     if (!this.spectatorBanner) {
       const b = document.createElement("div");
       b.style.cssText =
-        "position:absolute;left:50%;top:12px;transform:translateX(-50%);padding:5px 14px;font:12px monospace;" +
+        "position:absolute;left:50%;top:44px;transform:translateX(-50%);padding:5px 14px;font:12px monospace;" +
         `background:${cssColor(0x05080c, 0.75)};color:${cssColor(Palette.ui.text)};border:1px solid ${cssColor(Palette.ui.minimapBorder, 0.6)};`;
       this.root.appendChild(b);
       this.spectatorBanner = b;

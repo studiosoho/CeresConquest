@@ -476,17 +476,20 @@ describe("ruínas", () => {
 describe("bots contra a minhoca", () => {
   it("a minhoca é o alvo prioritário: o bot em ataque vai nela, não na estação", () => {
     const r = makeRoom(1);
-    station(r, "p1", rocks[3]);
+    const st = station(r, "p1", rocks[3]);
+    st.hp = 1e9;
     const head = vacuum();
     const [, w] = wormAt(r, head);
-    w.target = "x";
+    // ocupada com a estação (como numa partida): o bot a caça de longe
+    w.target = st.id;
+    w.siege = 1e9;
     const id = r.spawnBot()!;
     const bot = r.sim.ships.get(id)!;
-    Object.assign(bot, at(head, 7000, 1500), { vx: 0, vy: 0, anchored: false, hqId: "", bay: -1 });
+    Object.assign(bot, at(head, 12_000, 1500), { vx: 0, vy: 0, anchored: false, hqId: "", bay: -1 });
     setLayer(bot, "cruise");
     r.bots.get(id)!.phase = "raid";
     let t = 0;
-    while (w.hp >= WORM_HP && t < 25) { r.tick(DT); t += DT; }
+    while (w.hp >= WORM_HP && t < 40) { r.tick(DT); t += DT; }
     expect(w.hp).toBeLessThan(WORM_HP);
     expect(r.attackTargets.has(id)).toBe(false); // não desceu sobre a estação
   });

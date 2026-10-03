@@ -3,6 +3,10 @@
  * acompanha a lista de salas em tempo real (título + jogadores conectados /
  * limite) e entra numa sala existente, cria uma nova ou usa "jogar já".
  *
+ * CRIAR SALA abre a janela de configuração: nome, velocidade do jogo,
+ * jogadores-bot, frota inimiga de Ceres, modo de vitória e tempo-limite
+ * (MatchOptions do servidor; shared/match.ts).
+ *
  * Usa a LobbyRoom embutida do Colyseus para a listagem em tempo real:
  * ao entrar em "lobby", recebe a mensagem "rooms" (lista completa) e depois
  * "+" ([roomId, dados]) / "-" (roomId) a cada mudança das salas com
@@ -16,6 +20,7 @@
 
 import type { Client, Room, RoomAvailable } from "colyseus.js";
 import { Palette } from "../render/Palette";
+import { DEFAULT_TIME_LIMIT, GAME_SPEEDS, MATCH_TIME_LIMITS, VICTORY_MODES, type VictoryMode } from "@ceres/shared";
 
 const NAME_KEY = "ceres.playerName";
 /** nome da sala de jogo definida no servidor (index.ts) */
@@ -27,6 +32,16 @@ function cssColor(hex: number, alpha = 1): string {
   const g = (hex >> 8) & 0xff;
   const b = hex & 0xff;
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/** Opções da sala escolhidas na janela de "Criar sala" (MatchOptions do servidor). */
+interface RoomSetup {
+  title: string;
+  testSpeed: number;
+  playerBots: number;
+  bots: number;
+  victory: VictoryMode;
+  timeLimit: number;
 }
 
 interface RoomMeta {
@@ -99,16 +114,133 @@ export class Lobby {
     return n.length > 0 ? n : "Piloto";
   }
 
-  /** joinOrCreate: entra numa sala com vaga ou cria uma. */
-  private quickPlay(): void {
-    const name = this.playerName();
-    void this.enter(name, () => this.client.joinOrCreate(MATCH_NAME, { name }));
+  /**
+   * MODO DE TESTE pela URL: `?playerBots=1&testSpeed=4` cria a sala com
+   * jogadores-bot e mineração/refino acelerados (MatchOptions do servidor).
+   */
+  private testOptions(): { playerBots?: number; testSpeed?: number } | null {
+    const q = new URLSearchParams(location.search);
+    const playerBots = Number(q.get("playerBots") ?? 0);
+    const testSpeed = Number(q.get("testSpeed") ?? 1);
+    if (!(playerBots > 0) && !(testSpeed > 1)) return null;
+    return { playerBots: playerBots > 0 ? playerBots : undefined, testSpeed: testSpeed > 1 ? testSpeed : undefined };
   }
 
-  /** create: sempre uma sala nova, com título derivado do nome. */
-  private createRoom(): void {
+  /** joinOrCreate: entra numa sala com vaga ou cria uma (com opções de teste, sempre cria). */
+  private quickPlay(): void {
     const name = this.playerName();
-    void this.enter(name, () => this.client.create(MATCH_NAME, { name, title: `Arena de ${name}` }));
+    const test = this.testOptions();
+    if (test) void this.enter(name, () => this.client.create(MATCH_NAME, { name, title: `Teste de ${name}`, ...test }));
+    else void this.enter(name, () => this.client.joinOrCreate(MATCH_NAME, { name }));
+  }
+
+  /** create: sempre uma sala nova, com as opções escolhidas na janela de configuração. */
+  private createRoom(opts: RoomSetup): void {
+    const name = this.playerName();
+    void this.enter(name, () => this.client.create(MATCH_NAME, { name, ...opts }));
+  }
+
+  /** Janela de "Criar sala": a partida inteira é configurada aqui. */
+  private openCreateDialog(): void {
+    if (this.busy) return;
+    const test = this.testOptions();
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;" +
+      `background:${cssColor(0x000000, 0.7)};z-index:2;`;
+    const box = document.createElement("div");
+    box.style.cssText =
+      `width:min(460px,90vw);max-height:86vh;overflow:auto;box-sizing:border-box;padding:22px 26px;` +
+      `background:${cssColor(0x05080c, 0.97)};border:1px solid ${cssColor(Palette.structure.own, 0.7)};`;
+    const head = document.createElement("div");
+    head.textContent = "NOVA SALA";
+    head.style.cssText = `font-size:18px;letter-spacing:4px;color:${cssColor(Palette.structure.own)};margin-bottom:16px;`;
+    box.appendChild(head);
+
+    const field = (label: string, el: HTMLElement) => {
+      box.appendChild(this.label(label));
+      el.style.marginBottom = "14px";
+      box.appendChild(el);
+    };
+    const select = (options: Array<[string, string]>, value: string) => {
+      const sel = document.createElement("select");
+      sel.style.cssText =
+        `width:100%;padding:8px 10px;font-family:monospace;font-size:14px;outline:none;` +
+        `background:${cssColor(0x0a1018, 0.9)};color:${cssColor(Palette.ui.text)};` +
+        `border:1px solid ${cssColor(Palette.ui.minimapBorder, 0.6)};`;
+      for (const [v, t] of options) {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = t;
+        sel.appendChild(o);
+      }
+      sel.value = value;
+      return sel;
+    };
+
+    const title = document.createElement("input");
+    title.maxLength = 24;
+    title.value = `Arena de ${this.playerName()}`;
+    title.style.cssText =
+      `width:100%;box-sizing:border-box;padding:8px 10px;font-family:monospace;font-size:14px;outline:none;` +
+      `background:${cssColor(0x0a1018, 0.9)};color:${cssColor(Palette.ui.text)};` +
+      `border:1px solid ${cssColor(Palette.ui.minimapBorder, 0.6)};`;
+    field("NOME DA SALA", title);
+    const speed = select(GAME_SPEEDS.map((v) => [String(v), v === 1 ? "1x (normal)" : `${v}x`]), String(test?.testSpeed ?? 1));
+    field("VELOCIDADE DO JOGO (MINERAÇÃO, BROCA E REFINO)", speed);
+    const pbots = select([0, 1, 2, 3, 4].map((v) => [String(v), v === 0 ? "nenhum" : String(v)]), String(test?.playerBots ?? 0));
+    field("JOGADORES-BOT (CONSTROEM E ATACAM COMO JOGADORES)", pbots);
+    const fleet = select([0, 1, 2, 3, 4, 5, 6].map((v) => [String(v), v === 0 ? "nenhuma" : v === 1 ? "1 nave" : `${v} naves`]), "6");
+    field("FROTA INIMIGA DE CERES (BOTS)", fleet);
+
+    // modo de vitória: um botão de rádio por modo, com a explicação
+    box.appendChild(this.label("MODO DE VITÓRIA"));
+    let mode: VictoryMode = "lastStand";
+    const modes = document.createElement("div");
+    modes.style.cssText = "display:flex;flex-direction:column;gap:6px;margin-bottom:14px;";
+    const time = select(MATCH_TIME_LIMITS.map((v) => [String(v), `${v} min`]), String(DEFAULT_TIME_LIMIT));
+    const syncTime = () => {
+      const timed = VICTORY_MODES.find((m) => m.id === mode)?.timed ?? false;
+      time.disabled = !timed;
+      time.style.opacity = timed ? "1" : "0.4";
+    };
+    for (const m of VICTORY_MODES) {
+      const row = document.createElement("label");
+      row.style.cssText = "display:flex;gap:8px;align-items:flex-start;cursor:pointer;font-size:13px;";
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "victory";
+      radio.checked = m.id === mode;
+      radio.addEventListener("change", () => { mode = m.id; syncTime(); });
+      const text = document.createElement("span");
+      text.innerHTML = `<b>${m.label}</b><br><span style="opacity:.6">${m.hint}</span>`;
+      row.append(radio, text);
+      modes.appendChild(row);
+    }
+    box.appendChild(modes);
+    field("TEMPO-LIMITE", time);
+    syncTime();
+
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:10px;margin-top:6px;";
+    const ok = this.button("CRIAR", true, () => {
+      overlay.remove();
+      this.createRoom({
+        title: title.value.trim() || `Arena de ${this.playerName()}`,
+        testSpeed: Number(speed.value),
+        playerBots: Number(pbots.value),
+        bots: Number(fleet.value),
+        victory: mode,
+        timeLimit: Number(time.value),
+      });
+    });
+    const cancel = this.button("CANCELAR", false, () => overlay.remove());
+    ok.style.flex = "1";
+    cancel.style.flex = "1";
+    row.append(ok, cancel);
+    box.appendChild(row);
+    overlay.appendChild(box);
+    this.root.appendChild(overlay);
   }
 
   /** joinById: entra numa sala específica da lista. */
@@ -180,7 +312,7 @@ export class Lobby {
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;gap:10px;margin-bottom:22px;";
     const quick = this.button("JOGAR JÁ", true, () => this.quickPlay());
-    const create = this.button("CRIAR SALA", false, () => this.createRoom());
+    const create = this.button("CRIAR SALA", false, () => this.openCreateDialog());
     quick.style.flex = "1";
     create.style.flex = "1";
     actions.append(quick, create);

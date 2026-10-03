@@ -124,6 +124,11 @@ export class PlayerSchema extends Schema {
   @type("boolean") eliminated = false;
   @type("float32") survival = 0;
   @type("string") summary = "";
+  /** placar da partida (shared/match.ts): pontos e minhocas mortas */
+  @type("uint32") score = 0;
+  @type("uint16") wormKills = 0;
+  /** jogador-bot (servidor) */
+  @type("boolean") bot = false;
 }
 
 export class StructureSchema extends Schema {
@@ -196,6 +201,15 @@ export class WormSchema extends Schema {
 
 export class MatchState extends Schema {
   @type("uint32") worldSeed = 0;
+  /** PARTIDA (shared/match.ts): modo de vitória, tempo-limite (s, 0 = sem), relógio (s) e o fim */
+  @type("string") victory = "lastStand";
+  @type("float32") timeLimit = 0;
+  @type("float32") clock = 0;
+  @type("boolean") finished = false;
+  /** sessionId do vencedor ("" = ninguém) */
+  @type("string") winner = "";
+  /** velocidade do jogo (mineração, broca e refino) */
+  @type("uint8") speed = 1;
   // fronteira circular do mapa (arena): centro em setores + raio em unidades
   @type("int32") mapCenterSx = 0;
   @type("int32") mapCenterSy = 0;

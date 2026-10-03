@@ -41,6 +41,8 @@ export class SimWorld {
   /** posição de Ceres — derivada da semente (igual em servidor e cliente) */
   readonly ceres: WorldPos;
   private readonly inputs = new Map<string, ShipInput>();
+  /** multiplicador da mineração pousada (modo de teste da sala: testSpeed) */
+  miningSpeed = 1;
   private boundaryCenter: WorldPos | null = null;
   private boundaryRadius = 0;
   /**
@@ -157,7 +159,7 @@ export class SimWorld {
           const room = holdRoom(ship, "ore");
           if (rate > 0 && room > 0) {
             ship.cargoKind = "ore";
-            ship.cargoAmount += Math.min(room, rate * dt);
+            ship.cargoAmount += Math.min(room, rate * dt * this.miningSpeed);
             ship.mining = true;
           }
         }

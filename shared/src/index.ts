@@ -9,6 +9,7 @@ export * from "./weapons";
 export * from "./turrets";
 export * from "./logistics";
 export * from "./worms";
+export * from "./match";
 export * from "./asteroids";
 export * from "./constants";
 export * from "./coords";

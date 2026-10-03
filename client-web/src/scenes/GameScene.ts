@@ -34,6 +34,7 @@ import {
   BUILDER_ITEM_CAP,
   BUILDER_HOLD_TOTAL,
   holdRoom,
+  VICTORY_MODES,
   RUIN_OWNER,
   WORM_HOLE_ID,
   WORM_HOLE_SEAL_MINES,
@@ -915,6 +916,8 @@ export class GameScene {
       }
     }
 
+    this.updateMatchHud(state);
+
     // estruturas (estáticas): upsert + remoção
     const seenSt = new Set<string>();
     state.structures.forEach((st: any, id: string) => {
@@ -1218,6 +1221,55 @@ export class GameScene {
   private nearWormHole(): boolean {
     const site = this.wormHoleSite();
     return !!site && !!this.localShip && dist(this.localShip, site) <= site.radius + ATTACK_ZONE_MARGIN;
+  }
+
+  /** a tela de resultado já foi mostrada nesta partida */
+  private matchResultShown = false;
+
+  /**
+   * PARTIDA no HUD (shared/match.ts): a barra do topo — modo, tempo que
+   * falta (ou quantos seguem de pé), o seu placar e o líder — e, quando a
+   * partida acaba, a tela de resultado com a classificação.
+   */
+  private updateMatchHud(state: any): void {
+    const mode = VICTORY_MODES.find((m) => m.id === state.victory) ?? VICTORY_MODES[1];
+    const players: Array<{ sid: string; name: string; score: number; kills: number; out: boolean; bot: boolean }> = [];
+    state.players?.forEach((p: any, sid: string) => players.push({
+      sid, name: p.name || sid, score: p.score ?? 0, kills: p.wormKills ?? 0, out: !!p.eliminated, bot: !!p.bot,
+    }));
+    if (players.length === 0) return;
+    const worms = state.victory === "worms";
+    const rank = [...players].sort((a, b) => (worms ? b.kills - a.kills || b.score - a.score : b.score - a.score));
+    const me = players.find((p) => p.sid === this.room.sessionId);
+    const pts = (p: { score: number; kills: number }) => (worms ? `${p.kills} 🪱 · ${p.score} pts` : `${p.score} pts`);
+    let clock: string;
+    if (state.timeLimit > 0) {
+      const left = Math.max(0, state.timeLimit - (state.clock ?? 0));
+      clock = `${Math.floor(left / 60)}:${Math.floor(left % 60).toString().padStart(2, "0")}`;
+    } else {
+      clock = `${players.filter((p) => !p.out).length} de pé`;
+    }
+    const speed = (state.speed ?? 1) > 1 ? ` · ${state.speed}x` : "";
+    const leader = rank[0];
+    this.hudRenderer.setMatchBar(
+      `${mode.label.toUpperCase()}${speed} · ${clock}` +
+      (me ? ` · você: ${pts(me)}` : "") +
+      (leader && leader !== me ? ` · líder: ${leader.name} ${pts(leader)}` : ""));
+
+    if (state.finished && !this.matchResultShown) {
+      this.matchResultShown = true;
+      const winner = players.find((p) => p.sid === state.winner);
+      const won = !!winner && winner.sid === this.room.sessionId;
+      this.hudRenderer.showMatchResult({
+        title: won ? "VITÓRIA!" : "FIM DA PARTIDA",
+        subtitle: winner ? `${won ? "Você venceu" : `Venceu ${winner.name}`} — ${mode.label}` : `Ninguém venceu — ${mode.label}`,
+        rows: rank.map((p) => ({
+          name: `${p.name}${p.bot ? " (bot)" : ""}${p.out ? " ✖" : ""}`,
+          detail: pts(p),
+          me: p.sid === this.room.sessionId,
+        })),
+      });
+    }
   }
 
   /** Teto do zoom agora: maior com a nave própria atracada numa vaga ou pousada. */

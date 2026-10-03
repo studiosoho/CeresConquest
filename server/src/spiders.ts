@@ -51,6 +51,8 @@ export function stepSpider(
   station: WorldPos,
   st: SpiderState,
   dt: number,
+  /** multiplicador da mineração (velocidade de teste da sala) */
+  speed = 1,
 ): number {
   let unloaded = 0;
   ship.mining = false;
@@ -71,7 +73,7 @@ export function stepSpider(
     }
     case "mine": {
       st.timer -= dt;
-      st.cargo += SPIDER_RATE * dt;
+      st.cargo += SPIDER_RATE * dt * speed;
       ship.mining = true;
       if (st.timer <= 0) st.phase = "toStation";
       break;
