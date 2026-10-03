@@ -59,6 +59,9 @@ export class ShipSchema extends Schema {
   @type("float32") aimOffset = 0;
   @type("string") aimTarget = "";
   @type("boolean") aimLocked = false;
+  /** segundo canhão do laser (o primeiro usa aimOffset/aimLocked) */
+  @type("float32") aimOffset2 = 0;
+  @type("boolean") aimLocked2 = false;
   /**
    * Modo ataque: a estrutura atacada e o raio da parede macia da órbita
    * (sim-core attackModeInput). A predição do cliente traduz os comandos

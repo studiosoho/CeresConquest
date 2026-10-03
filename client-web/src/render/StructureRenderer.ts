@@ -127,6 +127,10 @@ interface StructEntry {
   turretLines: GreasedLineBaseMesh[];
   turretSig: string;
   turretBuildNode: TransformNode | null;
+  /** lâmpadas giratórias em volta da vaga selecionada (ver highlightBay) */
+  lampNode: TransformNode | null;
+  lamps: Mesh[];
+  lampBay: number;
 }
 
 export class StructureRenderer {
@@ -135,6 +139,11 @@ export class StructureRenderer {
   private entries = new Map<string, StructEntry>();
   private structMat: StandardMaterial;
   private voidMat: StandardMaterial;
+  /** lâmpada acesa (brilha no GlowLayer) e apagada */
+  private lampOn: StandardMaterial;
+  private lampOff: StandardMaterial;
+  /** estrutura com a vaga em destaque agora ("" = nenhuma) */
+  private highlighted = "";
 
   constructor(scene: Scene, glow: GlowLayer) {
     this.scene = scene;
@@ -152,6 +161,13 @@ export class StructureRenderer {
     this.voidMat.disableLighting = true;
     this.voidMat.emissiveColor = Color3.Black();
     this.voidMat.backFaceCulling = false;
+
+    this.lampOn = new StandardMaterial("bayLampOn", scene);
+    this.lampOn.disableLighting = true;
+    this.lampOn.emissiveColor = c3(LAMP_ON);
+    this.lampOff = new StandardMaterial("bayLampOff", scene);
+    this.lampOff.disableLighting = true;
+    this.lampOff.emissiveColor = c3(LAMP_OFF);
   }
 
   /** Cria/atualiza a estrutura e a assenta na plataforma do asteroide. */
@@ -177,6 +193,7 @@ export class StructureRenderer {
         this.placeOnFace(entry, attach);
         entry.lastSig = "!"; // as vagas dependem da plataforma: refaz
         entry.turretSig = "!"; // as turretas também
+        entry.lampBay = -2; // e as lâmpadas da vaga em destaque
       }
       entry.root.setEnabled(true);
     }
@@ -268,6 +285,7 @@ export class StructureRenderer {
       angle: data.angle, face: null, anchor: { x: 0, y: 0 },
       annexNode: null, annexMeshes: [], annexLines: [], annexLevel: 1,
       turretNode: null, turretMeshes: [], turretLines: [], turretSig: "", turretBuildNode: null,
+      lampNode: null, lamps: [], lampBay: -1,
     };
   }
 
@@ -454,6 +472,73 @@ export class StructureRenderer {
     }
   }
 
+  // ── vaga selecionada: lâmpadas giratórias verdes ─────────────────────
+
+  /**
+   * Destaca a vaga `bay` da estrutura `id` com FILEIRAS de lâmpadas verdes
+   * em volta da placa, acendendo em sequência como um giroscópio (a luz
+   * corre em volta da vaga). `id` vazio ou `bay` < 0 apaga o destaque.
+   * Chamar a cada quadro (`tt` em s anima a sequência).
+   */
+  highlightBay(id: string, bay: number, tt: number): void {
+    if (this.highlighted && (this.highlighted !== id || bay < 0)) {
+      const prev = this.entries.get(this.highlighted);
+      if (prev) this.clearLamps(prev);
+      this.highlighted = "";
+    }
+    const entry = id && bay >= 0 ? this.entries.get(id) : undefined;
+    if (!entry || !entry.face) return;
+    this.highlighted = id;
+    if (entry.lampBay !== bay) this.buildLamps(entry, bay);
+    // várias "cabeças" de luz correndo em volta da vaga
+    const n = entry.lamps.length;
+    const head = (tt * LAMP_SPIN) % 1;
+    entry.lamps.forEach((m, i) => {
+      const ph = (((i / n - head) * LAMP_HEADS) % 1 + 1) % 1;
+      m.material = ph < LAMP_DUTY ? this.lampOn : this.lampOff;
+    });
+  }
+
+  private clearLamps(entry: StructEntry): void {
+    // as lâmpadas acesas brilham pelo emissivo, sem cadastro no GlowLayer
+    for (const m of entry.lamps) m.dispose(false, false);
+    entry.lamps = [];
+    entry.lampNode?.dispose();
+    entry.lampNode = null;
+    entry.lampBay = -1;
+  }
+
+  /** Lâmpadas em volta da placa da vaga, em ordem de perímetro (para a luz correr). */
+  private buildLamps(entry: StructEntry, bay: number): void {
+    this.clearLamps(entry);
+    const slot = bayLayout({ type: entry.type, shipBays: entry.shipBays, expandedBays: entry.expandedBays })[bay];
+    if (!slot) return;
+    const zTop = SLAB_H + SLAB_LINE_LIFT;
+    const { u: cx, v: cy } = this.bayCenterLocal(entry, slot.x, slot.y, zTop);
+    const node = new TransformNode(`${entry.root.name}_lamps`, this.scene);
+    node.parent = entry.root;
+    entry.lampNode = node;
+    const hw = slot.w / 2 + LAMP_MARGIN;
+    const hh = slot.h / 2 + LAMP_MARGIN;
+    // perímetro no sentido horário, lâmpadas a intervalos quase iguais
+    const corners: Array<[number, number]> = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+    const pts: Array<[number, number]> = [];
+    for (let k = 0; k < 4; k++) {
+      const [x0, y0] = corners[k];
+      const [x1, y1] = corners[(k + 1) % 4];
+      const n = Math.max(2, Math.round(Math.hypot(x1 - x0, y1 - y0) / LAMP_SPACING));
+      for (let i = 0; i < n; i++) pts.push([x0 + ((x1 - x0) * i) / n, y0 + ((y1 - y0) * i) / n]);
+    }
+    const geo = lampGeometry();
+    pts.forEach(([x, y], i) => {
+      const m = this.makeSolid(`${node.name}_${i}`, geo.vertices, geo.normals, geo.triangles, this.lampOff);
+      m.parent = node;
+      m.position.set(cx + x, cy + y, zTop);
+      entry.lamps.push(m);
+    });
+    entry.lampBay = bay;
+  }
+
   /** Placa fina: tampo + saias laterais. */
   private pushSlab(
     verts: Vector3[], normals: Vector3[], tris: number[],
@@ -618,6 +703,7 @@ export class StructureRenderer {
     for (const m of entry.turretLines) disposeLineBundle(m, this.glow);
     for (const m of entry.turretMeshes) m.dispose(false, false);
     entry.turretNode?.dispose();
+    this.clearLamps(entry);
     entry.root.dispose();
   }
 }
@@ -669,6 +755,29 @@ function pushBox(out: { vertices: Vector3[]; normals: Vector3[]; triangles: numb
   q(v(x1, y0, z0), v(x1, y1, z0), v(x1, y1, z1), v(x1, y0, z1), v(1, 0, 0));
   q(v(x1, y1, z0), v(x0, y1, z0), v(x0, y1, z1), v(x1, y1, z1), v(0, 1, 0));
   q(v(x0, y1, z0), v(x0, y0, z0), v(x0, y0, z1), v(x0, y1, z1), v(-1, 0, 0));
+}
+
+// ── lâmpadas da vaga selecionada ──────────────────────────────────────────
+
+const LAMP_ON = 0x66ff88;
+const LAMP_OFF = 0x0f3d1f;
+/** folga da fileira de lâmpadas além da borda da placa, e o espaçamento entre elas (mundo) */
+const LAMP_MARGIN = 7;
+const LAMP_SPACING = 11;
+/** voltas por segundo, cabeças de luz correndo e fração acesa de cada trecho */
+const LAMP_SPIN = 0.6;
+const LAMP_HEADS = 3;
+const LAMP_DUTY = 0.34;
+const LAMP_SIZE = 6;
+
+let lampGeo: { vertices: Vector3[]; normals: Vector3[]; triangles: number[] } | null = null;
+/** Cúpula baixa facetada (prisma hexagonal) de uma lâmpada. */
+function lampGeometry() {
+  if (lampGeo) return lampGeo;
+  const out = { vertices: [] as Vector3[], normals: [] as Vector3[], triangles: [] as number[] };
+  pushPrism(out, LAMP_SIZE / 2, 0, LAMP_SIZE * 0.8, 6);
+  lampGeo = out;
+  return out;
 }
 
 let turretGeo: { vertices: Vector3[]; normals: Vector3[]; triangles: number[] } | null = null;

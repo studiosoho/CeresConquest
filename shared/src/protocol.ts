@@ -129,6 +129,11 @@ export interface FxEvent {
   sx: number; sy: number; x: number; y: number;
   /** ponta do traço (só "laser") */
   tsx?: number; tsy?: number; tx?: number; ty?: number;
+  /** quem disparou o laser: uma nave (padrão) ou uma turreta — muda o som */
+  from?: "ship" | "turret";
+  /** quem disparou o laser (id da nave ou da estrutura da turreta) — o
+   *  cliente tira dele a altura do início do traço 3D */
+  src?: string;
   /**
    * EM QUEM a explosão acontece — quem recebeu o dano: a nave `id`, a
    * estrutura `id` ou a nave GUARDADA na vaga `bay` da estrutura `id` (o

@@ -3,7 +3,7 @@ import type { Engine } from "@babylonjs/core/Engines/engine";
 import type { Scene } from "@babylonjs/core/scene";
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
 import { Camera } from "@babylonjs/core/Cameras/camera";
-import { Vector3, Quaternion } from "@babylonjs/core/Maths/math.vector";
+import { Vector3, Quaternion, Matrix } from "@babylonjs/core/Maths/math.vector";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { GlowLayer } from "@babylonjs/core/Layers/glowLayer";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
@@ -27,6 +27,7 @@ import {
   MSG_CARGO,
   MSG_FIRE,
   MSG_WEAPON,
+  laserMount,
   MSG_TURRET,
   BUILDER_ORE_CAP,
   TURRET_COST,
@@ -81,6 +82,9 @@ import { KeyInput } from "../input";
 import { MeshFactory } from "../render/MeshFactory";
 import { ShipRenderer } from "../render/ShipRenderer";
 import { ExplosionRenderer, type ExplosionHandle } from "../render/ExplosionRenderer";
+import { BeamRenderer } from "../render/BeamRenderer";
+import { SoundEngine } from "../audio/SoundEngine";
+import { SoundDirector } from "../audio/SoundDirector";
 import { shipMeshData } from "../render/ShipMeshGenerator";
 import { dockScale, easePresence, presenceTarget, type Presence, type PresenceShip } from "../render/shipPresence";
 import { AsteroidRenderer } from "../render/AsteroidRenderer";
@@ -97,7 +101,8 @@ const COLOR_FLEET_OWN = Palette.structure.fleet;
 
 /**
  * Zoom inicial: o quadro de julgamento (0.12), em que as naves têm o tamanho
- * aprovado (ShipMeshGenerator.SHIP_DISPLAY_REF_ZOOM). Dentro de [ZOOM_MIN, ZOOM_MAX].
+ * aprovado (ShipMeshGenerator.SHIP_DISPLAY_REF_ZOOM). Dentro de [ZOOM_MIN, ZOOM_MAX]
+ * (ZOOM_MAX_DOCKED com a nave atracada).
  */
 const INITIAL_ZOOM = 0.12;
 
@@ -110,6 +115,10 @@ const REMOTE_BLEND = 0.3;
 /** faixa de zoom do jogo (px por unidade de mundo) */
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 0.25;
+/** atracada ou pousada, dá para chegar bem mais perto (ver o hangar de perto) */
+const ZOOM_MAX_DOCKED = 0.75;
+/** folga do casco atracado acima do chão da plataforma (cena, −z = para cima) */
+const DOCK_HULL_LIFT = 6;
 const ZOOM_WHEEL_STEP = 1.15;
 const ZOOM_KEY_STEP = 1.03;
 const ZOOM_SMOOTH = 0.15;
@@ -307,6 +316,9 @@ interface ServerShip extends WorldPos {
   /** modo ataque: estrutura atacada ("" = fora) e raio da parede macia da órbita */
   attackTarget: string;
   attackRadius: number;
+  /** 2º canhão do laser (o 1º é aimOffset/aimLocked) */
+  aimOffset2: number;
+  aimLocked2: boolean;
   /** vaga ocupada na estrutura `hqId` (guardada ou pousada); −1 = nenhuma */
   bay: number;
   /**
@@ -417,10 +429,15 @@ export class GameScene {
   private presence = new Map<string, Presence>();
   /** explosões em curso: posição de MUNDO (a origem de render flutua), início e faíscas */
   private explosionRenderer!: ExplosionRenderer;
+  /** traço 3D do laser, para o cockpit */
+  private beamRenderer!: BeamRenderer;
+  /** efeitos sonoros 8 bits (sfxr) e quem decide quando tocá-los */
+  private sound!: SoundEngine;
+  private soundDirector!: SoundDirector;
   /** explosões em curso: onde (mundo) e em quem — a nave atingida a leva junto */
   private explosions: Array<{ handle: ExplosionHandle; pos: WorldPos; on?: FxEvent["on"]; id?: string; radius: number }> = [];
   /** traços de laser em curso (MSG_FX "laser") */
-  private lasers: Array<{ from: WorldPos; to: WorldPos; t0: number }> = [];
+  private lasers: Array<{ from: WorldPos; to: WorldPos; t0: number; src?: string; on?: FxEvent["on"]; id?: string }> = [];
   /** próximo instante (s) em que SPACE segurado repete o disparo */
   private nextFireAt = 0;
   private passthrough = new Set<string>();
@@ -692,6 +709,15 @@ export class GameScene {
     this.structureRenderer = new StructureRenderer(this.bScene, this.glow);
     this.effectsRenderer = new EffectsRenderer(this.bScene, this.glow);
     this.explosionRenderer = new ExplosionRenderer(this.bScene, this.camera, this.glow);
+    this.beamRenderer = new BeamRenderer(this.bScene);
+    // som: sintetizado agora; o áudio só liga no primeiro gesto (autoplay)
+    this.sound = new SoundEngine();
+    this.soundDirector = new SoundDirector(this.sound);
+    const unlock = () => this.sound.unlock();
+    window.addEventListener("keydown", unlock);
+    window.addEventListener("pointerdown", unlock);
+    // ajuste de ouvido no console: __sfx.play("missile")
+    (window as unknown as { __sfx: SoundEngine }).__sfx = this.sound;
     this.hudRenderer = new HudRenderer();
     this.hudRenderer.initCockpitFrame(FP_VIEW);
 
@@ -701,7 +727,7 @@ export class GameScene {
       (ev: WheelEvent) => {
         ev.preventDefault();
         const factor = ev.deltaY > 0 ? 1 / ZOOM_WHEEL_STEP : ZOOM_WHEEL_STEP;
-        this.zoomTarget = clamp(this.zoomTarget * factor, ZOOM_MIN, ZOOM_MAX);
+        this.zoomTarget = clamp(this.zoomTarget * factor, ZOOM_MIN, this.zoomMax());
       },
       { passive: false },
     );
@@ -711,11 +737,13 @@ export class GameScene {
     this.room.onStateChange((state: any) => this.syncFromServer(state));
     // explosões: o servidor diz onde e o quê, na posição exata do acerto
     this.room.onMessage(MSG_FX, (ev: FxEvent) => {
+      this.soundDirector.fx(ev, this.localShip, this.myShipId);
       if (ev.kind === "laser") {
         this.lasers.push({
           from: { sx: ev.sx, sy: ev.sy, x: ev.x, y: ev.y },
           to: { sx: ev.tsx ?? ev.sx, sy: ev.tsy ?? ev.sy, x: ev.tx ?? ev.x, y: ev.ty ?? ev.y },
           t0: performance.now() / 1000,
+          src: ev.src, on: ev.on, id: ev.id,
         });
         return;
       }
@@ -770,6 +798,8 @@ export class GameScene {
         aimTarget: s.aimTarget ?? "",
         aimLocked: s.aimLocked ?? false,
         attackTarget: s.attackTarget ?? "",
+        aimOffset2: s.aimOffset2 ?? 0,
+        aimLocked2: s.aimLocked2 ?? false,
         attackRadius: s.attackRadius ?? 0,
         bay: s.bay ?? -1,
         layer: (s.layer ?? "cruise") as ShipLayer,
@@ -844,6 +874,15 @@ export class GameScene {
     for (const id of [...this.serverProjectiles.keys()]) {
       if (!seenPr.has(id)) this.serverProjectiles.delete(id);
     }
+
+    // som: o que mudou desde o último estado (disparos, minas, pouso...)
+    this.soundDirector.sync({
+      sessionId: this.room.sessionId,
+      myShipId: this.myShipId,
+      ships: this.serverShips,
+      structures: this.serverStructures,
+      projectiles: this.serverProjectiles,
+    }, this.localShip, performance.now() / 1000);
   }
 
   /**
@@ -863,9 +902,26 @@ export class GameScene {
       else if (st) target = this.toRender(st);
     }
     const d = target ? Math.hypot(target.x - own.x, target.y - own.y) : AIM_IDLE_DIST;
-    const a = angle + me.aimOffset;
-    this.effectsRenderer.drawAim(own.x + Math.cos(a) * d, own.y + Math.sin(a) * d, AIM_SIZE, me.aimLocked);
-    if (target) this.effectsRenderer.drawTargetBrackets(target.x, target.y, AIM_SIZE * 2.6, me.aimLocked);
+    for (const g of this.gunAims(me, own, angle, d)) this.effectsRenderer.drawAim(g.x, g.y, AIM_SIZE, g.locked);
+    const locked = me.aimLocked || (me.weapon === "laser" && me.aimLocked2);
+    if (target) this.effectsRenderer.drawTargetBrackets(target.x, target.y, AIM_SIZE * 2.6, locked);
+  }
+
+  /**
+   * Para onde mira cada arma, a `d` u à frente: o míssil, uma mira pelo nariz
+   * mais o desvio; o laser, DUAS — uma por canhão, cada uma da sua asa
+   * (shared laserMount) e com o próprio desvio e travamento.
+   */
+  private gunAims(me: ServerShip, own: { x: number; y: number }, angle: number, d: number): Array<{ x: number; y: number; locked: boolean }> {
+    const aim = (ox: number, oy: number, offset: number, locked: boolean) => {
+      const a = angle + offset;
+      return { x: own.x + ox + Math.cos(a) * d, y: own.y + oy + Math.sin(a) * d, locked };
+    };
+    if (me.weapon !== "laser") return [aim(0, 0, me.aimOffset, me.aimLocked)];
+    return [[me.aimOffset, me.aimLocked], [me.aimOffset2, me.aimLocked2]].map(([o, l], i) => {
+      const m = laserMount(angle, i);
+      return aim(m.dx, m.dy, o as number, l as boolean);
+    });
   }
 
   /**
@@ -935,6 +991,65 @@ export class GameScene {
     }
     this.explosionRenderer.tick();
     this.explosions = this.explosions.filter((e) => !e.handle.done);
+  }
+
+  /**
+   * Profundidade da malha de uma nave atracada/pousada: desce da camada de
+   * voo até o chão da plataforma conforme `dock` (0..1, a mesma suavização
+   * do encolhimento na vaga). Em voo, undefined (a camada de voo).
+   */
+  private dockedZ(s: ServerShip, dock: number): number | undefined {
+    if (dock <= 0) return undefined;
+    const floor = this.dockFloorZ(s);
+    if (floor === null) return undefined;
+    return SHIP_LAYER_Z + (floor - DOCK_HULL_LIFT - SHIP_LAYER_Z) * dock;
+  }
+
+  /** Profundidade de cena de uma nave (malha) ou estrutura (sobre o chão); senão `fallback`. */
+  private depthOf(id: string, fallback: number): number {
+    if (!id) return fallback;
+    const z = this.shipRenderer.poseZ(id);
+    if (z !== null) return z;
+    const floor = this.structureRenderer.platformZ(id);
+    return floor !== null ? floor - FP_ATTACK_AIM_LIFT : fallback;
+  }
+
+  /**
+   * Retículos dos canhões do laser no cockpit em tela cheia: o ponto para
+   * onde cada canhão mira (à distância e na altura do alvo) projetado pela
+   * câmera do cockpit — sai do centro e anda até o alvo junto com a mira.
+   * Míssil e mina: nenhum (só o crosshair central).
+   */
+  private cockpitGunReticles(me: ServerShip | undefined, own: { x: number; y: number }, angle: number) {
+    if (!me || me.kind !== "attack" || me.weapon !== "laser" || me.anchored || me.landingPhase !== "") return null;
+    let d = AIM_IDLE_DIST;
+    let z = this.shipRenderer.poseZ(this.myShipId) ?? SHIP_LAYER_Z;
+    if (me.aimTarget) {
+      const rv = this.remotes.get(me.aimTarget);
+      const st = this.serverStructures.get(me.aimTarget);
+      const t = rv?.initialized ? { x: rv.rx, y: rv.ry } : st ? this.toRender(st) : null;
+      if (t) {
+        d = Math.hypot(t.x - own.x, t.y - own.y);
+        z = this.depthOf(me.aimTarget, z);
+      }
+    }
+    const w = this.engine.getRenderWidth();
+    const h = this.engine.getRenderHeight();
+    const vp = this.fpCamera.viewport.toGlobal(w, h);
+    const vpm = this.fpCamera.getViewMatrix(true).multiply(this.fpCamera.getProjectionMatrix(true));
+    return this.gunAims(me, own, angle, d).map((g) => {
+      const p = toScene(g.x, g.y);
+      p.z = z;
+      const s = Vector3.Project(p, Matrix.IdentityReadOnly, vpm, vp);
+      if (s.z < 0 || s.z > 1) return null; // atrás da câmera
+      return { xPct: (s.x / w) * 100, yPct: (s.y / h) * 100, locked: g.locked };
+    });
+  }
+
+  /** Teto do zoom agora: maior com a nave própria atracada numa vaga ou pousada. */
+  private zoomMax(): number {
+    const me = this.serverShips.get(this.myShipId);
+    return me && (me.anchored || me.landingPhase === "landed") ? ZOOM_MAX_DOCKED : ZOOM_MAX;
   }
 
   /** Posição de render de uma nave: a predita (a minha), a suavizada (remota) ou a do servidor. */
@@ -1027,8 +1142,10 @@ export class GameScene {
 
     // zoom por teclas +/- e suavização em direção ao alvo
     if (this.keys.isDown("PLUS")) {
-      this.zoomTarget = Math.min(this.zoomTarget * ZOOM_KEY_STEP, ZOOM_MAX);
+      this.zoomTarget = Math.min(this.zoomTarget * ZOOM_KEY_STEP, this.zoomMax());
     }
+    // ao decolar, o teto volta a 0.25x — o zoom recua suavemente até ele
+    this.zoomTarget = Math.min(this.zoomTarget, this.zoomMax());
     if (this.keys.isDown("MINUS")) {
       this.zoomTarget = Math.max(this.zoomTarget / ZOOM_KEY_STEP, ZOOM_MIN);
     }
@@ -1045,6 +1162,7 @@ export class GameScene {
     if (this.keys.justDown("M")) {
       this.minimapFull = !this.minimapFull;
     }
+    if (this.keys.justDown("N")) this.sound.toggleMute();
     // deprecated: será movido para configuração da sala
     // if (this.keys.justDown("M")) {
     //   this.room.send(MSG_EXPAND);
@@ -1237,6 +1355,7 @@ export class GameScene {
         contactsAge: SNAPSHOT_AGE_FIXED_GUESS,
       });
     }
+    this.soundDirector.setThrust(input.thrust ? 1 : 0);
     this.sendAccum += dt;
     if (this.sendAccum >= 1 / INPUT_SEND_HZ) {
       this.sendAccum = 0;
@@ -1555,6 +1674,7 @@ export class GameScene {
       x: own.x, y: own.y, angle: ownAngle,
       kind: this.localShip!.kind, tint: COLOR_OWN, visible: true,
       scale: ownPresence?.scale,
+      z: mineAuth ? this.dockedZ(mineAuth, ownPresence?.dock ?? 0) : undefined,
     });
     // câmera segue a nave (substitui cameras.main.centerOn)
     const camPos = toScene(own.x, own.y);
@@ -1609,12 +1729,9 @@ export class GameScene {
         yaw = look.yaw * this.fpAttack;
       }
       this.fpCamera.rotationQuaternion = this.fpRotation(this.fpPitch, yaw);
-      if (this.cockpitFull) {
-        // o nariz aponta para o horizonte: com o olho inclinado p (positivo =
-        // para cima), esse ponto fica tan(p)/tan(fov/2) meia-tela abaixo do centro
-        const off = Math.tan(this.fpPitch) / Math.tan(this.fpCamera.fov / 2);
-        this.hudRenderer.setReticle(true, 50 + 50 * off);
-      }
+      // crosshair principal fixo no CENTRO da tela (setCockpitFull); no laser,
+      // os retículos de cada canhão andam do centro até o alvo
+      this.hudRenderer.setGunReticles(this.cockpitFull ? this.cockpitGunReticles(mineAuth, own, ownAngle) : null);
       // farol na mesma cabine, emitindo pelo nariz (direção +X já fixada)
       if (this.headlight.parent !== cockpit.root) this.headlight.parent = cockpit.root;
       this.headlight.position.copyFromFloats(cockpit.eye.x, cockpit.eye.y, cockpit.eye.z);
@@ -1630,6 +1747,7 @@ export class GameScene {
 
     // início do frame de efeitos
     this.effectsRenderer.beginFrame();
+    this.beamRenderer.begin();
 
     // rastro da nave própria: nasce na popa do casco AMPLIADO (escala de tela
     // da classe) e segue o ângulo RENDERIZADO (o giro de pouso incluso)
@@ -1675,6 +1793,7 @@ export class GameScene {
         x: view.rx, y: view.ry, angle: view.angle,
         kind: view.kind, tint: view.tint, visible: true,
         scale: pres.scale,
+        z: this.dockedZ(server, pres.dock),
       });
       this.effectsRenderer.drawJet(view.rx, view.ry, view.angle, Math.hypot(server.vx, server.vy), tt,
         id, view.kind, this.shipRenderer.displayScale(id, view.kind));
@@ -1729,6 +1848,11 @@ export class GameScene {
 
     const anchored = authoritative?.anchored ?? this.localShip!.anchored;
 
+    // vaga da nave própria atracada: lâmpadas verdes girando em volta (o [C]
+    // troca para a nave da próxima vaga, e o destaque vai junto)
+    const dockedIn = authoritative?.anchored && authoritative.hqId ? authoritative.hqId : "";
+    this.structureRenderer.highlightBay(dockedIn, dockedIn ? authoritative!.bay : -1, tt);
+
     // feixe de mineração
     // Todo: alterar para shooting da nave de ataque
     if (authoritative?.mining) {
@@ -1751,7 +1875,14 @@ export class GameScene {
     for (const l of this.lasers) {
       const a = this.toRender(l.from);
       const b = this.toRender(l.to);
-      this.effectsRenderer.drawLaser(a.x, a.y, b.x, b.y, (tt - l.t0) / LASER_FX_DURATION);
+      const fade = (tt - l.t0) / LASER_FX_DURATION;
+      this.effectsRenderer.drawLaser(a.x, a.y, b.x, b.y, fade);
+      // o mesmo feixe em 3D, cada ponta na sua altura — visível no cockpit
+      const from = toScene(a.x, a.y);
+      from.z = this.depthOf(l.src ?? "", SHIP_LAYER_Z);
+      const to = toScene(b.x, b.y);
+      to.z = this.depthOf(l.id ?? "", SHIP_LAYER_Z);
+      this.beamRenderer.beam(from, to, fade);
     }
     this.drawWeaponAim(own, ownAngle, mineAuth);
 
@@ -1805,6 +1936,7 @@ export class GameScene {
     this.asteroidRenderer.tick(tt, dt, lockedAsteroids, this.passthrough);
 
     this.effectsRenderer.endFrame();
+    this.beamRenderer.end();
 
     // ── coleta de dados para HUD ──
     const ore = Math.floor(this.myOre);
@@ -1912,7 +2044,8 @@ export class GameScene {
       const mines = mineAuth?.grenadeAmmo ?? 0;
       const w = mineAuth?.weapon ?? "missile";
       const sel = (k: WeaponKind, label: string) => (w === k ? `▸${label}` : label);
-      const lock = w === "laser" ? (mineAuth?.aimLocked ? " LOCK" : mineAuth?.aimTarget ? " …" : "") : "";
+      const locks = (mineAuth?.aimLocked ? 1 : 0) + (mineAuth?.aimLocked2 ? 1 : 0);
+      const lock = w === "laser" ? (locks > 0 ? ` LOCK ${locks}/2` : mineAuth?.aimTarget ? " …" : "") : "";
       ammoHint = `  ·  ${sel("missile", `[1] MSL ${ammo}/${MISSILE_AMMO_MAX}`)}  ${sel("laser", "[2] LASER")}${lock}  ${sel("mine", `[3] MINE ${mines}/${MINE_AMMO_MAX}`)}`;
     }
     let cargoHint = "";

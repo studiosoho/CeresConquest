@@ -3,6 +3,8 @@ import {
   BASE_EXPANDED_BAYS,
   BASE_SHIP_BAYS,
   BUILDER_ORE_CAP,
+  HQ_EXPANDED_BAYS,
+  HQ_SHIP_BAYS,
   LAYER_TRANSITION_TIME,
   SHIP_HP_MAX,
   STATION_EXPANDED_BAYS,
@@ -231,5 +233,47 @@ describe("defesa automática", () => {
     run(r, LAYER_TRANSITION_TIME + 2);
     expect(fx.length).toBe(0);
     expect(atk.hp).toBe(SHIP_HP_MAX);
+  });
+});
+
+describe("troca de nave no hangar ([C])", () => {
+  it("percorre todas as vagas ocupadas em ordem (1 → 6) e volta ao início", () => {
+    const r = makeRoom();
+    const rock = rocks[0];
+    const hq = r.sim.addStructure({
+      id: "st-hq", type: "hq", owner: "p1", angle: 0,
+      sx: rock.sx, sy: rock.sy, x: rock.x, y: rock.y,
+      asteroidId: rock.id, asteroidClass: asteroidClassOf(rock.radius),
+      shipBays: HQ_SHIP_BAYS, expandedBays: HQ_EXPANDED_BAYS, spiderBays: 0,
+      nextShipBay: 0, nextSpiderBay: 0, oreStore: 0, rationStore: 0,
+    });
+    // vagas 0–1 expandidas (builder/mineração), 2–5 normais (ataque/transporte)
+    const kinds: ShipKind[] = ["builder", "mining", "attack", "transport", "attack", "transport"];
+    const ids = kinds.map((k, bay) => {
+      const [id, s] = docked(r, "p1", k, hq, bay, bay === 0);
+      if (bay > 0) Object.assign(s, { stored: true, anchored: false });
+      return id;
+    });
+    const visited: number[] = [];
+    for (let k = 0; k < kinds.length; k++) {
+      r.trySwap("p1");
+      visited.push(r.sim.ships.get(r.activeShip.get("p1")!)!.bay);
+    }
+    expect(visited).toEqual([1, 2, 3, 4, 5, 0]);
+    // cada nave continua na própria vaga, uma pilotada e cinco guardadas
+    for (const [bay, id] of ids.entries()) expect(r.sim.ships.get(id)!.bay).toBe(bay);
+    expect(ids.filter((id) => r.sim.ships.get(id)!.stored).length).toBe(5);
+  });
+
+  it("pula as vagas vazias", () => {
+    const r = makeRoom();
+    const st = structure(r, "p1", "miningStation", rocks[0]);
+    const [aId] = docked(r, "p1", "attack", st, STATION_EXPANDED_BAYS);
+    const [, far] = docked(r, "p1", "transport", st, STATION_EXPANDED_BAYS + 3, false);
+    Object.assign(far, { stored: true, anchored: false });
+    r.trySwap("p1");
+    expect(r.sim.ships.get(r.activeShip.get("p1")!)!.bay).toBe(STATION_EXPANDED_BAYS + 3);
+    r.trySwap("p1");
+    expect(r.activeShip.get("p1")).toBe(aId);
   });
 });

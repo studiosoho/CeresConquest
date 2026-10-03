@@ -3,8 +3,9 @@
  *
  *  - MÍSSEIS (1): mini mísseis balísticos (sem guiamento depois de disparados),
  *    com mira automática RÁPIDA.
- *  - LASER (2): acerto instantâneo, mira automática LENTA; só dispara com a
- *    mira TRAVADA no alvo, e só então há traço da nave ao alvo.
+ *  - LASER (2): DUPLO — um canhão em cada asa, cada um com a sua mira
+ *    automática LENTA e o seu travamento; cada canhão só dispara travado
+ *    (acerto instantâneo, traço do canhão ao alvo).
  *  - MINAS (3): voam pelo nariz até MINE_MAX_DISTANCE do ponto de lançamento
  *    e param flutuando, ou se fixam no asteroide (ou em Ceres) que
  *    encontrarem no caminho. Só armam depois de paradas.
@@ -37,13 +38,24 @@ export const MISSILE_SLEW = 4;
 
 // ── laser ─────────────────────────────────────────────────────────────
 export const LASER_RANGE = 3500;
-export const LASER_DAMAGE = 9;
+/** dano de CADA feixe (os dois travados somam o dobro) */
+export const LASER_DAMAGE = 6;
 export const LASER_COOLDOWN = 0.2;
 export const LASER_GIMBAL = 0.52;
 /** giro lento: a mira anda até o alvo em ~0,5 s por 25° */
 export const LASER_SLEW = 0.9;
 /** erro angular (rad) abaixo do qual a mira do laser TRAVA */
 export const LASER_LOCK_TOLERANCE = 0.02;
+/** canhões do laser: afastamento lateral de cada um (u; −bombordo, +boreste) */
+export const LASER_MOUNTS: readonly number[] = [-22, 22];
+/** giro de cada canhão (rad/s): diferentes, para travarem em tempos próprios */
+export const LASER_SLEWS: readonly number[] = [LASER_SLEW, LASER_SLEW * 0.75];
+
+/** Posição (relativa ao centro da nave) do canhão de laser `i`, dado o rumo. */
+export function laserMount(angle: number, i: number): { dx: number; dy: number } {
+  const side = LASER_MOUNTS[i] ?? 0;
+  return { dx: -Math.sin(angle) * side, dy: Math.cos(angle) * side };
+}
 
 // ── minas ─────────────────────────────────────────────────────────────
 export const MINE_SPEED = 1500;

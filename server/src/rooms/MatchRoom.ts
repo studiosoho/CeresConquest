@@ -54,6 +54,8 @@ import {
   LASER_DAMAGE,
   LASER_COOLDOWN,
   LASER_LOCK_TOLERANCE,
+  LASER_SLEWS,
+  laserMount,
   MINE_SPEED,
   MINE_MAX_DISTANCE,
   MINE_TRIGGER_RADIUS,
@@ -166,9 +168,13 @@ interface Projectile {
  */
 interface WeaponState {
   weapon: WeaponKind;
+  /** mira do míssil, ou do 1º canhão do laser */
   offset: number;
   target: string;
   locked: boolean;
+  /** 2º canhão do laser: mira e travamento próprios */
+  offset2: number;
+  locked2: boolean;
 }
 
 /** Frota máxima de bots por padrão (QG dos bots em Ceres; 0 = sem bots). */
@@ -787,15 +793,15 @@ export class MatchRoom extends Room<MatchState> {
     const struct = this.sim.structures.get(active.hqId) ?? this.nearestOwnStructure(sessionId, active, DOCK_RANGE);
     if (!struct || struct.owner !== sessionId) return;
 
-    // naves guardadas no hangar desta estrutura
-    let pick: [string, ShipState] | null = null;
-    for (const [id, s] of this.sim.ships) {
-      if (s.owner === sessionId && s.hqId === struct.id && s.stored) {
-        pick = [id, s];
-        break;
-      }
-    }
-    if (!pick) return; // hangar vazio
+    // naves guardadas no hangar desta estrutura, na ORDEM DAS VAGAS: [C] vai
+    // para a próxima vaga ocupada depois da atual (1 → 6) e volta ao início.
+    // Pegar "a primeira guardada" do mapa fazia a nave que acabou de entrar
+    // ser escolhida de volta — o [C] só alternava entre duas vagas
+    const stored = [...this.sim.ships]
+      .filter(([, s]) => s.owner === sessionId && s.hqId === struct.id && s.stored)
+      .sort(([, a], [, b]) => a.bay - b.bay);
+    if (stored.length === 0) return; // hangar vazio
+    const pick = stored.find(([, s]) => s.bay > active.bay) ?? stored[0];
 
     // cada nave fica na PRÓPRIA vaga: a ativa, pousada na dela, entra no
     // hangar ali mesmo; a escolhida sai do hangar para a placa da vaga dela
@@ -1113,7 +1119,7 @@ export class MatchRoom extends Room<MatchState> {
         const [, t] = best;
         this.broadcast(MSG_FX, {
           kind: "laser", sx: from.sx, sy: from.sy, x: from.x, y: from.y,
-          tsx: t.sx, tsy: t.sy, tx: t.x, ty: t.y,
+          tsx: t.sx, tsy: t.sy, tx: t.x, ty: t.y, from: "turret", src: structId, on: "ship", id: best[0],
         } satisfies FxEvent);
         this.damageShip(best, TURRET_DAMAGE);
       }
@@ -1311,7 +1317,7 @@ export class MatchRoom extends Room<MatchState> {
   private weaponOf(shipId: string): WeaponState {
     let w = this.weapons.get(shipId);
     if (!w) {
-      w = { weapon: "missile", offset: 0, target: "", locked: false };
+      w = { weapon: "missile", offset: 0, target: "", locked: false, offset2: 0, locked2: false };
       this.weapons.set(shipId, w);
     }
     return w;
@@ -1329,6 +1335,8 @@ export class MatchRoom extends Room<MatchState> {
     w.offset = 0;
     w.target = "";
     w.locked = false;
+    w.offset2 = 0;
+    w.locked2 = false;
   }
 
   /**
@@ -1377,11 +1385,27 @@ export class MatchRoom extends Room<MatchState> {
         const range = w.weapon === "laser" ? LASER_RANGE : MISSILE_RANGE;
         target = pickTarget(ship, this.aimCandidates(ship, levelOfLayer(ship.layer)), range);
       }
-      const desired = target ? desiredOffset(ship, target, w.weapon) : 0;
-      w.offset = gimbal > 0 ? slewAim(w.offset, desired, gimbal, slew, dt) : 0;
       w.target = target?.id ?? "";
-      w.locked = !!target && w.weapon === "laser" &&
-        Math.abs(desired) <= gimbal && Math.abs(desired - w.offset) <= LASER_LOCK_TOLERANCE;
+      if (w.weapon !== "laser") {
+        const desired = target ? desiredOffset(ship, target, w.weapon) : 0;
+        w.offset = gimbal > 0 ? slewAim(w.offset, desired, gimbal, slew, dt) : 0;
+        w.locked = false;
+        w.offset2 = 0;
+        w.locked2 = false;
+        continue;
+      }
+      // LASER DUPLO: cada canhão mira do PRÓPRIO ponto da asa, gira no próprio
+      // ritmo e trava sozinho
+      const gun = (i: number, offset: number): [number, boolean] => {
+        if (!target) return [slewAim(offset, 0, gimbal, LASER_SLEWS[i], dt), false];
+        const m = laserMount(ship.angle, i);
+        const from = { ...ship, x: ship.x + m.dx, y: ship.y + m.dy };
+        const desired = desiredOffset(from, target, "laser");
+        const next = slewAim(offset, desired, gimbal, LASER_SLEWS[i], dt);
+        return [next, Math.abs(desired) <= gimbal && Math.abs(desired - next) <= LASER_LOCK_TOLERANCE];
+      };
+      [w.offset, w.locked] = gun(0, w.offset);
+      [w.offset2, w.locked2] = gun(1, w.offset2);
     }
   }
 
@@ -1405,20 +1429,29 @@ export class MatchRoom extends Room<MatchState> {
     const w = this.weaponOf(shipId);
     const level = levelOfLayer(ship.layer);
     if (w.weapon === "laser") {
-      if (!w.locked || ship.fireCooldown > 0) return;
+      // cada canhão TRAVADO dispara o seu feixe, da sua asa
+      const guns = [w.locked, w.locked2];
+      if (!guns.some(Boolean) || ship.fireCooldown > 0) return;
       const tp = this.targetPos(w.target);
       if (!tp) return;
       ship.fireCooldown = LASER_COOLDOWN;
-      this.broadcast(MSG_FX, {
-        kind: "laser", sx: ship.sx, sy: ship.sy, x: ship.x, y: ship.y,
-        tsx: tp.sx, tsy: tp.sy, tx: tp.x, ty: tp.y,
-      } satisfies FxEvent);
-      const victim = this.sim.ships.get(w.target);
-      if (victim) this.damageShip([w.target, victim], LASER_DAMAGE);
-      else {
-        const st = this.sim.structures.get(w.target);
-        if (st) this.damageStructure(st, LASER_DAMAGE);
-      }
+      const on = this.sim.ships.has(w.target) ? "ship" as const : "structure" as const;
+      guns.forEach((locked, i) => {
+        if (!locked) return;
+        const m = laserMount(ship.angle, i);
+        const from = { sx: ship.sx, sy: ship.sy, x: ship.x + m.dx, y: ship.y + m.dy };
+        normalizePos(from);
+        this.broadcast(MSG_FX, {
+          kind: "laser", ...from,
+          tsx: tp.sx, tsy: tp.sy, tx: tp.x, ty: tp.y, src: shipId, on, id: w.target,
+        } satisfies FxEvent);
+        const victim = this.sim.ships.get(w.target);
+        if (victim) this.damageShip([w.target, victim], LASER_DAMAGE);
+        else {
+          const st = this.sim.structures.get(w.target);
+          if (st) this.damageStructure(st, LASER_DAMAGE);
+        }
+      });
       return;
     }
     let speed: number;
@@ -2324,6 +2357,8 @@ export class MatchRoom extends Room<MatchState> {
         s.aimOffset = w.offset;
         s.aimTarget = w.target;
         s.aimLocked = w.locked;
+        s.aimOffset2 = w.offset2;
+        s.aimLocked2 = w.locked2;
       }
     }
     // estruturas

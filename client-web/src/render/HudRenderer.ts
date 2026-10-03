@@ -160,6 +160,8 @@ export class HudRenderer {
    * centro da tela — `topPct` vem do GameScene a cada quadro.
    */
   private reticle: HTMLDivElement | null = null;
+  /** retículos dos canhões do laser (cockpit em tela cheia) */
+  private gunReticles: HTMLDivElement[] = [];
 
   setReticle(visible: boolean, topPct = 50): void {
     if (!this.reticle) {
@@ -175,6 +177,34 @@ export class HudRenderer {
     }
     this.reticle.style.display = visible ? "block" : "none";
     this.reticle.style.top = `${topPct}%`;
+  }
+
+  /**
+   * Retículos MENORES dos canhões do laser, em % da tela: saem do centro e
+   * andam até o alvo junto com a mira de cada canhão; travado, fica vermelho.
+   * null esconde (míssil e mina: só o crosshair central).
+   */
+  setGunReticles(guns: ReadonlyArray<{ xPct: number; yPct: number; locked: boolean } | null> | null): void {
+    const list = guns ?? [];
+    while (this.gunReticles.length < list.length) {
+      const r = document.createElement("div");
+      r.style.cssText =
+        "position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;pointer-events:none;" +
+        "transform:rotate(45deg);box-sizing:border-box;border:2px solid;";
+      this.root.appendChild(r);
+      this.gunReticles.push(r);
+    }
+    this.gunReticles.forEach((r, i) => {
+      const g = list[i];
+      if (!g) {
+        r.style.display = "none";
+        return;
+      }
+      r.style.display = "block";
+      r.style.left = `${g.xPct}%`;
+      r.style.top = `${g.yPct}%`;
+      r.style.borderColor = g.locked ? cssColor(Palette.fx.aimLock, 0.95) : cssColor(Palette.fx.aim, 0.8);
+    });
   }
 
   initCockpitFrame(view: { left: number; bottom: number; width: number; height: number }): void {
@@ -346,7 +376,7 @@ export class HudRenderer {
       (ship.kind === "attack"
         ? " · [1/2/3] WEAPON · [SPACE] FIRE"
         : "") +
-      " · [V] cockpit view · mouseroll/+/- zoom";
+      " · [V] cockpit view · [N] sound · mouseroll/+/- zoom";
     return [line1, line2, ctx.prodLine, ctx.taxiLine].filter(Boolean).join("\n");
   }
 

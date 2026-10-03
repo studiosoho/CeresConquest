@@ -229,10 +229,11 @@ describe("armas na sala", () => {
     run(r, off / LASER_SLEW); // tempo de sobra para chegar
     expect(w.locked).toBe(true);
     r.tryFire("p1");
-    expect(b.hp).toBe(SHIP_HP_MAX - LASER_DAMAGE);
+    // um feixe por canhão travado (laser duplo — ver "laser duplo" abaixo)
     const beams = fx.filter((e) => e.kind === "laser");
-    expect(beams.length).toBe(1);
-    expect(Math.hypot(beams[0].tx! - b.x, beams[0].ty! - b.y)).toBeLessThan(1e-3);
+    expect(beams.length).toBeGreaterThanOrEqual(1);
+    expect(b.hp).toBe(SHIP_HP_MAX - beams.length * LASER_DAMAGE);
+    for (const beam of beams) expect(Math.hypot(beam.tx! - b.x, beam.ty! - b.y)).toBeLessThan(1e-3);
   });
 
   it("laser não alcança além do alcance, nem fora do gimbal", () => {
@@ -347,5 +348,36 @@ describe("velocidade final", () => {
     // a aceleração vem de empuxo/massa, que não mudaram (referência: builder)
     expect(shipPhysics("builder").thrust / shipPhysics("builder").mass).toBe(1200);
     expect(MISSILE_GIMBAL).toBeLessThan(LASER_GIMBAL);
+  });
+});
+
+describe("laser duplo", () => {
+  it("cada canhão trava no seu tempo; travados, os dois disparam, cada um da sua asa", () => {
+    const r = makeRoom();
+    const fx = spy(r);
+    const { p, angle } = clearLane(2500);
+    const [id, a] = ship(r, "p1", "attack", p);
+    a.angle = angle;
+    const off = 0.4;
+    const [, b] = ship(r, "p2", "attack", at(p, Math.cos(angle + off) * 2000, Math.sin(angle + off) * 2000), false);
+    r.trySelectWeapon("p1", "laser");
+    const w = r.weapons.get(id)! as WeaponState & { offset2: number; locked2: boolean };
+    // o 1º canhão (mais rápido) trava antes do 2º
+    let t = 0;
+    while (!w.locked && t < 3) { r.tick(DT); t += DT; }
+    expect(w.locked).toBe(true);
+    expect(w.locked2).toBe(false);
+    expect(w.offset2).toBeLessThan(w.offset);
+    while (!w.locked2 && t < 3) { r.tick(DT); t += DT; }
+    expect(w.locked2).toBe(true);
+
+    fx.length = 0;
+    a.fireCooldown = 0;
+    r.tryFire("p1");
+    const beams = fx.filter((e) => e.kind === "laser");
+    expect(beams.length).toBe(2);
+    expect(b.hp).toBe(SHIP_HP_MAX - 2 * LASER_DAMAGE);
+    // os feixes saem de pontos diferentes (as duas asas), ~44 u um do outro
+    expect(Math.hypot(beams[0].x - beams[1].x, beams[0].y - beams[1].y)).toBeCloseTo(44, 0);
   });
 });

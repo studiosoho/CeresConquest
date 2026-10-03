@@ -68,6 +68,13 @@ export interface ShipRenderData {
    * menor na superfície, do tamanho da vaga pousada). Ausente = a da classe.
    */
   scale?: number;
+  /**
+   * Profundidade de cena da malha. Ausente = a camada de voo. A nave
+   * ATRACADA assenta no chão da plataforma: numa plataforma de Ceres (esfera
+   * de 40 km) o chão fica muito abaixo da camada de voo, e no cockpit a nave
+   * aparecia flutuando sobre a vaga.
+   */
+  z?: number;
 }
 
 interface MeshEntry {
@@ -76,6 +83,8 @@ interface MeshEntry {
   visible: boolean;
   /** escala de exibição desta nave (ver ShipRenderData.scale) */
   scale: number | undefined;
+  /** profundidade padrão (camada de voo; a nave própria fica um pouco à frente) */
+  baseZ: number;
 }
 
 export class ShipRenderer {
@@ -116,10 +125,10 @@ export class ShipRenderer {
     const instance = this.factory.createShip(data.kind, data.tint);
     // camada de voo: à frente do pior avanço de uma rocha em balanço
     instance.setDepthBias(SHIP_LAYER_Z);
-    const entry: MeshEntry = { instance, kind: data.kind, visible: true, scale: undefined };
+    const entry: MeshEntry = { instance, kind: data.kind, visible: true, scale: undefined, baseZ: SHIP_LAYER_Z };
     this.entries.set(id, entry);
     // troca de classe recria a malha — o destaque de nave própria persiste
-    if (id === this.topId) this.applyTop(instance);
+    if (id === this.topId) this.applyTop(entry);
     instance.setPartsVisible(ShipAB.hull, ShipAB.livery);
     this.applyData(entry, data);
   }
@@ -149,8 +158,8 @@ export class ShipRenderer {
   /** Destaca a nave (própria) por cima das demais. */
   bringToTop(id: string): void {
     this.topId = id;
-    const instance = this.entries.get(id)?.instance;
-    if (instance) this.applyTop(instance);
+    const entry = this.entries.get(id);
+    if (entry) this.applyTop(entry);
   }
 
   /**
@@ -184,7 +193,9 @@ export class ShipRenderer {
     return this.entries.get(id)?.scale ?? this.scaleByKind[kind];
   }
 
-  private applyTop(instance: ShipMeshInstance): void {
+  private applyTop(entry: MeshEntry): void {
+    const { instance } = entry;
+    entry.baseZ = SHIP_TOP_LAYER_Z;
     instance.setDepthBias(SHIP_TOP_LAYER_Z);
     // some da câmera de cockpit: o próprio casco colado no olho só suja
     instance.setLayerMask(MASK_MAIN_ONLY);
@@ -222,6 +233,7 @@ export class ShipRenderer {
     instance.root.position.x = p.x;
     instance.root.position.y = p.y;
     instance.root.rotation.z = toSceneAngle(data.angle);
+    instance.root.position.z = data.z ?? entry.baseZ;
     instance.setTint(data.tint);
     entry.scale = data.scale;
     if (entry.visible !== data.visible) {
