@@ -11,8 +11,10 @@ import {
   // MSG_EXPAND,
   MSG_CARGO,
   MSG_FIRE,
+  MSG_WEAPON,
   MSG_FX,
   MSG_UPGRADE,
+  MSG_TURRET,
   TICK_RATE,
   SIM_MAX_DT,
   SECTOR_SIZE,
@@ -41,16 +43,35 @@ import {
   DOCK_RANGE,
   BUILD_ASTEROID_RANGE,
   MINING_RATE_BY_KIND,
-  BULLET_SPEED,
-  BULLET_RANGE,
-  BULLET_RADIUS,
-  BULLET_DAMAGE,
-  BULLET_COOLDOWN,
-  GRENADE_SPEED,
-  GRENADE_PROX_RADIUS,
-  GRENADE_BLAST_RADIUS,
-  GRENADE_DAMAGE,
-  GRENADE_COOLDOWN,
+  WEAPON_KINDS,
+  MISSILE_SPEED,
+  MISSILE_RANGE,
+  MISSILE_RADIUS,
+  MISSILE_DAMAGE,
+  MISSILE_COOLDOWN,
+  MISSILE_AMMO_MAX,
+  LASER_RANGE,
+  LASER_DAMAGE,
+  LASER_COOLDOWN,
+  LASER_LOCK_TOLERANCE,
+  MINE_SPEED,
+  MINE_MAX_DISTANCE,
+  MINE_TRIGGER_RADIUS,
+  MINE_BLAST_RADIUS,
+  MINE_DAMAGE,
+  MINE_COOLDOWN,
+  MINE_AMMO_MAX,
+  MINE_LIFETIME,
+  gimbalOf,
+  slewAim,
+  TURRET_MAX,
+  TURRET_COST,
+  TURRET_BUILD_TIME,
+  TURRET_RANGE,
+  TURRET_DAMAGE,
+  TURRET_COOLDOWN,
+  BUILDER_ORE_CAP,
+  turretWorldPos,
   ATTACK_ZONE_MARGIN,
   CERES_RADIUS,
   SHIP_RADIUS,
@@ -73,13 +94,17 @@ import {
   type ProduceCommand,
   type TaxiCommand,
   type LandActionCommand,
-  type FireCommand,
+  type WeaponCommand,
+  type WeaponKind,
   type FxEvent,
   type FxKind,
   type WorldPos,
 } from "@ceres/shared";
 import {
   SimWorld,
+  attackModeInput,
+  faceInput,
+  seekInput,
   findClearSpawn,
   sectorAsteroids,
   beginLayerChange,
@@ -89,23 +114,65 @@ import {
   type Structure,
 } from "@ceres/sim-core";
 import { MatchState, ShipSchema, StructureSchema, PlayerSchema, ProjectileSchema } from "../schema/State";
-import { canFire, collisionDamage, hittableLevel, levelOfLayer, splitDamage, type CombatLevel } from "../combat";
+import {
+  canFire,
+  collisionDamage,
+  desiredOffset,
+  hittableLevel,
+  levelOfLayer,
+  pickTarget,
+  splitDamage,
+  type AimTarget,
+  type CombatLevel,
+} from "../combat";
 import { mapSpawns, type SpawnStrategy } from "../spawn";
-import { computeBotInput, computeTaxiInput, makeBotState, type BotState } from "../bots";
+import {
+  BOT_AIM_TOLERANCE,
+  BOT_AMMO,
+  BOT_BUILD_INTERVAL,
+  BOT_FIRE_INTERVAL,
+  BOT_FLEET_MAX,
+  BOT_OWNER,
+  BOT_RELOAD_TIME,
+  BOT_WAVE_SIZE,
+  computeBotInput,
+  computeTaxiInput,
+  makeBotState,
+  type BotState,
+} from "../bots";
 import { makeSpiderState, stepSpider, type SpiderState } from "../spiders";
 
-/** Projétil em voo; `level` é o nível de combate em que foi disparado (combat.ts). */
+/**
+ * Projétil em voo — míssil ou mina; `level` é o nível de combate em que foi
+ * disparado (combat.ts). A mina guarda o ponto de lançamento (`origin`):
+ * para a MINE_MAX_DISTANCE dele, ou antes, no asteroide em que bater, e
+ * então ARMA; `age` conta o tempo desde que armou.
+ */
 interface Projectile {
-  kind: "bullet" | "grenade";
+  kind: "missile" | "mine";
   owner: string;
   level: CombatLevel;
   sx: number; sy: number; x: number; y: number;
   vx: number; vy: number;
   traveled: number;
+  origin?: WorldPos;
+  armed?: boolean;
+  age?: number;
 }
 
-/** Nº de jogadores-teste autônomos (bots) por padrão. */
-const DEFAULT_BOTS = 30;
+/**
+ * Estado do armamento de uma nave de ataque: arma selecionada e a mira do
+ * computador de tiro (desvio em volta do nariz, alvo, travada).
+ */
+interface WeaponState {
+  weapon: WeaponKind;
+  offset: number;
+  target: string;
+  locked: boolean;
+}
+
+/** Frota máxima de bots por padrão (QG dos bots em Ceres; 0 = sem bots). */
+const DEFAULT_BOTS = BOT_FLEET_MAX;
 
 export interface MatchOptions {
   maxPlayers?: number;
@@ -137,6 +204,11 @@ export class MatchRoom extends Room<MatchState> {
   private spawns: ReturnType<typeof mapSpawns> = [];
   private spawnIndex = 0;
   private bots = new Map<string, BotState>();
+  /** QG dos bots em Ceres ("" = não há, ou foi destruído), a frota máxima e o relógio da produção */
+  private botHqId = "";
+  private botFleetMax = 0;
+  private botBuildTimer = BOT_BUILD_INTERVAL;
+  private botSeq = 0;
   private structSeq = 0;
   private shipSeq = 0;
   /** nave que cada jogador pilota (sessionId → shipId) */
@@ -154,6 +226,16 @@ export class MatchRoom extends Room<MatchState> {
   private elapsed = 0;
   /** projéteis ativos (id → estado) */
   private projSeq = 0;
+  /** turretas prontas por estrutura (id → quantidade) */
+  private turrets = new Map<string, number>();
+  /** obra de turreta em curso por estrutura: o builder travado e o progresso (0..1) */
+  private turretJobs = new Map<string, { shipId: string; progress: number }>();
+  /** recarga de cada turreta, por estrutura (s até o próximo tiro) */
+  private turretCooldowns = new Map<string, number[]>();
+  /** armamento por nave de ataque (id da nave → estado; criado sob demanda) */
+  private weapons = new Map<string, WeaponState>();
+  /** último comando CRU de cada nave de jogador (o modo ataque o traduz a cada tick) */
+  private rawInputs = new Map<string, ShipInput>();
   private projectiles = new Map<string, Projectile>();
   /**
    * Sorteios do combate (divisão do dano entre estação e hangar), semeados
@@ -170,7 +252,7 @@ export class MatchRoom extends Room<MatchState> {
 
   onCreate(options: MatchOptions = {}) {
     this.maxClients = options.maxPlayers ?? 12;
-    const botCount = options.bots ?? DEFAULT_BOTS;
+    const botCount = Math.max(0, Math.min(HQ_SHIP_BAYS, options.bots ?? DEFAULT_BOTS));
     const radiusSectors = options.mapSize === "large" ? 50
       : options.mapSize === "medium" ? 20 : 8;
     const seed = options.worldSeed ?? (Math.random() * 0xffffffff) >>> 0;
@@ -178,7 +260,7 @@ export class MatchRoom extends Room<MatchState> {
     this.sim = new SimWorld(seed);
     this.combatRng = mulberry32((seed ^ 0x5eedc0b7) >>> 0);
     // spawns em setores distintos do cinturão dentro da arena do mapa
-    this.spawns = mapSpawns(seed, radiusSectors, this.maxClients + botCount);
+    this.spawns = mapSpawns(seed, radiusSectors, this.maxClients);
 
     // fronteira circular: centrada em Ceres, raio pelo tamanho do mapa
     const base = ceresPosition(seed);
@@ -193,17 +275,16 @@ export class MatchRoom extends Room<MatchState> {
     this.state.mapCenterSy = base.sy;
     this.state.mapRadius = radiusUnits;
 
-    // popula a partida com jogadores-teste autônomos (attack neutros)
-    for (let i = 0; i < botCount; i++) {
-      const id = `bot-${i}`;
-      const ship = this.spawnShip(id, this.spawns[this.maxClients + i], "", "attack");
-      this.state.ships.set(id, this.mirrorSpawn(ship));
-      this.bots.set(id, makeBotState());
-    }
+    // QG dos bots numa plataforma de Ceres: produz a frota (ver bots.ts)
+    this.botFleetMax = botCount;
+    if (botCount > 0) this.createBotHq();
 
     this.onMessage(MSG_INPUT, (client: Client, input: ShipInput) => {
       const active = this.activeShip.get(client.sessionId);
-      if (active) this.sim.setInput(active, input);
+      if (active) {
+        this.rawInputs.set(active, input);
+        this.sim.setInput(active, input);
+      }
     });
 
     this.onMessage(MSG_BUILD, (client: Client, cmd: BuildCommand) => {
@@ -240,12 +321,20 @@ export class MatchRoom extends Room<MatchState> {
       this.tryCargo(client.sessionId);
     });
 
-    this.onMessage(MSG_FIRE, (client: Client, cmd: FireCommand) => {
-      this.tryFire(client.sessionId, cmd?.kind);
+    this.onMessage(MSG_FIRE, (client: Client) => {
+      this.tryFire(client.sessionId);
+    });
+
+    this.onMessage(MSG_WEAPON, (client: Client, cmd: WeaponCommand) => {
+      this.trySelectWeapon(client.sessionId, cmd?.weapon);
     });
 
     this.onMessage(MSG_UPGRADE, (client: Client) => {
       this.tryUpgrade(client.sessionId);
+    });
+
+    this.onMessage(MSG_TURRET, (client: Client) => {
+      this.tryBuildTurret(client.sessionId);
     });
 
     // metadata exibida na lista do lobby (título da sala)
@@ -495,6 +584,8 @@ export class MatchRoom extends Room<MatchState> {
     const ship = this.activeShipOf(sessionId);
     const shipId = this.activeShip.get(sessionId) ?? "";
     if (!ship || ship.stored || ship.autoMining || ship.taxiTo) return;
+    // builder construindo turreta: travado na vaga até o fim da obra
+    if (this.buildingTurret(shipId)) return;
 
     // pouso em andamento ou transição de camada: [F] espera terminar
     if (ship.landingPhase === "landing" || ship.landingPhase === "liftoff" || ship.layerTo) return;
@@ -709,11 +800,18 @@ export class MatchRoom extends Room<MatchState> {
     // cada nave fica na PRÓPRIA vaga: a ativa, pousada na dela, entra no
     // hangar ali mesmo; a escolhida sai do hangar para a placa da vaga dela
     const [nid, next] = pick;
-    active.stored = true;
-    active.anchored = false;
-    active.hqId = struct.id;
-    if (active.bay < 0) active.bay = this.firstFreeShipBay(struct, active.kind);
-    this.sim.setInput(this.activeShip.get(sessionId)!, { thrust: false, turn: 0, mine: false });
+    const activeId = this.activeShip.get(sessionId)!;
+    if (this.buildingTurret(activeId)) {
+      // builder em obra: fica na vaga, trabalhando; vai para o hangar
+      // sozinho quando a turreta ficar pronta (stepTurretJobs)
+      active.mining = false;
+    } else {
+      active.stored = true;
+      active.anchored = false;
+      active.hqId = struct.id;
+      if (active.bay < 0) active.bay = this.firstFreeShipBay(struct, active.kind);
+    }
+    this.sim.setInput(activeId, { thrust: false, turn: 0, mine: false });
 
     this.deployFromHangar(next, struct);
     this.activeShip.set(sessionId, nid);
@@ -902,43 +1000,494 @@ export class MatchRoom extends Room<MatchState> {
     ship.mining = !ship.mining;
   }
 
-  /** Dispara um projétil da nave de ataque (perfurante ou granada). */
-  private tryFire(sessionId: string, kind?: "bullet" | "grenade"): void {
+  // ── turretas (turrets.ts) ──────────────────────────────────────────
+
+  /** O builder `shipId` está construindo uma turreta (e por isso travado na vaga)? */
+  private buildingTurret(shipId: string): boolean {
+    for (const job of this.turretJobs.values()) if (job.shipId === shipId) return true;
+    return false;
+  }
+
+  /**
+   * [E] no builder atracado: enche o PORÃO de minério — do estoque da estação
+   * de mineração, ou da carteira na base inicial e no QG (o minério já
+   * "entregue"). É desse porão que sai o custo das turretas.
+   */
+  private loadBuilderOre(sessionId: string, ship: ShipState): void {
+    if (!ship.anchored) return;
+    const struct = this.sim.structures.get(ship.hqId);
+    if (!struct || struct.owner !== sessionId) return;
+    const space = BUILDER_ORE_CAP - (ship.cargoKind === "ore" ? ship.cargoAmount : 0);
+    if (space <= 0 || (ship.cargoKind !== "" && ship.cargoKind !== "ore")) return;
+    let moved = 0;
+    if (struct.type === "miningStation") {
+      moved = Math.min(space, struct.oreStore);
+      struct.oreStore -= moved;
+    } else if (struct.type === "initialBase" || struct.type === "hq") {
+      moved = Math.min(space, Math.floor(this.sim.getOre(sessionId)));
+      if (moved > 0) this.sim.spendOre(sessionId, moved);
+    }
+    if (moved <= 0) return;
+    ship.cargoKind = "ore";
+    ship.cargoAmount = (ship.cargoAmount || 0) + moved;
+    console.log(`[room] ${sessionId} builder carregou ${Math.round(moved)} de minério em ${struct.id}`);
+  }
+
+  /**
+   * [B] no builder atracado numa estrutura PRÓPRIA: começa uma turreta no
+   * próximo lugar livre, pagando TURRET_COST do porão. Uma obra por vez por
+   * estrutura; o builder fica travado na vaga até o fim.
+   */
+  private tryBuildTurret(sessionId: string): void {
+    const shipId = this.activeShip.get(sessionId);
     const ship = this.activeShipOf(sessionId);
+    if (!shipId || !ship || ship.kind !== "builder" || !ship.anchored || ship.stored) return;
+    const struct = this.sim.structures.get(ship.hqId);
+    if (!struct || struct.owner !== sessionId) return;
+    if (this.turretJobs.has(struct.id) || this.buildingTurret(shipId)) return;
+    if ((this.turrets.get(struct.id) ?? 0) >= TURRET_MAX) return;
+    if (ship.cargoKind !== "ore" || ship.cargoAmount < TURRET_COST) return;
+    ship.cargoAmount -= TURRET_COST;
+    if (ship.cargoAmount <= 0) { ship.cargoKind = ""; ship.cargoAmount = 0; }
+    ship.mining = false;
+    this.turretJobs.set(struct.id, { shipId, progress: 0 });
+    console.log(`[room] ${sessionId} começou turreta ${(this.turrets.get(struct.id) ?? 0) + 1} em ${struct.id}`);
+  }
+
+  /**
+   * Avança as obras. O builder tem de continuar atracado na estrutura — se
+   * ele explodiu, a obra se perde (o minério já foi gasto). Pronta, a
+   * turreta entra em serviço e o builder destrava; se o jogador já estava
+   * em outra nave, o builder entra no hangar (senão ficaria órfão na vaga).
+   */
+  private stepTurretJobs(dt: number): void {
+    for (const [structId, job] of [...this.turretJobs]) {
+      const ship = this.sim.ships.get(job.shipId);
+      if (!ship || !ship.anchored || ship.hqId !== structId) {
+        this.turretJobs.delete(structId);
+        continue;
+      }
+      job.progress = Math.min(1, job.progress + dt / TURRET_BUILD_TIME);
+      if (job.progress < 1) continue;
+      this.turretJobs.delete(structId);
+      this.turrets.set(structId, (this.turrets.get(structId) ?? 0) + 1);
+      const piloted = [...this.activeShip.values()].includes(job.shipId);
+      if (!piloted) {
+        ship.anchored = false;
+        ship.stored = true;
+      }
+      console.log(`[room] turreta pronta em ${structId} (${this.turrets.get(structId)}/${TURRET_MAX})`);
+    }
+  }
+
+  /**
+   * DEFESA AUTOMÁTICA: cada turreta pronta atira na nave inimiga mais perto
+   * dela entre as que estão em MODO ATAQUE contra a estrutura (e no nível
+   * dela — em transição ninguém é atingido), dentro de TURRET_RANGE.
+   */
+  private stepTurrets(dt: number): void {
+    for (const [structId, count] of this.turrets) {
+      const st = this.sim.structures.get(structId);
+      if (!st || count <= 0) continue;
+      let cds = this.turretCooldowns.get(structId);
+      if (!cds) this.turretCooldowns.set(structId, (cds = []));
+      const attackers: Array<[string, ShipState]> = [];
+      for (const [id, target] of this.attackTargets) {
+        if (target.structId !== structId) continue;
+        const s = this.sim.ships.get(id);
+        if (s && s.owner !== st.owner && hittableLevel(s) === "surface") attackers.push([id, s]);
+      }
+      for (let i = 0; i < count; i++) {
+        cds[i] = Math.max(0, (cds[i] ?? 0) - dt);
+        if (cds[i] > 0 || attackers.length === 0) continue;
+        const from = turretWorldPos(st, i);
+        let best: [string, ShipState] | null = null;
+        let bd = TURRET_RANGE;
+        for (const a of attackers) {
+          if (!this.sim.ships.has(a[0])) continue;
+          const d = dist(from, a[1]);
+          if (d <= bd) { bd = d; best = a; }
+        }
+        if (!best) continue;
+        cds[i] = TURRET_COOLDOWN;
+        const [, t] = best;
+        this.broadcast(MSG_FX, {
+          kind: "laser", sx: from.sx, sy: from.sy, x: from.x, y: from.y,
+          tsx: t.sx, tsy: t.sy, tx: t.x, ty: t.y,
+        } satisfies FxEvent);
+        this.damageShip(best, TURRET_DAMAGE);
+      }
+    }
+  }
+
+  // ── frota dos bots (bots.ts) ───────────────────────────────────────
+
+  /**
+   * Ergue o QG dos bots numa plataforma de Ceres, de frente para fora do
+   * planeta (as vagas olham para o espaço). Só ele produz bots.
+   */
+  private createBotHq(): void {
+    const seed = this.sim.seed;
+    const pad = ceresPlatforms(seed)[0];
+    if (!pad) return;
+    const pos = ceresPlatformPos(seed, pad);
+    const { dx, dy } = relVec(ceresPosition(seed), pos);
+    const angle = Math.atan2(dy, dx);
+    const id = `st-${this.structSeq++}`;
+    this.sim.addStructure({
+      id, type: "hq", owner: BOT_OWNER, angle,
+      sx: pos.sx, sy: pos.sy, x: pos.x, y: pos.y,
+      asteroidId: pad.id, asteroidClass: asteroidClassOf(pad.radius),
+      shipBays: HQ_SHIP_BAYS, expandedBays: HQ_EXPANDED_BAYS, spiderBays: 0,
+      nextShipBay: 0, nextSpiderBay: 0, oreStore: 0, rationStore: 0,
+    });
+    const ss = new StructureSchema();
+    ss.stype = "hq"; ss.owner = BOT_OWNER;
+    ss.sx = pos.sx; ss.sy = pos.sy; ss.x = pos.x; ss.y = pos.y;
+    ss.angle = angle; ss.asteroidId = pad.id; ss.asteroidClass = asteroidClassOf(pad.radius);
+    ss.shipBays = HQ_SHIP_BAYS; ss.expandedBays = HQ_EXPANDED_BAYS;
+    this.state.structures.set(id, ss);
+    this.botHqId = id;
+    console.log(`[room] QG dos bots em ${pad.id} (frota máx. ${this.botFleetMax})`);
+  }
+
+  /** Produz um bot novo, atracado numa vaga livre do QG e já armado. */
+  private spawnBot(): string | null {
+    const hq = this.sim.structures.get(this.botHqId);
+    if (!hq) return null;
+    const bay = this.firstFreeShipBay(hq, "attack");
+    if (bay < 0) return null;
+    const id = `bot-${this.botSeq++}`;
+    const ship = this.sim.addShip(id, hq, BOT_OWNER, "attack");
+    this.bots.set(id, makeBotState());
+    ship.bay = bay;
+    this.dockAtBay(ship, hq);
+    ship.ammo = BOT_AMMO;
+    ship.grenadeAmmo = 0;
+    this.state.ships.set(id, this.mirrorSpawn(ship));
+    console.log(`[room] QG dos bots produziu ${id} (${this.bots.size}/${this.botFleetMax})`);
+    return id;
+  }
+
+  /** Um bot a cada BOT_BUILD_INTERVAL, enquanto o QG existir e a frota não estiver cheia. */
+  private stepBotProduction(dt: number): void {
+    if (!this.botHqId || this.bots.size >= this.botFleetMax) {
+      this.botBuildTimer = BOT_BUILD_INTERVAL;
+      return;
+    }
+    this.botBuildTimer -= dt;
+    if (this.botBuildTimer > 0) return;
+    this.botBuildTimer = BOT_BUILD_INTERVAL;
+    this.spawnBot();
+  }
+
+  /**
+   * ATAQUE EM ONDA: com BOT_WAVE_SIZE bots prontos no QG (atracados,
+   * recarregados e armados) e algo a atacar, os primeiros BOT_WAVE_SIZE saem
+   * juntos. Os demais prontos esperam o próximo grupo.
+   */
+  private launchWave(): void {
+    const hq = this.sim.structures.get(this.botHqId);
+    if (!hq) return;
+    const ready: Array<[string, ShipState, BotState]> = [];
+    for (const [id, bot] of this.bots) {
+      const s = this.sim.ships.get(id);
+      if (!s || bot.phase !== "reload" || bot.reload > 0) continue;
+      if (!s.anchored || s.hqId !== hq.id || s.ammo < BOT_AMMO) continue;
+      ready.push([id, s, bot]);
+    }
+    if (ready.length < BOT_WAVE_SIZE || !this.raidTargetOf(ready[0][1])) return;
+    ready.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    for (const [, s, bot] of ready.slice(0, BOT_WAVE_SIZE)) {
+      this.liftOff(s);
+      bot.phase = "raid";
+    }
+    console.log(`[room] QG dos bots lançou um grupo de ${BOT_WAVE_SIZE}`);
+  }
+
+  /** Estrutura de jogador mais perto do bot (em qualquer ponto da arena). */
+  private raidTargetOf(ship: ShipState): Structure | null {
+    let best: Structure | null = null;
+    let bd = Infinity;
+    for (const st of this.sim.structures.values()) {
+      if (st.owner === ship.owner) continue;
+      const d = dist(ship, st);
+      if (d < bd) { bd = d; best = st; }
+    }
+    return best;
+  }
+
+  /** Sai do modo ataque (sobe ao cruzeiro). */
+  private leaveAttack(id: string, ship: ShipState): void {
+    if (ship.layer !== "cruise" || ship.layerTo) beginLayerChange(ship, "cruise");
+    this.attackTargets.delete(id);
+  }
+
+  /** IA de um bot: o ciclo ataque → retorno → recarga (ver bots.ts). */
+  private botInput(id: string, ship: ShipState, bot: BotState, dt: number): ShipInput {
+    const idle: ShipInput = { thrust: false, turn: 0, mine: false };
+    const hq = this.sim.structures.get(this.botHqId);
+    // pousando no QG: a sala conduz a animação
+    if (ship.landingPhase !== "") return idle;
+
+    if (bot.phase === "reload") {
+      if (!ship.anchored || !hq || ship.hqId !== hq.id) {
+        // largado fora do QG (o QG caiu): ataca com o que tiver
+        bot.phase = ship.ammo > 0 ? "raid" : "return";
+      } else {
+        // recarrega e espera na vaga — quem decide a saída é launchWave
+        bot.reload = Math.max(0, bot.reload - dt);
+        if (bot.reload <= 0) ship.ammo = BOT_AMMO;
+        return idle;
+      }
+    }
+
+    if (bot.phase === "raid") {
+      const target = ship.ammo > 0 ? this.raidTargetOf(ship) : null;
+      if (!target) {
+        this.leaveAttack(id, ship);
+        bot.phase = "return";
+      } else {
+        return this.raidInput(id, ship, bot, target);
+      }
+    }
+
+    // "return": volta ao QG e pousa numa vaga livre
+    if (!hq) return computeBotInput(ship, this.sim, bot, dt); // sem QG: vagueia
+    if (ship.layerTo) return idle;
+    if (ship.layer !== "cruise") {
+      this.leaveAttack(id, ship);
+      return idle;
+    }
+    if (dist(ship, hq) <= DOCK_RANGE && this.landAtBay(ship, hq)) {
+      bot.phase = "reload";
+      bot.reload = BOT_RELOAD_TIME;
+      return idle;
+    }
+    return seekInput(ship, hq, { arriveRadius: DOCK_RANGE * 0.5 });
+  }
+
+  /**
+   * Fase de ataque: voa em cruzeiro até o alvo, desce ao MODO ATAQUE dentro
+   * da zona dele, encara o prédio e dispara (a mira automática acerta).
+   */
+  private raidInput(id: string, ship: ShipState, bot: BotState, target: Structure): ShipInput {
+    const radius = this.siteRadius(target) ?? 400;
+    const d = dist(ship, target);
+    const { dx, dy } = relVec(ship, target);
+    const facing = Math.atan2(dy, dx);
+    if (ship.layerTo) return faceInput(ship, facing);
+    if (ship.layer === "cruise") {
+      if (d <= radius + ATTACK_ZONE_MARGIN * 0.5) {
+        beginLayerChange(ship, "attack");
+        this.attackTargets.set(id, { structId: target.id, radius });
+        return faceInput(ship, facing);
+      }
+      return seekInput(ship, target, { arriveRadius: radius + ATTACK_ZONE_MARGIN * 0.3 });
+    }
+    if (ship.layer === "attack") {
+      if (!this.attackTargets.has(id)) this.attackTargets.set(id, { structId: target.id, radius });
+      // circula a estação de nariz travado nela (mesma tradução do jogador)
+      const orbit = attackModeInput(ship, target, this.attackHoldRadius(radius), {
+        thrust: false, turn: bot.orbitDir, mine: false,
+      });
+      // só atira com a mira ASSENTADA no alvo: com 2 mísseis por saída, um
+      // disparo no instante em que a mira ainda gira é um míssil perdido
+      const w = this.weaponOf(id);
+      const aimErr = w.target === target.id
+        ? Math.abs(desiredOffset(ship, { id: target.id, pos: target, vx: 0, vy: 0 }, "missile") - w.offset)
+        : Infinity;
+      if (aimErr < BOT_AIM_TOLERANCE && this.elapsed >= bot.nextShot && ship.fireCooldown <= 0) {
+        this.fireShip(id);
+        bot.nextShot = this.elapsed + BOT_FIRE_INTERVAL;
+      }
+      return orbit;
+    }
+    this.leaveAttack(id, ship);
+    return { thrust: false, turn: 0, mine: false };
+  }
+
+  /** Estado do armamento da nave (criado com mísseis selecionados). */
+  private weaponOf(shipId: string): WeaponState {
+    let w = this.weapons.get(shipId);
+    if (!w) {
+      w = { weapon: "missile", offset: 0, target: "", locked: false };
+      this.weapons.set(shipId, w);
+    }
+    return w;
+  }
+
+  /** Seleciona a arma da nave ativa (teclas 1, 2 e 3). A mira recomeça no nariz. */
+  private trySelectWeapon(sessionId: string, weapon?: WeaponKind): void {
+    const shipId = this.activeShip.get(sessionId);
+    const ship = this.activeShipOf(sessionId);
+    if (!shipId || !ship || ship.kind !== "attack") return;
+    if (!weapon || !WEAPON_KINDS.includes(weapon)) return;
+    const w = this.weaponOf(shipId);
+    if (w.weapon === weapon) return;
+    w.weapon = weapon;
+    w.offset = 0;
+    w.target = "";
+    w.locked = false;
+  }
+
+  /**
+   * Alvos possíveis do computador de tiro de `ship`: naves inimigas no mesmo
+   * nível de combate e, no nível das estações, as estruturas inimigas.
+   */
+  private aimCandidates(ship: ShipState, level: CombatLevel): AimTarget[] {
+    const out: AimTarget[] = [];
+    for (const [id, s] of this.sim.ships) {
+      if (s.owner === ship.owner || hittableLevel(s) !== level) continue;
+      out.push({ id, pos: s, vx: s.vx, vy: s.vy });
+    }
+    if (level === "surface") {
+      for (const st of this.sim.structures.values()) {
+        if (st.owner === ship.owner) continue;
+        out.push({ id: st.id, pos: st, vx: 0, vy: 0 });
+      }
+    }
+    return out;
+  }
+
+  /** Posição atual de um alvo (nave ou estrutura), ou null se sumiu. */
+  private targetPos(id: string): (WorldPos & { vx: number; vy: number }) | null {
+    const s = this.sim.ships.get(id);
+    if (s) return s;
+    const st = this.sim.structures.get(id);
+    return st ? { sx: st.sx, sy: st.sy, x: st.x, y: st.y, vx: 0, vy: 0 } : null;
+  }
+
+  /**
+   * COMPUTADOR DE TIRO (weapons.ts), um passo por tick para cada nave de
+   * ataque de jogador: escolhe o alvo mais perto da linha do nariz e gira a
+   * mira até ele no ritmo da arma; sem alvo, a mira volta ao nariz. O laser
+   * TRAVA quando a mira chega ao alvo — e só travado ele dispara.
+   */
+  private updateAim(dt: number): void {
+    const aiming = [...this.activeShip.values()];
+    for (const id of this.bots.keys()) aiming.push(id);
+    for (const shipId of aiming) {
+      const ship = this.sim.ships.get(shipId);
+      if (!ship || ship.kind !== "attack") continue;
+      const w = this.weaponOf(shipId);
+      const { gimbal, slew } = gimbalOf(w.weapon);
+      let target: AimTarget | null = null;
+      if (w.weapon !== "mine" && canFire(ship)) {
+        const range = w.weapon === "laser" ? LASER_RANGE : MISSILE_RANGE;
+        target = pickTarget(ship, this.aimCandidates(ship, levelOfLayer(ship.layer)), range);
+      }
+      const desired = target ? desiredOffset(ship, target, w.weapon) : 0;
+      w.offset = gimbal > 0 ? slewAim(w.offset, desired, gimbal, slew, dt) : 0;
+      w.target = target?.id ?? "";
+      w.locked = !!target && w.weapon === "laser" &&
+        Math.abs(desired) <= gimbal && Math.abs(desired - w.offset) <= LASER_LOCK_TOLERANCE;
+    }
+  }
+
+  /**
+   * Dispara a arma SELECIONADA da nave de ataque ativa:
+   * - míssil: projétil balístico na direção da mira (nariz + desvio);
+   * - laser: só com a mira travada — acerto instantâneo, com traço ao alvo;
+   * - mina: lançada pelo nariz; arma quando para (ver o laço de projéteis).
+   */
+  private tryFire(sessionId: string): void {
+    const shipId = this.activeShip.get(sessionId);
+    if (shipId) this.fireShip(shipId);
+  }
+
+  /** Dispara a arma selecionada da nave `shipId` (jogador ou bot atacante). */
+  private fireShip(shipId: string): void {
+    const ship = this.sim.ships.get(shipId);
+    const owner = ship?.owner ?? "";
     // pousada, guardada ou em transição de camada não atira (combat.ts)
     if (!ship || ship.kind !== "attack" || !canFire(ship)) return;
-    if (!kind) return;
-    if (kind === "bullet") {
+    const w = this.weaponOf(shipId);
+    const level = levelOfLayer(ship.layer);
+    if (w.weapon === "laser") {
+      if (!w.locked || ship.fireCooldown > 0) return;
+      const tp = this.targetPos(w.target);
+      if (!tp) return;
+      ship.fireCooldown = LASER_COOLDOWN;
+      this.broadcast(MSG_FX, {
+        kind: "laser", sx: ship.sx, sy: ship.sy, x: ship.x, y: ship.y,
+        tsx: tp.sx, tsy: tp.sy, tx: tp.x, ty: tp.y,
+      } satisfies FxEvent);
+      const victim = this.sim.ships.get(w.target);
+      if (victim) this.damageShip([w.target, victim], LASER_DAMAGE);
+      else {
+        const st = this.sim.structures.get(w.target);
+        if (st) this.damageStructure(st, LASER_DAMAGE);
+      }
+      return;
+    }
+    let speed: number;
+    let dir: number;
+    if (w.weapon === "missile") {
       if (ship.ammo <= 0 || ship.fireCooldown > 0) return;
       ship.ammo--;
-      ship.fireCooldown = BULLET_COOLDOWN;
+      ship.fireCooldown = MISSILE_COOLDOWN;
+      speed = MISSILE_SPEED;
+      dir = ship.angle + w.offset;
     } else {
       if (ship.grenadeAmmo <= 0 || ship.grenadeCooldown > 0) return;
       ship.grenadeAmmo--;
-      ship.grenadeCooldown = GRENADE_COOLDOWN;
+      ship.grenadeCooldown = MINE_COOLDOWN;
+      speed = MINE_SPEED;
+      dir = ship.angle;
     }
-    const speed = kind === "bullet" ? BULLET_SPEED : GRENADE_SPEED;
     const id = `pr-${this.projSeq++}`;
     const proj: Projectile = {
-      kind,
-      owner: sessionId,
-      level: levelOfLayer(ship.layer),
+      kind: w.weapon,
+      owner,
+      level,
       sx: ship.sx, sy: ship.sy,
-      x: ship.x + Math.cos(ship.angle) * 30,
-      y: ship.y + Math.sin(ship.angle) * 30,
-      vx: ship.vx + Math.cos(ship.angle) * speed,
-      vy: ship.vy + Math.sin(ship.angle) * speed,
+      x: ship.x + Math.cos(dir) * 30,
+      y: ship.y + Math.sin(dir) * 30,
+      vx: ship.vx + Math.cos(dir) * speed,
+      vy: ship.vy + Math.sin(dir) * speed,
       traveled: 0,
     };
+    if (proj.kind === "mine") {
+      proj.origin = { sx: proj.sx, sy: proj.sy, x: proj.x, y: proj.y };
+      proj.armed = false;
+      proj.age = 0;
+    }
     this.projectiles.set(id, proj);
     const ps = new ProjectileSchema();
-    ps.kind = kind; ps.owner = sessionId;
+    ps.kind = proj.kind; ps.owner = owner;
     ps.sx = proj.sx; ps.sy = proj.sy;
     ps.x = proj.x; ps.y = proj.y;
     ps.vx = proj.vx; ps.vy = proj.vy;
     ps.traveled = 0;
     ps.level = proj.level;
     this.state.projectiles.set(id, ps);
+  }
+
+  /**
+   * Rocha (asteroide ou Ceres) em que a mina em voo bateu, com o ponto de
+   * contato na superfície — ou null. A mina anda ~75 u por tick e a menor
+   * rocha tem raio bem maior: não atravessa.
+   */
+  private mineContact(proj: Projectile): WorldPos | null {
+    const onSurface = (c: WorldPos, r: number): WorldPos | null => {
+      const { dx, dy } = relVec(c, proj);
+      const d = Math.hypot(dx, dy);
+      if (d > r) return null;
+      const k = d > 1e-6 ? r / d : 0;
+      const p = { sx: c.sx, sy: c.sy, x: c.x + dx * k, y: c.y + dy * k };
+      normalizePos(p);
+      return p;
+    };
+    for (let ox = -1; ox <= 1; ox++) {
+      for (let oy = -1; oy <= 1; oy++) {
+        for (const a of sectorAsteroids(this.sim.seed, proj.sx + ox, proj.sy + oy)) {
+          const hit = onSurface(a, a.radius);
+          if (hit) return hit;
+        }
+      }
+    }
+    return onSurface(ceresPosition(this.sim.seed), CERES_RADIUS);
   }
 
   /**
@@ -953,6 +1502,10 @@ export class MatchRoom extends Room<MatchState> {
    */
   private tryCargo(sessionId: string): void {
     const ship = this.activeShipOf(sessionId);
+    if (ship?.kind === "builder") {
+      this.loadBuilderOre(sessionId, ship);
+      return;
+    }
     if (!ship || ship.kind !== "transport" || !ship.anchored) return;
     const struct = this.sim.structures.get(ship.hqId);
     if (!struct || struct.owner !== sessionId) return;
@@ -1148,6 +1701,12 @@ export class MatchRoom extends Room<MatchState> {
     ship.angle = dx === 0 && dy === 0 ? struct.angle + Math.PI : Math.atan2(dy, dx);
     ship.mining = false;
     setLayer(ship, "surface");
+    // RECARGA: a nave de ataque que pousa numa vaga do próprio QG enche de
+    // mísseis e minas (o laser não gasta munição)
+    if (struct.type === "hq" && ship.kind === "attack" && struct.owner === ship.owner && !this.bots.has(this.shipIdOf(ship))) {
+      ship.ammo = MISSILE_AMMO_MAX;
+      ship.grenadeAmmo = MINE_AMMO_MAX;
+    }
   }
 
   /** Estrutura própria MAIS PRÓXIMA (opcionalmente de um tipo) dentro de `range`. */
@@ -1314,32 +1873,81 @@ export class MatchRoom extends Room<MatchState> {
     return null;
   }
 
+  /**
+   * Explosão numa nave: onde ela está, ou — guardada no hangar — na placa da
+   * vaga dela (é ali que o cliente desenha a silhueta da guardada).
+   */
+  private fxOnShip(kind: FxKind, id: string, s: ShipState): void {
+    if (s.stored) {
+      const st = this.sim.structures.get(s.hqId);
+      const p = st && s.bay >= 0 ? this.bayPosOf(st, s.bay) : null;
+      if (st && p) this.fx(kind, p, { on: "bay", id: st.id, bay: s.bay });
+      return;
+    }
+    this.fx(kind, s, { on: "ship", id });
+  }
+
+  /**
+   * Raio da parede macia da órbita do modo ataque: a borda da rocha atacada
+   * (folga de metade da margem antes de a zona expulsar a nave).
+   */
+  private attackHoldRadius(siteRadius: number): number {
+    return siteRadius + ATTACK_ZONE_MARGIN * 0.25;
+  }
+
+  /**
+   * MODO ATAQUE dos jogadores: troca, a cada tick, o comando cru pela
+   * tradução de attackModeInput (nariz travado na estação, A/D circulam).
+   * Vale desde a descida (`layerTo` = "attack"). Os bots já pedem a
+   * tradução na IA deles.
+   */
+  private applyAttackMode(): void {
+    for (const [id, target] of this.attackTargets) {
+      if (this.bots.has(id)) continue;
+      const ship = this.sim.ships.get(id);
+      const st = this.sim.structures.get(target.structId);
+      if (!ship || !st) continue;
+      const raw = this.rawInputs.get(id) ?? { thrust: false, turn: 0, mine: false };
+      this.sim.setInput(id, attackModeInput(ship, st, this.attackHoldRadius(target.radius), raw));
+    }
+    // a nave PILOTADA que saiu do modo ataque volta ao comando cru (a que
+    // deixou de ser pilotada fica com o que a sala lhe deu — ex.: neutro na troca)
+    const piloted = new Set(this.activeShip.values());
+    for (const [id, raw] of this.rawInputs) {
+      if (piloted.has(id) && !this.attackTargets.has(id)) this.sim.setInput(id, raw);
+    }
+  }
+
   /** Anuncia um efeito visual aos clientes (MSG_FX) — não muda o jogo. */
-  private fx(kind: FxKind, p: WorldPos): void {
-    const ev: FxEvent = { kind, sx: p.sx, sy: p.sy, x: p.x, y: p.y };
+  private fx(kind: FxKind, p: WorldPos, on?: Pick<FxEvent, "on" | "id" | "bay">): void {
+    const ev: FxEvent = { kind, sx: p.sx, sy: p.sy, x: p.x, y: p.y, ...on };
     this.broadcast(MSG_FX, ev);
   }
 
-  /** Explosão da granada: dano decrescente com a distância, no nível dela. */
+  /** Explosão da mina: dano decrescente com a distância, no nível dela. */
   private detonate(proj: Projectile): void {
     this.fx("blast", proj);
-    const falloff = (d: number) => GRENADE_DAMAGE * (1 - d / GRENADE_BLAST_RADIUS);
+    const falloff = (d: number) => MINE_DAMAGE * (1 - d / MINE_BLAST_RADIUS);
     for (const [id, s] of [...this.sim.ships]) {
       if (s.owner === proj.owner || hittableLevel(s) !== proj.level) continue;
       const d = dist(proj, s);
-      if (d <= GRENADE_BLAST_RADIUS) this.damageShip([id, s], falloff(d));
+      if (d <= MINE_BLAST_RADIUS) this.damageShip([id, s], falloff(d), true);
     }
     if (proj.level !== "surface") return;
     for (const st of [...this.sim.structures.values()]) {
       if (st.owner === proj.owner) continue;
       const d = Math.max(0, dist(proj, st) - STRUCTURE_SPECS[st.type].radius);
-      if (d <= GRENADE_BLAST_RADIUS) this.damageStructure(st, falloff(d));
+      if (d <= MINE_BLAST_RADIUS) this.damageStructure(st, falloff(d), true);
     }
   }
 
-  /** Tira HP da nave; em zero, ela explode. */
-  private damageShip([id, s]: [string, ShipState], damage: number): void {
+  /**
+   * Tira HP da nave; em zero, ela explode. `explode`: anuncia a explosão do
+   * impacto NELA (na vaga, se está guardada no hangar).
+   */
+  private damageShip([id, s]: [string, ShipState], damage: number, explode = false): void {
     if (!this.sim.ships.has(id) || !(damage > 0)) return;
+    if (explode) this.fxOnShip("hit", id, s);
     s.hp = Math.max(0, s.hp - damage);
     if (s.hp <= 0) this.destroyShip(id);
   }
@@ -1350,13 +1958,15 @@ export class MatchRoom extends Room<MatchState> {
    * Nave do hangar que zera explode sozinha; estrutura que zera explode com
    * todas as que sobraram no hangar.
    */
-  private damageStructure(st: Structure, damage: number): void {
+  private damageStructure(st: Structure, damage: number, explode = false): void {
     if (!this.sim.structures.has(st.id) || !(damage > 0)) return;
     const hangar = [...this.sim.ships]
       .filter(([, s]) => s.stored && s.hqId === st.id)
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     const split = splitDamage(damage, hangar.length, this.combatRng);
-    hangar.forEach((entry, i) => this.damageShip(entry, split.ships[i]));
+    // a explosão aparece em QUEM o sorteio atingiu: no prédio e/ou nas vagas
+    if (explode && split.station > 0) this.fx("hit", st, { on: "structure", id: st.id });
+    hangar.forEach((entry, i) => this.damageShip(entry, split.ships[i], explode));
     st.hp = Math.max(0, st.hp - split.station);
     if (st.hp <= 0) this.destroyStructure(st.id);
   }
@@ -1375,10 +1985,14 @@ export class MatchRoom extends Room<MatchState> {
         .filter(([, s]) => (s.stored && s.hqId === id) || (s.autoMining && s.stationId === id))
         .map(([sid]) => sid),
     );
-    this.fx("structureDown", st);
+    this.fx("structureDown", st, { on: "structure", id: st.id });
     this.sim.structures.delete(id);
     this.state.structures.delete(id);
     this.rationDroneTimers.delete(id);
+    this.turrets.delete(id);
+    this.turretJobs.delete(id);
+    if (id === this.botHqId) this.botHqId = "";
+    this.turretCooldowns.delete(id);
     // a estrutura sai ANTES das naves: se o controle de um jogador passar a
     // outra nave condenada, ela só sai do hangar (não há mais para onde
     // atracar) e explode na volta seguinte, que o passa adiante de novo — ele
@@ -1394,8 +2008,8 @@ export class MatchRoom extends Room<MatchState> {
   private destroyShip(shipId: string): void {
     const ship = this.sim.ships.get(shipId);
     if (!ship) return;
-    // a guardada explode dentro do hangar: quem aparece é a da estrutura
-    if (!ship.stored) this.fx("shipDown", ship);
+    // a guardada explode na VAGA dela, dentro do hangar
+    this.fxOnShip("shipDown", shipId, ship);
     for (const [sid, active] of this.activeShip) {
       if (active === shipId) {
         this.transferControl(sid, shipId);
@@ -1405,6 +2019,9 @@ export class MatchRoom extends Room<MatchState> {
     this.sim.removeShip(shipId);
     this.spiders.delete(shipId);
     this.attackTargets.delete(shipId);
+    this.weapons.delete(shipId);
+    this.bots.delete(shipId);
+    this.rawInputs.delete(shipId);
     this.state.ships.delete(shipId);
     console.log(`[room] nave ${shipId} destruída`);
   }
@@ -1479,11 +2096,16 @@ export class MatchRoom extends Room<MatchState> {
       }
     }
     this.superviseAttackMode();
-    // IA dos bots neutros
+    // IA da frota dos bots: primeiro a saída do grupo, depois cada bot
+    this.launchWave();
     for (const [id, bot] of this.bots) {
       const ship = this.sim.ships.get(id);
-      if (ship) this.sim.setInput(id, computeBotInput(ship, this.sim, bot, dt));
+      if (!ship) continue;
+      this.sim.setInput(id, this.botInput(id, ship, bot, dt));
     }
+    this.stepBotProduction(dt);
+    this.stepTurretJobs(dt);
+    this.stepTurrets(dt);
     // BUILDER minerando na estação: enche o estoque LOCAL da estação —
     // logística física: o transporte leva até a base inicial, e só a
     // descarga lá credita a carteira
@@ -1548,32 +2170,56 @@ export class MatchRoom extends Room<MatchState> {
     // nível de combate em que foi disparado (combat.ts) — cruzeiro com
     // cruzeiro; superfície e modo ataque com o nível das estações
     for (const [id, proj] of [...this.projectiles]) {
-      const step = Math.hypot(proj.vx, proj.vy) * dt;
-      proj.x += proj.vx * dt;
-      proj.y += proj.vy * dt;
-      normalizePos(proj);
-      proj.traveled += step;
-
       let hit = false;
-      if (proj.kind === "bullet") {
-        if (proj.traveled >= BULLET_RANGE) {
-          hit = true; // expira por distância
-        } else {
-          const ship = this.shipHitBy(proj, BULLET_RADIUS + SHIP_RADIUS);
-          const struct = ship ? null : this.structureHitBy(proj, BULLET_RADIUS);
-          hit = !!(ship || struct);
-          if (hit) this.fx("hit", proj);
-          if (ship) this.damageShip(ship, BULLET_DAMAGE);
-          else if (struct) this.damageStructure(struct, BULLET_DAMAGE);
-        }
-      } else {
-        // granada: detona por proximidade com nave ou estrutura inimiga
-        if (this.shipHitBy(proj, GRENADE_PROX_RADIUS) || this.structureHitBy(proj, GRENADE_PROX_RADIUS)) {
+      if (proj.kind === "mine" && proj.armed) {
+        // MINA ARMADA: parada; detona com nave inimiga por perto, ou some
+        // sozinha depois de MINE_LIFETIME
+        proj.age = (proj.age ?? 0) + dt;
+        if (this.shipHitBy(proj, MINE_TRIGGER_RADIUS)) {
           this.detonate(proj);
           hit = true;
+        } else if (proj.age >= MINE_LIFETIME) hit = true;
+      } else {
+        const step = Math.hypot(proj.vx, proj.vy) * dt;
+        proj.x += proj.vx * dt;
+        proj.y += proj.vy * dt;
+        normalizePos(proj);
+        proj.traveled += step;
+        if (proj.kind === "missile") {
+          if (proj.traveled >= MISSILE_RANGE) {
+            hit = true; // expira por distância
+          } else {
+            const ship = this.shipHitBy(proj, MISSILE_RADIUS + SHIP_RADIUS);
+            const struct = ship ? null : this.structureHitBy(proj, MISSILE_RADIUS);
+            hit = !!(ship || struct);
+            if (ship) this.damageShip(ship, MISSILE_DAMAGE, true);
+            else if (struct) this.damageStructure(struct, MISSILE_DAMAGE, true);
+          }
+        } else {
+          // MINA EM VOO: inerte (só arma parada). Bate numa rocha → fixa-se
+          // na superfície dela, no nível das estações; chega a
+          // MINE_MAX_DISTANCE do lançamento → para e fica flutuando
+          const contact = this.mineContact(proj);
+          const far = !contact && proj.origin && dist(proj.origin, proj) >= MINE_MAX_DISTANCE;
+          if (contact || far) {
+            if (contact) {
+              proj.sx = contact.sx; proj.sy = contact.sy;
+              proj.x = contact.x; proj.y = contact.y;
+              proj.level = "surface";
+            }
+            proj.vx = 0;
+            proj.vy = 0;
+            proj.armed = true;
+            proj.age = 0;
+            const ps = this.state.projectiles.get(id);
+            if (ps) {
+              ps.armed = true;
+              ps.vx = 0;
+              ps.vy = 0;
+              ps.level = proj.level;
+            }
+          }
         }
-        // expira por distância (2× alcance do perfurante)
-        if (proj.traveled >= BULLET_RANGE * 2) hit = true;
       }
 
       if (hit) {
@@ -1588,6 +2234,7 @@ export class MatchRoom extends Room<MatchState> {
         }
       }
     }
+    this.updateAim(dt);
     // cooldowns de disparo
     for (const ship of this.sim.ships.values()) {
       if (ship.fireCooldown > 0) ship.fireCooldown = Math.max(0, ship.fireCooldown - dt);
@@ -1619,6 +2266,7 @@ export class MatchRoom extends Room<MatchState> {
       }
       this.rationDroneTimers.set(id, timer);
     }
+    this.applyAttackMode();
     this.sim.tick(dt);
     // DANO DE COLISÃO: o impulso que o solver acumulou neste tick vira dano
     // (combat.ts) e zera — quem converte e zera é o servidor. Os bots são
@@ -1667,6 +2315,16 @@ export class MatchRoom extends Room<MatchState> {
       s.layer = ship.layer;
       s.layerTo = ship.layerTo;
       s.layerProgress = ship.layerProgress;
+      const at = this.attackTargets.get(id);
+      s.attackTarget = at?.structId ?? "";
+      s.attackRadius = at ? this.attackHoldRadius(at.radius) : 0;
+      const w = this.weapons.get(id);
+      if (w) {
+        s.weapon = w.weapon;
+        s.aimOffset = w.offset;
+        s.aimTarget = w.target;
+        s.aimLocked = w.locked;
+      }
     }
     // estruturas
     for (const [id, st] of this.sim.structures) {
@@ -1691,6 +2349,11 @@ export class MatchRoom extends Room<MatchState> {
       s.hp = st.hp;
       s.maxHp = structureMaxHp(st.type, st.level);
       s.level = st.level;
+      s.turrets = this.turrets.get(id) ?? 0;
+      const job = this.turretJobs.get(id);
+      s.turretBuild = job ? s.turrets : -1;
+      s.turretProgress = job?.progress ?? 0;
+      s.turretBuilder = job?.shipId ?? "";
     }
     // minério e nave ativa por jogador
     for (const [sid, p] of this.state.players) {

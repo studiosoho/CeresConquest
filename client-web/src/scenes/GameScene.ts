@@ -26,14 +26,19 @@ import {
   // MSG_EXPAND,
   MSG_CARGO,
   MSG_FIRE,
+  MSG_WEAPON,
+  MSG_TURRET,
+  BUILDER_ORE_CAP,
+  TURRET_COST,
+  TURRET_MAX,
+  turretWorldPos,
   MSG_FX,
   MSG_UPGRADE,
   CERES_STATION_MAX_LEVEL,
   ceresStationUpgradeCost,
   stationOreCap,
-  GRENADE_BLAST_RADIUS,
+  MINE_BLAST_RADIUS,
   type FxEvent,
-  type FxKind,
   SECTOR_SIZE,
   SHIP_PRODUCTION,
   DOCK_RANGE,
@@ -44,8 +49,9 @@ import {
   STRUCTURE_SPECS,
   CERES_RADIUS,
   SNAPSHOT_AGE_FIXED_GUESS,
-  BULLET_AMMO_MAX,
-  GRENADE_AMMO_MAX,
+  MISSILE_AMMO_MAX,
+  MINE_AMMO_MAX,
+  type WeaponKind,
   ceresPosition,
   relVec,
   dist,
@@ -61,6 +67,7 @@ import {
   stepShip,
   stepShipInWorld,
   freezeShip,
+  attackModeInput,
   sectorAsteroids,
   syncLayer,
   type ShipState,
@@ -68,12 +75,12 @@ import {
 } from "@ceres/sim-core";
 import { Palette } from "../render/Palette";
 import { toScene } from "../render/coords";
-import { MASK_MAIN_ONLY, FP_CAMERA_MASK } from "../render/layers";
+import { MASK_MAIN_ONLY, FP_CAMERA_MASK, EFFECTS_LAYER_Z, SHIP_LAYER_Z } from "../render/layers";
 import { c3 } from "../render/lineUtils";
 import { KeyInput } from "../input";
 import { MeshFactory } from "../render/MeshFactory";
 import { ShipRenderer } from "../render/ShipRenderer";
-import { EXPLOSION_SPARKS } from "../render/EffectsRenderer";
+import { ExplosionRenderer, type ExplosionHandle } from "../render/ExplosionRenderer";
 import { shipMeshData } from "../render/ShipMeshGenerator";
 import { dockScale, easePresence, presenceTarget, type Presence, type PresenceShip } from "../render/shipPresence";
 import { AsteroidRenderer } from "../render/AsteroidRenderer";
@@ -109,17 +116,28 @@ const ZOOM_SMOOTH = 0.15;
 
 // ── explosões (MSG_FX) ──
 /**
- * Raio final (unidades de mundo) e duração (s) de cada explosão. Dimensionadas
- * contra a nave EXIBIDA (~370 u de comprimento no builder, ver ShipRenderer),
- * não a de mundo: o acerto tem metade da nave; a granada, o raio de dano de
- * verdade; a nave destruída, pouco mais que ela; a estrutura, o prédio todo.
+ * Tamanho das explosões (ExplosionRenderer), em fração de QUEM recebeu o dano:
+ * o acerto engloba parte da nave ou do prédio; a destruição, o alvo todo e
+ * mais. A mina estoura no raio de dano dela. O laser não explode: é um traço.
  */
-const EXPLOSION_STYLE: Record<FxKind, { radius: number; duration: number }> = {
-  hit: { radius: 160, duration: 0.35 },
-  blast: { radius: GRENADE_BLAST_RADIUS, duration: 0.55 },
-  shipDown: { radius: 480, duration: 0.9 },
-  structureDown: { radius: 1000, duration: 1.3 },
-};
+const EXPLOSION_SHIP_HIT = 0.45;
+const EXPLOSION_SHIP_DOWN = 0.95;
+const EXPLOSION_STRUCT_HIT = 0.7;
+const EXPLOSION_STRUCT_DOWN = 1.8;
+const EXPLOSION_BAY_HIT = 45;
+const EXPLOSION_BAY_DOWN = 75;
+const EXPLOSION_BLAST = MINE_BLAST_RADIUS * 0.8;
+
+// ── armamento ──
+/** duração (s) do traço de um disparo de laser */
+const LASER_FX_DURATION = 0.18;
+/** SPACE segurado repete o disparo de míssil/laser neste intervalo (s); o
+ *  servidor ainda impõe o cooldown de cada arma */
+const FIRE_REPEAT = 0.1;
+/** retícula da mira: tamanho e distância à frente sem alvo (mundo) */
+const AIM_SIZE = 70;
+const AIM_IDLE_DIST = 1800;
+const WEAPON_KEYS: Array<["ONE" | "TWO" | "THREE", WeaponKind]> = [["ONE", "missile"], ["TWO", "laser"], ["THREE", "mine"]];
 
 // ── câmera de cockpit (primeira pessoa) ──
 /** viewport do cockpit em frações do canvas (y a partir de BAIXO, como o
@@ -267,8 +285,17 @@ interface ServerShip extends WorldPos {
   cargoKind: string;
   cargoAmount: number;
   hp: number;
+  /** mísseis e minas (o laser não gasta munição) */
   ammo: number;
   grenadeAmmo: number;
+  /** arma selecionada e a mira do computador de tiro (shared/weapons.ts) */
+  weapon: WeaponKind;
+  aimOffset: number;
+  aimTarget: string;
+  aimLocked: boolean;
+  /** modo ataque: estrutura atacada ("" = fora) e raio da parede macia da órbita */
+  attackTarget: string;
+  attackRadius: number;
   /** vaga ocupada na estrutura `hqId` (guardada ou pousada); −1 = nenhuma */
   bay: number;
   /**
@@ -282,12 +309,15 @@ interface ServerShip extends WorldPos {
   layerProgress: number;
 }
 
-/** Projétil sincronizado do servidor. */
+/** Projétil sincronizado do servidor: míssil ou mina. */
 interface ServerProjectile extends WorldPos {
   kind: string;
   owner: string;
   vx: number;
   vy: number;
+  traveled: number;
+  /** mina parada e armada */
+  armed: boolean;
 }
 
 /** Snapshot plano de uma estrutura vinda do schema. */
@@ -306,6 +336,11 @@ interface ServerStructure extends WorldPos {
   maxHp: number;
   /** nível (a estação de Ceres evolui; as demais ficam em 1) */
   level: number;
+  /** turretas prontas; obra em curso (lugar −1 = nenhuma), progresso e o builder */
+  turrets: number;
+  turretBuild: number;
+  turretProgress: number;
+  turretBuilder: string;
 }
 
 /**
@@ -367,7 +402,13 @@ export class GameScene {
   /** presença mostrada de cada nave (tamanho e altitude suavizados — shipPresence.ts) */
   private presence = new Map<string, Presence>();
   /** explosões em curso: posição de MUNDO (a origem de render flutua), início e faíscas */
-  private explosions: Array<{ pos: WorldPos; kind: FxKind; t0: number; angles: number[] }> = [];
+  private explosionRenderer!: ExplosionRenderer;
+  /** explosões em curso: onde (mundo) e em quem — a nave atingida a leva junto */
+  private explosions: Array<{ handle: ExplosionHandle; pos: WorldPos; on?: FxEvent["on"]; id?: string; radius: number }> = [];
+  /** traços de laser em curso (MSG_FX "laser") */
+  private lasers: Array<{ from: WorldPos; to: WorldPos; t0: number }> = [];
+  /** próximo instante (s) em que SPACE segurado repete o disparo */
+  private nextFireAt = 0;
   private passthrough = new Set<string>();
   /**
    * Asteroides ocupados agrupados pelo DONO da estrutura — o mesmo ambiente do
@@ -636,6 +677,7 @@ export class GameScene {
     this.planetRenderer = new PlanetRenderer(this.bScene, this.glow);
     this.structureRenderer = new StructureRenderer(this.bScene, this.glow);
     this.effectsRenderer = new EffectsRenderer(this.bScene, this.glow);
+    this.explosionRenderer = new ExplosionRenderer(this.bScene, this.camera, this.glow);
     this.hudRenderer = new HudRenderer();
     this.hudRenderer.initCockpitFrame(FP_VIEW);
 
@@ -655,15 +697,15 @@ export class GameScene {
     this.room.onStateChange((state: any) => this.syncFromServer(state));
     // explosões: o servidor diz onde e o quê, na posição exata do acerto
     this.room.onMessage(MSG_FX, (ev: FxEvent) => {
-      const angles: number[] = [];
-      const spin = Math.random() * Math.PI * 2;
-      for (let i = 0; i < EXPLOSION_SPARKS; i++) {
-        angles.push(spin + (i / EXPLOSION_SPARKS) * Math.PI * 2 + (Math.random() - 0.5) * 0.6);
+      if (ev.kind === "laser") {
+        this.lasers.push({
+          from: { sx: ev.sx, sy: ev.sy, x: ev.x, y: ev.y },
+          to: { sx: ev.tsx ?? ev.sx, sy: ev.tsy ?? ev.sy, x: ev.tx ?? ev.x, y: ev.ty ?? ev.y },
+          t0: performance.now() / 1000,
+        });
+        return;
       }
-      this.explosions.push({
-        pos: { sx: ev.sx, sy: ev.sy, x: ev.x, y: ev.y },
-        kind: ev.kind, t0: performance.now() / 1000, angles,
-      });
+      this.spawnExplosion(ev);
     });
   }
 
@@ -709,6 +751,12 @@ export class GameScene {
         hp: s.hp ?? 100,
         ammo: s.ammo ?? 0,
         grenadeAmmo: s.grenadeAmmo ?? 0,
+        weapon: (s.weapon ?? "missile") as WeaponKind,
+        aimOffset: s.aimOffset ?? 0,
+        aimTarget: s.aimTarget ?? "",
+        aimLocked: s.aimLocked ?? false,
+        attackTarget: s.attackTarget ?? "",
+        attackRadius: s.attackRadius ?? 0,
         bay: s.bay ?? -1,
         layer: (s.layer ?? "cruise") as ShipLayer,
         layerTo: (s.layerTo ?? "") as ShipLayer | "",
@@ -741,6 +789,8 @@ export class GameScene {
         shipBays: st.shipBays, expandedBays: st.expandedBays ?? 0,
         oreStore: st.oreStore ?? 0, rationStore: st.rationStore ?? 0,
         hp: st.hp ?? 0, maxHp: st.maxHp ?? 0, level: st.level ?? 1,
+        turrets: st.turrets ?? 0, turretBuild: st.turretBuild ?? -1,
+        turretProgress: st.turretProgress ?? 0, turretBuilder: st.turretBuilder ?? "",
       });
     });
     for (const id of [...this.serverStructures.keys()]) {
@@ -773,11 +823,113 @@ export class GameScene {
         kind: p.kind, owner: p.owner,
         sx: p.sx, sy: p.sy, x: p.x, y: p.y,
         vx: p.vx, vy: p.vy,
+        traveled: p.traveled ?? 0,
+        armed: p.armed ?? false,
       });
     });
     for (const id of [...this.serverProjectiles.keys()]) {
       if (!seenPr.has(id)) this.serverProjectiles.delete(id);
     }
+  }
+
+  /**
+   * Mira da nave de ataque própria em voo (estilo Elite): a retícula marca
+   * para onde a arma aponta — o nariz girado pelo desvio que o computador
+   * de tiro do servidor está aplicando —, à distância do alvo; o alvo ganha
+   * colchetes. No laser, a retícula CAMINHA até o alvo e fica vermelha ao
+   * travar. A mina não tem mira: sai pelo nariz.
+   */
+  private drawWeaponAim(own: { x: number; y: number }, angle: number, me: ServerShip | undefined): void {
+    if (!me || me.kind !== "attack" || me.anchored || me.landingPhase !== "" || me.weapon === "mine") return;
+    let target: { x: number; y: number } | null = null;
+    if (me.aimTarget) {
+      const rv = this.remotes.get(me.aimTarget);
+      const st = this.serverStructures.get(me.aimTarget);
+      if (rv?.initialized) target = { x: rv.rx, y: rv.ry };
+      else if (st) target = this.toRender(st);
+    }
+    const d = target ? Math.hypot(target.x - own.x, target.y - own.y) : AIM_IDLE_DIST;
+    const a = angle + me.aimOffset;
+    this.effectsRenderer.drawAim(own.x + Math.cos(a) * d, own.y + Math.sin(a) * d, AIM_SIZE, me.aimLocked);
+    if (target) this.effectsRenderer.drawTargetBrackets(target.x, target.y, AIM_SIZE * 2.6, me.aimLocked);
+  }
+
+  /**
+   * MODO ATAQUE na predição: a mesma tradução que o servidor aplica
+   * (sim-core attackModeInput — nariz travado na estação, A/D circulam).
+   * Ao servidor vai sempre o comando CRU; ele traduz do lado de lá.
+   */
+  private attackTranslated(input: ShipInput): ShipInput {
+    const me = this.serverShips.get(this.myShipId);
+    const st = me?.attackTarget ? this.serverStructures.get(me.attackTarget) : undefined;
+    if (!me || !st || !this.localShip) return input;
+    return attackModeInput(this.localShip, st, me.attackRadius, input);
+  }
+
+  /**
+   * Explosão anunciada pelo servidor, em QUEM recebeu o dano (FxEvent.on):
+   * o tamanho vem do alvo — parte da nave ou do prédio atingido; na vaga, a
+   * nave guardada que o sorteio do dano escolheu.
+   */
+  private spawnExplosion(ev: FxEvent): void {
+    const down = ev.kind === "shipDown" || ev.kind === "structureDown";
+    let radius: number;
+    if (ev.on === "ship" && ev.id) {
+      const len = shipMeshData(this.serverShips.get(ev.id)?.kind ?? "attack").length;
+      radius = len * (down ? EXPLOSION_SHIP_DOWN : EXPLOSION_SHIP_HIT);
+    } else if (ev.on === "structure" && ev.id) {
+      const st = this.serverStructures.get(ev.id);
+      const r = st ? STRUCTURE_SPECS[st.stype].radius : 100;
+      radius = r * (down ? EXPLOSION_STRUCT_DOWN : EXPLOSION_STRUCT_HIT);
+    } else if (ev.on === "bay") {
+      radius = down ? EXPLOSION_BAY_DOWN : EXPLOSION_BAY_HIT;
+    } else {
+      radius = ev.kind === "blast" ? EXPLOSION_BLAST : 60;
+    }
+    this.explosions.push({
+      handle: this.explosionRenderer.spawn(radius),
+      pos: { sx: ev.sx, sy: ev.sy, x: ev.x, y: ev.y },
+      on: ev.on, id: ev.id, radius,
+    });
+  }
+
+  /**
+   * Reposiciona as explosões (origem flutuante; a nave atingida leva a dela
+   * junto) e anima. A profundidade é a do alvo: a malha da nave, ou um
+   * pouco acima do chão da plataforma — o fogo engloba a base do prédio.
+   */
+  private placeExplosions(own: { x: number; y: number }): void {
+    for (const e of this.explosions) {
+      let p = this.toRender(e.pos);
+      let z = EFFECTS_LAYER_Z;
+      let inflate = 1;
+      if (e.on === "ship" && e.id) {
+        const s = this.serverShips.get(e.id);
+        if (s) {
+          e.pos = { sx: s.sx, sy: s.sy, x: s.x, y: s.y };
+          p = this.renderPosOf(e.id, own) ?? this.toRender(e.pos);
+          inflate = this.shipRenderer.displayScale(e.id, s.kind);
+        }
+        z = this.shipRenderer.poseZ(e.id) ?? SHIP_LAYER_Z;
+      } else if ((e.on === "structure" || e.on === "bay") && e.id) {
+        const floor = this.structureRenderer.platformZ(e.id);
+        if (floor !== null) z = floor - e.radius * 0.35;
+      }
+      const v = toScene(p.x, p.y);
+      v.z = z;
+      e.handle.place(v, inflate);
+    }
+    this.explosionRenderer.tick();
+    this.explosions = this.explosions.filter((e) => !e.handle.done);
+  }
+
+  /** Posição de render de uma nave: a predita (a minha), a suavizada (remota) ou a do servidor. */
+  private renderPosOf(shipId: string, own: { x: number; y: number }): { x: number; y: number } | null {
+    if (shipId === this.myShipId) return own;
+    const rv = this.remotes.get(shipId);
+    if (rv?.initialized) return { x: rv.rx, y: rv.ry };
+    const s = this.serverShips.get(shipId);
+    return s ? this.toRender(s) : null;
   }
 
   private sendInput(input: ShipInput) {
@@ -940,18 +1092,29 @@ export class GameScene {
           this.room.send(MSG_PRODUCE, { kind: "transport" });
         }
       }
-      // [E] carga/descarga do transporte pousado (contexto no servidor)
-      if (mineServer.kind === "transport" && mineServer.anchored
+      // [E] carga/descarga do transporte pousado (contexto no servidor);
+      // no builder atracado, enche o porão de minério
+      if ((mineServer.kind === "transport" || mineServer.kind === "builder") && mineServer.anchored
         && this.keys.justDown("E")) {
         this.room.send(MSG_CARGO);
       }
-      // disparo da nave de ataque: SPACE = perfurante, G = granada
-      if (mineServer.kind === "attack") {
-        if (this.keys.justDown("SPACE")) {
-          this.room.send(MSG_FIRE, { kind: "bullet" });
+      // [B] builder atracado: constrói uma turreta (o servidor valida tudo)
+      if (mineServer.kind === "builder" && mineServer.anchored && this.keys.justDown("B")) {
+        this.room.send(MSG_TURRET);
+      }
+      // ARMAMENTO da nave de ataque em voo: [1] mísseis, [2] laser, [3] minas
+      // (pousada, 1/2/3 continuam sendo os menus de construir/produzir).
+      // SPACE dispara a arma selecionada; segurado, repete mísseis e laser
+      if (mineServer.kind === "attack" && !mineServer.anchored) {
+        for (const [key, weapon] of WEAPON_KEYS) {
+          if (this.keys.justDown(key)) this.room.send(MSG_WEAPON, { weapon });
         }
-        if (this.keys.justDown("G")) {
-          this.room.send(MSG_FIRE, { kind: "grenade" });
+        const now = performance.now() / 1000;
+        const pressed = this.keys.justDown("SPACE");
+        const repeat = mineServer.weapon !== "mine" && this.keys.isDown("SPACE") && now >= this.nextFireAt;
+        if (pressed || repeat) {
+          this.room.send(MSG_FIRE);
+          this.nextFireAt = now + FIRE_REPEAT;
         }
       }
       // [U] evolui a estação de mineração de Ceres (o servidor valida tudo)
@@ -1048,7 +1211,7 @@ export class GameScene {
       // MESMO ponto de entrada do servidor (SimWorld.tick): colisão intercalada
       // nos sub-passos. Integrar o dt inteiro e colidir uma vez no fim faria o
       // cliente (60 Hz) e o servidor (20 Hz) discordarem sobre o que bateu.
-      stepShipInWorld(this.localShip, input, dt, 1, {
+      stepShipInWorld(this.localShip, this.attackTranslated(input), dt, 1, {
         seed: this.worldSeed,
         passthroughByOwner: this.passthroughByOwner,
         ceres: this.ceres,
@@ -1500,7 +1663,18 @@ export class GameScene {
         annexArea: st.asteroidId.startsWith(CERES_PLATFORM_PREFIX)
           ? ceresPlatforms(this.worldSeed).find((p) => p.id === st.asteroidId)?.radius ?? 0
           : 0,
+        turrets: st.turrets,
+        turretBuild: st.turretBuild,
+        turretProgress: st.turretProgress,
       }, occupants, attach);
+      // obra de turreta: robôs indo e voltando entre o builder e o lugar dela
+      if (st.turretBuild >= 0 && st.turretBuilder) {
+        const b = this.renderPosOf(st.turretBuilder, this.toRender(this.localShip!));
+        if (b) {
+          const t = this.toRender(turretWorldPos({ ...st, type: st.stype }, st.turretBuild));
+          this.effectsRenderer.drawBuildRobots(b.x, b.y, t.x, t.y, tt);
+        }
+      }
       // barra de HP: sempre na inimiga; na própria, só quando avariada
       const own = st.owner === this.room.sessionId;
       if (st.maxHp > 0 && (!own || st.hp < st.maxHp)) {
@@ -1526,20 +1700,20 @@ export class GameScene {
     // projéteis
     for (const proj of this.serverProjectiles.values()) {
       const pp = this.toRender(proj);
-      if (proj.kind === "bullet") {
-        this.effectsRenderer.drawBullet(pp.x, pp.y);
-      } else {
-        this.effectsRenderer.drawGrenade(pp.x, pp.y, tt);
-      }
+      if (proj.kind === "mine") this.effectsRenderer.drawMine(pp.x, pp.y, proj.armed, tt);
+      else this.effectsRenderer.drawMissile(pp.x, pp.y, proj.vx, proj.vy, proj.traveled);
     }
+    // traços do laser (só existem com a mira travada: o servidor só
+    // dispara travado)
+    this.lasers = this.lasers.filter((l) => tt - l.t0 < LASER_FX_DURATION);
+    for (const l of this.lasers) {
+      const a = this.toRender(l.from);
+      const b = this.toRender(l.to);
+      this.effectsRenderer.drawLaser(a.x, a.y, b.x, b.y, (tt - l.t0) / LASER_FX_DURATION);
+    }
+    this.drawWeaponAim(own, ownAngle, mineAuth);
 
-    // explosões em curso
-    this.explosions = this.explosions.filter((e) => tt - e.t0 < EXPLOSION_STYLE[e.kind].duration);
-    for (const e of this.explosions) {
-      const style = EXPLOSION_STYLE[e.kind];
-      const p = this.toRender(e.pos);
-      this.effectsRenderer.drawExplosion(p.x, p.y, style.radius, (tt - e.t0) / style.duration, e.angles);
-    }
+    this.placeExplosions(own);
 
     // fronteira do mapa
     if (this.mapCenter && this.mapRadius > 0) {
@@ -1638,10 +1812,12 @@ export class GameScene {
     const layerTag = anchored || (mineAuth?.landingPhase ?? "") !== "" ? ""
       : lay.layerTo === "cruise" ? "  ▲ CLIMBING"
       : lay.layerTo ? "  ▼ DESCENDING"
-      : lay.layer === "attack" ? "  ✖ STATION ATTACK"
+      : lay.layer === "attack" ? "  ✖ STATION ATTACK · A/D circle · W/S approach/retreat"
       : lay.layer === "surface" ? "  ▼ SURFACE"
       : "  ▲ CRUISE";
-    const anchorTag = anchored ? "  ⚓ LANDED · [F] take off" : layerTag;
+    // builder em obra de turreta: travado na vaga, sem decolar
+    const lockedByTurret = [...this.serverStructures.values()].some((st) => st.turretBuilder === this.myShipId);
+    const anchorTag = anchored ? (lockedByTurret ? "  ⚓ LANDED · 🔒 building" : "  ⚓ LANDED · [F] take off") : layerTag;
     const canAnchor = !anchored && this.inLandZone;
     const anchorHint = canAnchor
       ? nearOwnStruct !== null
@@ -1691,8 +1867,11 @@ export class GameScene {
     let ammoHint = "";
     if (activeKind === "attack") {
       const ammo = mineAuth?.ammo ?? 0;
-      const gren = mineAuth?.grenadeAmmo ?? 0;
-      ammoHint = `  ·  ● ${ammo}/${BULLET_AMMO_MAX} perf.  ○ ${gren}/${GRENADE_AMMO_MAX} gran.`;
+      const mines = mineAuth?.grenadeAmmo ?? 0;
+      const w = mineAuth?.weapon ?? "missile";
+      const sel = (k: WeaponKind, label: string) => (w === k ? `▸${label}` : label);
+      const lock = w === "laser" ? (mineAuth?.aimLocked ? " LOCK" : mineAuth?.aimTarget ? " …" : "") : "";
+      ammoHint = `  ·  ${sel("missile", `[1] MSL ${ammo}/${MISSILE_AMMO_MAX}`)}  ${sel("laser", "[2] LASER")}${lock}  ${sel("mine", `[3] MINE ${mines}/${MINE_AMMO_MAX}`)}`;
     }
     let cargoHint = "";
     if (activeKind === "transport") {
@@ -1704,6 +1883,22 @@ export class GameScene {
         if (ck === "rations" || (ck === "ore" && st === "initialBase")) cargoHint += "  » [E] unload";
         else if (ck === "" && st === "miningStation" && anchoredStruct.oreStore > 0) cargoHint += "  » [E] load ores";
         else if (ck === "" && st === "initialBase" && anchoredStruct.rationStore > 0) cargoHint += "  » [E] load food";
+      }
+    }
+    if (activeKind === "builder") {
+      const hold = mineAuth?.cargoKind === "ore" ? Math.floor(mineAuth?.cargoAmount ?? 0) : 0;
+      cargoHint = `  ·  Hold: ${hold}/${BUILDER_ORE_CAP} ore`;
+      const job = [...this.serverStructures.values()].find((st) => st.turretBuilder === this.myShipId);
+      if (job) {
+        cargoHint += `  ·  ⚙ Building turret ${Math.floor(job.turretProgress * 100)}% — locked here ([C] switch / call a taxi)`;
+      } else if (anchoredStruct && anchoredStruct.owner === this.room.sessionId) {
+        const fromWallet = anchoredStruct.stype === "initialBase" || anchoredStruct.stype === "hq";
+        const avail = anchoredStruct.stype === "miningStation" ? anchoredStruct.oreStore : fromWallet ? ore : 0;
+        if (hold < BUILDER_ORE_CAP && avail >= 1) cargoHint += "  » [E] load ore";
+        if (anchoredStruct.turretBuild >= 0) cargoHint += "  ·  turret under construction";
+        else if (anchoredStruct.turrets < TURRET_MAX) {
+          cargoHint += `  ${hold >= TURRET_COST ? "»" : "·"} [B] turret ${anchoredStruct.turrets}/${TURRET_MAX} (${TURRET_COST} ore)`;
+        } else cargoHint += `  ·  turrets ${TURRET_MAX}/${TURRET_MAX}`;
       }
     }
     let taxiLine = "";
@@ -1725,8 +1920,8 @@ export class GameScene {
       hp: mineAuth?.hp ?? 100,
       ammo: mineAuth?.ammo ?? 0,
       grenadeAmmo: mineAuth?.grenadeAmmo ?? 0,
-      ammoMax: BULLET_AMMO_MAX,
-      grenadeMax: GRENADE_AMMO_MAX,
+      ammoMax: MISSILE_AMMO_MAX,
+      grenadeMax: MINE_AMMO_MAX,
       cargoKind: mineAuth?.cargoKind ?? "",
       cargoAmount: mineAuth?.cargoAmount ?? 0,
       mining: mineAuth?.mining ?? false,

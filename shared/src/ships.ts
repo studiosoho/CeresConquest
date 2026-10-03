@@ -125,24 +125,32 @@ export interface ShipPhysics extends ShipPhysicsSpec {
   assistDecel: number;
 }
 
+/**
+ * Fator da VELOCIDADE FINAL sobre a de projeto original de cada casco: 40%
+ * menor. Só o teto (o limitador de empuxo) muda — empuxo, massa e portanto a
+ * ACELERAÇÃO continuam os mesmos: a nave arranca igual e chega mais cedo ao
+ * teto. Mais tempo em velocidade de combate, menos choques a milhares de u/s.
+ */
+export const SHIP_TOP_SPEED_FACTOR = 0.6;
+
 const PHYSICS_SPECS: Record<ShipKind, ShipPhysicsSpec> = {
   // Referência da escala: ágil, mas já com peso perceptível.
   builder: {
     mass: 1.0, gyration: 12, thrust: 1200, rcsThrust: 300, torque: 6300 * (12 / 26) ** 2,
-    maxTurnRate: 2.6, maxSpeed: 5200, spoolTime: 0.8, restitution: 0.45,
+    maxTurnRate: 2.6, maxSpeed: 5200 * SHIP_TOP_SPEED_FACTOR, spoolTime: 0.8, restitution: 0.45,
   },
   // Casco de mineração: pesado de equipamento, motor médio, gira devagar. O
   // RCS é o de serviço (21% do motor) — serve para encostar na rocha, não para
   // esquivar.
   mining: {
     mass: 1.4, gyration: 14, thrust: 1260, rcsThrust: 265, torque: 8000 * (14 / 30) ** 2,
-    maxTurnRate: 2.0, maxSpeed: 4600, spoolTime: 1.0, restitution: 0.40,
+    maxTurnRate: 2.0, maxSpeed: 4600 * SHIP_TOP_SPEED_FACTOR, spoolTime: 1.0, restitution: 0.40,
   },
   // Caça: casco curto e leve, o mais rápido a acelerar e a apontar — e o único
   // com pacote de RCS de combate (30% do motor, 480 u/s²).
   attack: {
     mass: 0.8, gyration: 10, thrust: 1280, rcsThrust: 384, torque: 5400 * (10 / 22) ** 2,
-    maxTurnRate: 3.3, maxSpeed: 6000, spoolTime: 0.6, restitution: 0.50,
+    maxTurnRate: 3.3, maxSpeed: 6000 * SHIP_TOP_SPEED_FACTOR, spoolTime: 0.6, restitution: 0.50,
   },
   // Cargueiro: 2,6× a massa e 19 u de raio de giração — porão nas pontas, a
   // massa quase toda na borda do casco (k/R = 0,95). Sai devagar, para
@@ -151,7 +159,7 @@ const PHYSICS_SPECS: Record<ShipKind, ShipPhysicsSpec> = {
   // 96 u/s², um quinto do caça.
   transport: {
     mass: 2.6, gyration: 19, thrust: 1560, rcsThrust: 250, torque: 11600 * (19 / 42) ** 2,
-    maxTurnRate: 1.15, maxSpeed: 4000, spoolTime: 1.4, restitution: 0.30,
+    maxTurnRate: 1.15, maxSpeed: 4000 * SHIP_TOP_SPEED_FACTOR, spoolTime: 1.4, restitution: 0.30,
   },
 };
 
@@ -272,31 +280,7 @@ export const DOCK_RANGE = 500;
 export const TAXI_SPEED_MULT = 2;
 
 // ── Combate (nave de ataque) ──────────────────────────────────────────
-/** Velocidade do projétil perfurante (unidades/s). */
-export const BULLET_SPEED = 1_000;
-/** Alcance máximo do projétil perfurante antes de sumir (unidades). */
-export const BULLET_RANGE = 8_000;
-/** Raio de detecção de colisão do projétil. */
-export const BULLET_RADIUS = 30;
-/** Dano do projétil perfurante (HP). */
-export const BULLET_DAMAGE = 25;
-/** Cooldown entre disparos perfurantes (s). */
-export const BULLET_COOLDOWN = 0.25;
-/** Estoque máximo de munição perfurante. */
-export const BULLET_AMMO_MAX = 120;
-
-/** Velocidade da granada de proximidade (unidades/s). */
-export const GRENADE_SPEED = 1_000;
-/** Raio de detonação por proximidade (unidades). */
-export const GRENADE_PROX_RADIUS = 120;
-/** Raio de dano da explosão (unidades). */
-export const GRENADE_BLAST_RADIUS = 300;
-/** Dano máximo da granada (no centro da explosão). */
-export const GRENADE_DAMAGE = 120;
-/** Cooldown entre granadas (s). */
-export const GRENADE_COOLDOWN = 2.0;
-/** Estoque máximo de granadas. */
-export const GRENADE_AMMO_MAX = 10;
+// O armamento (mísseis, laser, minas) mora em weapons.ts.
 /** HP máximo de qualquer nave. */
 export const SHIP_HP_MAX = 100;
 

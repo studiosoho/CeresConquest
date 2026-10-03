@@ -51,6 +51,22 @@ export class ShipSchema extends Schema {
   @type("uint8") ammo = 0;
   @type("uint8") grenadeAmmo = 0;
   /**
+   * Armamento (shared/weapons.ts): arma selecionada; desvio da mira em volta
+   * do nariz (rad), alvo do computador de tiro (id de nave ou estrutura, ou
+   * "") e se a mira está TRAVADA (laser).
+   */
+  @type("string") weapon = "missile";
+  @type("float32") aimOffset = 0;
+  @type("string") aimTarget = "";
+  @type("boolean") aimLocked = false;
+  /**
+   * Modo ataque: a estrutura atacada e o raio da parede macia da órbita
+   * (sim-core attackModeInput). A predição do cliente traduz os comandos
+   * com eles, igual ao servidor. "" = fora do modo ataque.
+   */
+  @type("string") attackTarget = "";
+  @type("float32") attackRadius = 0;
+  /**
    * Camada de voo (shared/layers.ts): "cruise" | "surface" | "attack". Em
    * transição, `layerTo` é o destino e `layerProgress` vai de 0 a 1; parada
    * numa camada, `layerTo` é "". A predição do cliente precisa dos três para
@@ -62,8 +78,8 @@ export class ShipSchema extends Schema {
 }
 
 export class ProjectileSchema extends Schema {
-  /** "bullet" | "grenade" */
-  @type("string") kind = "bullet";
+  /** "missile" | "mine" */
+  @type("string") kind = "missile";
   @type("string") owner = "";
   @type("int32") sx = 0;
   @type("int32") sy = 0;
@@ -71,10 +87,12 @@ export class ProjectileSchema extends Schema {
   @type("float32") y = 0;
   @type("float32") vx = 0;
   @type("float32") vy = 0;
-  /** distância percorrida (para expirar o perfurante) */
+  /** distância percorrida (para expirar o míssil) */
   @type("float32") traveled = 0;
   /** nível de combate: "cruise" ou "surface" (o das estações) — só atinge o mesmo */
   @type("string") level = "cruise";
+  /** mina parada e ARMADA (pisca em vermelho; detona por proximidade) */
+  @type("boolean") armed = false;
 }
 
 export class PlayerSchema extends Schema {
@@ -109,6 +127,12 @@ export class StructureSchema extends Schema {
   @type("float32") maxHp = 0;
   /** nível (a estação de mineração de Ceres evolui; as demais ficam em 1) */
   @type("uint8") level = 1;
+  /** turretas prontas (turrets.ts) */
+  @type("uint8") turrets = 0;
+  /** obra em curso: índice do lugar (−1 = nenhuma), progresso 0..1 e o builder que constrói */
+  @type("int8") turretBuild = -1;
+  @type("float32") turretProgress = 0;
+  @type("string") turretBuilder = "";
 }
 
 export class MatchState extends Schema {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  BULLET_DAMAGE,
+  MISSILE_DAMAGE,
   COLLISION_DAMAGE_DV_THRESHOLD,
   COLLISION_DAMAGE_PER_DV,
   LAYER_TRANSITION_TIME,
@@ -58,7 +58,7 @@ function makeRoom() {
     sim: SimWorld;
     activeShip: Map<string, string>;
     tick(dt: number): void;
-    tryFire(sid: string, kind?: "bullet" | "grenade"): void;
+    tryFire(sid: string): void;
     tryToggleAnchor(sid: string): void;
   };
 }
@@ -84,12 +84,12 @@ function station(r: R, owner: string, ast: Asteroid, angle = 0.7): Structure {
 const run = (r: R, seconds: number) => {
   for (let i = 0; i < Math.round(seconds / DT); i++) r.tick(DT);
 };
-/** Aponta a nave para `target` e dispara um perfurante. */
+/** Aponta a nave para `target` e dispara um míssil (a arma inicial). */
 function fireAt(r: R, owner: string, s: ShipState, target: WorldPos): void {
   const { dx, dy } = relVec(s, target);
   s.angle = Math.atan2(dy, dx);
   s.fireCooldown = 0;
-  r.tryFire(owner, "bullet");
+  r.tryFire(owner);
 }
 const at = (p: WorldPos, dx: number, dy = 0): WorldPos => ({ sx: p.sx, sy: p.sy, x: p.x + dx, y: p.y + dy });
 
@@ -167,7 +167,7 @@ describe("tiros entre camadas", () => {
     const [, b] = ship(r, "p2", "attack", at(p, 400), false);
     fireAt(r, "p1", a, b);
     run(r, 1);
-    expect(b.hp).toBe(SHIP_HP_MAX - BULLET_DAMAGE);
+    expect(b.hp).toBe(SHIP_HP_MAX - MISSILE_DAMAGE);
   });
 
   it("camadas diferentes não combatem: o tiro do cruzeiro atravessa a nave da superfície", () => {
@@ -220,7 +220,7 @@ describe("tiros entre camadas", () => {
     const before = st.hp;
     fireAt(r, "p1", attacker, landed);
     run(r, 0.4);
-    expect(landed.hp).toBe(SHIP_HP_MAX - BULLET_DAMAGE);
+    expect(landed.hp).toBe(SHIP_HP_MAX - MISSILE_DAMAGE);
     expect(st.hp).toBe(before);
   });
 });
@@ -250,7 +250,7 @@ describe("estação com HP", () => {
     const st = station(r, "p2", rocks[0]);
     expect(st.hp).toBe(STRUCTURE_SPECS.miningStation.hp);
     assault(r, st)(3);
-    expect(st.hp).toBe(STRUCTURE_SPECS.miningStation.hp - 3 * BULLET_DAMAGE);
+    expect(st.hp).toBe(STRUCTURE_SPECS.miningStation.hp - 3 * MISSILE_DAMAGE);
   });
 
   it("o tiro do CRUZEIRO passa por cima da estação", () => {
@@ -283,7 +283,7 @@ describe("estação com HP", () => {
     const fire = assault(r, st);
     fire(1);
     const lost = (STRUCTURE_SPECS.miningStation.hp - st.hp) + hangar.reduce((a, s) => a + (SHIP_HP_MAX - s.hp), 0);
-    expect(lost).toBeCloseTo(BULLET_DAMAGE, 6);
+    expect(lost).toBeCloseTo(MISSILE_DAMAGE, 6);
     expect(hangar.some((s) => s.hp < SHIP_HP_MAX)).toBe(true);
     expect(STRUCTURE_SPECS.miningStation.hp - st.hp).toBeGreaterThan(0);
   });
@@ -366,7 +366,7 @@ describe("explosões anunciadas aos clientes (MSG_FX)", () => {
     return events;
   }
 
-  it("acerto de perfurante: um \"hit\" no ponto do impacto", () => {
+  it("acerto de míssil: um \"hit\" no ponto do impacto", () => {
     const r = makeRoom();
     const fx = spy(r);
     const p = openSpace();
@@ -376,7 +376,7 @@ describe("explosões anunciadas aos clientes (MSG_FX)", () => {
     run(r, 1);
     const hits = fx.filter((e) => e.kind === "hit");
     expect(hits.length).toBe(1);
-    expect(dist(hits[0], b)).toBeLessThan(BULLET_RADIUS_REACH);
+    expect(dist(hits[0], b)).toBeLessThan(MISSILE_REACH);
   });
 
   it("tiro que expira sem acertar não explode", () => {
@@ -388,16 +388,20 @@ describe("explosões anunciadas aos clientes (MSG_FX)", () => {
     expect(fx.length).toBe(0);
   });
 
-  it("granada: um \"blast\" onde detonou", () => {
+  it("mina: um \"blast\" onde detonou", () => {
     const r = makeRoom();
     const fx = spy(r);
     const p = openSpace();
-    const [, a] = ship(r, "p1", "attack", p);
+    const [aId] = ship(r, "p1", "attack", p);
     const [, b] = ship(r, "p2", "attack", at(p, 600), false);
-    const { dx, dy } = relVec(a, b);
-    a.angle = Math.atan2(dy, dx);
-    r.tryFire("p1", "grenade");
-    run(r, 1);
+    // mina armada, parada ao lado de onde o inimigo passa
+    (r as unknown as { weapons: Map<string, { weapon: string }> }).weapons.set(aId, {
+      weapon: "mine", offset: 0, target: "", locked: false,
+    } as never);
+    r.tryFire("p1");
+    const [mine] = [...(r as unknown as { projectiles: Map<string, Record<string, unknown>> }).projectiles.values()];
+    Object.assign(mine, { ...at(b, 0, 100), vx: 0, vy: 0, armed: true, age: 0 });
+    run(r, 0.2);
     const blasts = fx.filter((e) => e.kind === "blast");
     expect(blasts.length).toBe(1);
     expect(dist(blasts[0], b)).toBeLessThan(200);
@@ -430,8 +434,8 @@ describe("explosões anunciadas aos clientes (MSG_FX)", () => {
   });
 });
 
-/** alcance de acerto do perfurante: o raio dele mais o do casco */
-const BULLET_RADIUS_REACH = 30 + 20;
+/** alcance de acerto do míssil: o raio dele mais o do casco */
+const MISSILE_REACH = 30 + 20;
 
 describe("bots", () => {
   it("são imunes a dano de colisão, mas o choque acontece", () => {
@@ -442,8 +446,14 @@ describe("bots", () => {
     const r = room as unknown as R;
     // a 4000 u/s cada e 400 u de distância, o choque vem em ~0,05 s — antes de
     // a IA dos bots mudar o rumo
-    const [a, b] = [...r.sim.ships.values()];
+    // dois bots do QG em Ceres, tirados da vaga e postos frente a frente
+    const spawnBot = (room as unknown as { spawnBot(): string }).spawnBot.bind(room);
+    const [a, b] = [spawnBot(), spawnBot()].map((id) => r.sim.ships.get(id)!);
     const p = openSpace();
+    for (const s of [a, b]) {
+      Object.assign(s, { anchored: false, hqId: "", bay: -1 });
+      setLayer(s, "cruise");
+    }
     Object.assign(a, p, { vx: 4000, vy: 0, angle: 0 });
     Object.assign(b, { ...p, x: p.x + 400 }, { vx: -4000, vy: 0, angle: Math.PI });
     const va = a.vx;

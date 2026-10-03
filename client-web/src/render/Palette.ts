@@ -260,8 +260,19 @@ export const Palette = {
     jet: 0xffffff,   // chama do motor — linhas brancas piscantes
     landZone: 0xffee66,
     boundary: 0xff5544,
-    bullet: 0xffffff,
-    grenade: 0xff8833,
+    /** míssil: cabeça branca, rastro alaranjado */
+    missile: 0xffffff,
+    missileTrail: 0xff9944,
+    /** mina em voo (inerte) e armada (pisca em vermelho) */
+    mine: 0x9aa3ad,
+    mineArmed: 0xff2424,
+    /** traço do laser travado */
+    laser: 0x66e8ff,
+    /** mira da arma (retícula) e travamento no alvo */
+    aim: 0xd8f4ff,
+    aimLock: 0xff4a3a,
+    /** robôs de obra que vão e voltam entre o builder e a turreta */
+    robot: 0xffcc44,
     /** anel da nave em modo ataque de estação */
     attackRing: 0xff3344,
     /** barra de HP das estruturas: fundo, própria, inimiga */

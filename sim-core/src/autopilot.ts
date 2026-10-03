@@ -161,3 +161,62 @@ export function faceInput(ship: Pilotable, heading: number, thrust = false): Shi
   const turn = turnCommand(ship, err, p.attitudeHold / load);
   return { thrust: thrust && Math.abs(err) < THRUST_CONE, turn, mine: false };
 }
+
+/**
+ * MODO ATAQUE — tradução dos comandos do piloto (servidor e predição do
+ * cliente usam a MESMA conta). A nave sobre uma estação inimiga:
+ *  - tem o NARIZ TRAVADO na estação: o leme é do piloto automático
+ *    (`faceInput`), e a mira aponta para ela na diagonal do movimento;
+ *  - voa DE LADO em volta dela: A/D (o leme do piloto) viram o RCS lateral —
+ *    com o nariz sempre recentrado, o empurrão lateral vira uma órbita, até
+ *    ATTACK_ORBIT_SPEED; soltos, o RCS freia o giro;
+ *  - W aproxima (motor principal, nariz na estação) e S afasta (RCS de ré);
+ *  - sem W/S, o RAIO se mantém, e além de `holdRadius` do centro (PAREDE
+ *    MACIA) a nave é puxada de volta — sem isso a órbita abre em espiral (o
+ *    empurrão lateral não tem componente centrípeta) e sairia da zona.
+ */
+/**
+ * Teto da velocidade de órbita do modo ataque (u/s, tangencial). Sem teto o
+ * RCS lateral acelera sem parar, e a ~1000 u/s a curva pede mais força
+ * centrípeta do que a parede macia dá — a nave escapava da zona em 3 s.
+ */
+export const ATTACK_ORBIT_SPEED = 420;
+/** Abaixo disto (u/s) a órbita conta como parada — sem A/D, o RCS freia até aqui. */
+const ATTACK_ORBIT_BRAKE = 30;
+/**
+ * Controle do RAIO sem W/S: velocidade radial desejada = −ganho × excesso além
+ * da parede (dentro dela, zero — a nave segura o raio em que está). O motor
+ * (nariz na estação) puxa para dentro e o RCS de ré empurra para fora, com
+ * uma folga para não ficar ligando e desligando. Liga-desliga puro na parede
+ * oscilava com amplitude crescente e expulsava a nave da zona.
+ */
+const ATTACK_RADIAL_GAIN = 1.5;
+const ATTACK_RADIAL_BAND = 25;
+
+export function attackModeInput(
+  ship: Pilotable,
+  target: WorldPos,
+  holdRadius: number,
+  raw: ShipInput,
+): ShipInput {
+  const { dx, dy } = relVec(ship, target);
+  const facing = Math.atan2(dy, dx);
+  // velocidade tangencial, medida no sentido do RCS de boreste (+90° do nariz,
+  // que está na estação): A/D aceleram até o teto; soltos, o RCS freia o giro
+  const vt = -ship.vx * Math.sin(facing) + ship.vy * Math.cos(facing);
+  const cmd = raw.turn !== 0 ? raw.turn : raw.strafe ?? 0;
+  const strafe: ShipInput["turn"] = cmd !== 0
+    ? (cmd * vt >= ATTACK_ORBIT_SPEED ? 0 : cmd)
+    : vt > ATTACK_ORBIT_BRAKE ? -1 : vt < -ATTACK_ORBIT_BRAKE ? 1 : 0;
+  // raio: W aproxima, S afasta; soltos, o controle radial segura (ver acima)
+  const d = Math.hypot(dx, dy);
+  const vr = d > 0 ? -(ship.vx * dx + ship.vy * dy) / d : 0; // + = afastando
+  const vrWanted = d > holdRadius ? -ATTACK_RADIAL_GAIN * (d - holdRadius) : 0;
+  const manual = raw.thrust || (raw.retro ?? false);
+  const retro = manual ? raw.retro ?? false : vr < vrWanted - ATTACK_RADIAL_BAND;
+  const want = manual ? raw.thrust : vr > vrWanted + ATTACK_RADIAL_BAND;
+  // o motor só empurra com o nariz JÁ na estação (cone do faceInput): na
+  // descida o nariz ainda está virando, e empurrar ali afastaria a nave
+  const { turn, thrust } = faceInput(ship, facing, want);
+  return { thrust, turn, strafe, retro, mine: false, assistOff: raw.assistOff };
+}

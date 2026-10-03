@@ -14,7 +14,7 @@
 export type KeyName =
   | "W" | "A" | "S" | "D" | "UP" | "LEFT" | "RIGHT" | "SPACE" | "PLUS" | "MINUS"
   | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX"
-  | "E" | "F" | "C" | "G" | "T" | "Y" | "M" | "Q" | "X" | "U" | "V";
+  | "E" | "F" | "C" | "G" | "T" | "Y" | "M" | "Q" | "X" | "U" | "V" | "B";
 
 const CODE_MAP: Record<KeyName, string[]> = {
   W: ["KeyW"], A: ["KeyA"], S: ["KeyS"], D: ["KeyD"],
@@ -32,6 +32,8 @@ const CODE_MAP: Record<KeyName, string[]> = {
   U: ["KeyU"],
   // alterna a vista: de cima ↔ cockpit em tela cheia
   V: ["KeyV"],
+  // builder atracado: constrói uma turreta na estrutura
+  B: ["KeyB"],
 };
 
 /** code → nome (invertido uma vez no módulo) */

@@ -5,6 +5,8 @@ export * from "./structures";
 export * from "./bays";
 export * from "./ships";
 export * from "./layers";
+export * from "./weapons";
+export * from "./turrets";
 export * from "./asteroids";
 export * from "./constants";
 export * from "./coords";

@@ -216,9 +216,9 @@ export class HudRenderer {
     if (ship.kind === "attack" && ship.ammoMax > 0) {
       this.ammoBars.style.display = "";
       this.bulletBarFill.style.width = `${(ship.ammo / ship.ammoMax) * 100}%`;
-      this.bulletBarFill.style.background = cssColor(Palette.fx.bullet, 0.85);
+      this.bulletBarFill.style.background = cssColor(Palette.fx.missileTrail, 0.85);
       this.grenadeBarFill.style.width = `${(ship.grenadeAmmo / ship.grenadeMax) * 100}%`;
-      this.grenadeBarFill.style.background = cssColor(Palette.fx.grenade, 0.85);
+      this.grenadeBarFill.style.background = cssColor(Palette.fx.mineArmed, 0.85);
     }
   }
 
@@ -344,7 +344,7 @@ export class HudRenderer {
     const line2 =
       `W/↑ THROTTLE · A/D TURN${ctx.landHint}` +
       (ship.kind === "attack"
-        ? " · [SPACE] FIRE · [G] GRENADE"
+        ? " · [1/2/3] WEAPON · [SPACE] FIRE"
         : "") +
       " · [V] cockpit view · mouseroll/+/- zoom";
     return [line1, line2, ctx.prodLine, ctx.taxiLine].filter(Boolean).join("\n");

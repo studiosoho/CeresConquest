@@ -38,15 +38,27 @@ import { shipMeshData } from "./ShipMeshGenerator";
 import { ShipAB } from "./shipAB";
 
 const BEAM_PX = 2.6;
-const BULLET_PX = 2.2;
-const GRENADE_PX = 2.2;
+const MISSILE_PX = 2.4;
+const MISSILE_TRAIL_PX = 1.4;
+const MINE_PX = 2.2;
+const LASER_PX = 2;
+const AIM_PX = 1.6;
+/** míssil: comprimento da cabeça e do rastro (mundo) */
+const MISSILE_HEAD = 70;
+const MISSILE_TRAIL = 320;
+/** mina: raio do núcleo e do anel (mundo); meio-período do pisca (s) */
+/** robôs de obra: quantos, tamanho (mundo) e duração de uma ida e volta (s) */
+const ROBOT_COUNT = 3;
+const ROBOT_SIZE = 60;
+const ROBOT_TRIP = 2.4;
+const ROBOT_PX = 2;
+const MINE_CORE = 40;
+const MINE_RING = 95;
+const MINE_BLINK = 0.35;
 const LANDZONE_PX = 2;
 const BOUNDARY_PX = 2.5;
 const ATTACK_RING_PX = 2;
 const HP_BAR_PX = 5;
-const EXPLOSION_PX = 2.4;
-/** faíscas por explosão — FIXO: o pool exige a mesma forma em todo slot */
-export const EXPLOSION_SPARKS = 8;
 
 /**
  * Pool de malhas de mesma forma (mesma contagem de pontos por slot),
@@ -129,13 +141,20 @@ export class EffectsRenderer {
   private trails: ShipTrails;
   /** tempo do último drawJet — o rastro é reconstruído no endFrame */
   private lastT = 0;
-  private bulletPool: LinePool;
-  private grenadePool: LinePool;
+  private missilePool: LinePool;
+  private missileTrailPool: LinePool;
+  private minePool: LinePool;
+  private mineArmedPool: LinePool;
+  private laserPool: LinePool;
+  private aimPool: LinePool;
+  private aimLockPool: LinePool;
+  private bracketPool: LinePool;
+  private bracketLockPool: LinePool;
+  private robotPool: LinePool;
   private attackPool: LinePool;
   private hpBackPool: LinePool;
   private hpOwnPool: LinePool;
   private hpEnemyPool: LinePool;
-  private explosionPool: LinePool;
 
   // feixe de mineração — singleton dinâmico (posições mudam todo frame)
   private beamMesh: GreasedLineBaseMesh | null = null;
@@ -160,23 +179,29 @@ export class EffectsRenderer {
     this.layerRoot = new TransformNode("fxLayer", scene);
     this.layerRoot.position.z = EFFECTS_LAYER_Z;
     this.trails = new ShipTrails(scene, glow, this.layerRoot);
-    this.bulletPool = new LinePool(scene, glow, "bullet", Palette.fx.bullet, BULLET_PX, this.layerRoot);
-    this.grenadePool = new LinePool(scene, glow, "grenade", Palette.fx.grenade, GRENADE_PX, this.layerRoot);
+    this.missilePool = new LinePool(scene, glow, "missile", Palette.fx.missile, MISSILE_PX, this.layerRoot);
+    this.missileTrailPool = new LinePool(scene, glow, "missileTrail", Palette.fx.missileTrail, MISSILE_TRAIL_PX, this.layerRoot);
+    this.minePool = new LinePool(scene, glow, "mine", Palette.fx.mine, MINE_PX, this.layerRoot);
+    this.mineArmedPool = new LinePool(scene, glow, "mineArmed", Palette.fx.mineArmed, MINE_PX, this.layerRoot);
+    this.laserPool = new LinePool(scene, glow, "laser", Palette.fx.laser, LASER_PX, this.layerRoot);
+    // mira e travamento são indicadores de HUD: só na câmera principal
+    this.aimPool = new LinePool(scene, glow, "aim", Palette.fx.aim, AIM_PX, this.layerRoot, MASK_MAIN_ONLY);
+    this.aimLockPool = new LinePool(scene, glow, "aimLock", Palette.fx.aimLock, AIM_PX, this.layerRoot, MASK_MAIN_ONLY);
+    this.bracketPool = new LinePool(scene, glow, "bracket", Palette.fx.aim, AIM_PX, this.layerRoot, MASK_MAIN_ONLY);
+    this.bracketLockPool = new LinePool(scene, glow, "bracketLock", Palette.fx.aimLock, AIM_PX, this.layerRoot, MASK_MAIN_ONLY);
+    this.robotPool = new LinePool(scene, glow, "robot", Palette.fx.robot, ROBOT_PX, this.layerRoot);
     this.attackPool = new LinePool(scene, glow, "attackRing", Palette.fx.attackRing, ATTACK_RING_PX, this.layerRoot, MASK_MAIN_ONLY);
     this.hpBackPool = new LinePool(scene, glow, "hpBack", Palette.fx.hpBack, HP_BAR_PX + 2, this.layerRoot, MASK_MAIN_ONLY);
     this.hpOwnPool = new LinePool(scene, glow, "hpOwn", Palette.fx.hpOwn, HP_BAR_PX, this.layerRoot, MASK_MAIN_ONLY);
     this.hpEnemyPool = new LinePool(scene, glow, "hpEnemy", Palette.fx.hpEnemy, HP_BAR_PX, this.layerRoot, MASK_MAIN_ONLY);
-    this.explosionPool = new LinePool(scene, glow, "explosion", Palette.fx.explosion, EXPLOSION_PX, this.layerRoot);
   }
 
   beginFrame(): void {
-    this.bulletPool.begin();
-    this.grenadePool.begin();
+    for (const p of this.weaponPools()) p.begin();
     this.attackPool.begin();
     this.hpBackPool.begin();
     this.hpOwnPool.begin();
     this.hpEnemyPool.begin();
-    this.explosionPool.begin();
     this.beamUsedThisFrame = false;
     this.landZoneUsedThisFrame = false;
   }
@@ -186,13 +211,11 @@ export class EffectsRenderer {
     this.trails.setEnabled(ShipAB.trails);
     this.trails.heads = ShipAB.trailHeads;
     this.trails.flush(this.lastT);
-    this.bulletPool.end();
-    this.grenadePool.end();
+    for (const p of this.weaponPools()) p.end();
     this.attackPool.end();
     this.hpBackPool.end();
     this.hpOwnPool.end();
     this.hpEnemyPool.end();
-    this.explosionPool.end();
     if (!this.beamUsedThisFrame) this.beamMesh?.setEnabled(false);
     if (!this.landZoneUsedThisFrame) this.landZoneRoot?.setEnabled(false);
   }
@@ -240,17 +263,99 @@ export class EffectsRenderer {
 
   // ── projéteis ─────────────────────────────────────────────────────
 
-  drawBullet(x: number, y: number): void {
-    const r = BULLET_PX * 1.1;
-    const pts = circlePts(x, y, r, 8).map((p) => toScene(p.x, p.y));
-    this.bulletPool.next([pts]);
+  private weaponPools(): LinePool[] {
+    return [this.missilePool, this.missileTrailPool, this.minePool, this.mineArmedPool, this.laserPool, this.aimPool, this.aimLockPool, this.bracketPool, this.bracketLockPool, this.robotPool];
   }
 
-  drawGrenade(x: number, y: number, tt: number): void {
-    const core = circlePts(x, y, GRENADE_PX * 1.2, 8).map((p) => toScene(p.x, p.y));
-    const ringR = GRENADE_PX * (3 + Math.sin(tt * 14));
+  /**
+   * Mini míssil: cabeça curta na direção do voo e um PEQUENO RASTRO atrás
+   * dela, que cresce com a distância voada (`traveled`) até MISSILE_TRAIL.
+   */
+  drawMissile(x: number, y: number, vx: number, vy: number, traveled: number): void {
+    const v = Math.hypot(vx, vy) || 1;
+    const ux = vx / v, uy = vy / v;
+    const head = toScene(x, y);
+    const neck = toScene(x - ux * MISSILE_HEAD, y - uy * MISSILE_HEAD);
+    const tail = Math.max(MISSILE_HEAD + 1, Math.min(MISSILE_TRAIL, traveled));
+    this.missilePool.next([[neck, head]]);
+    this.missileTrailPool.next([[toScene(x - ux * tail, y - uy * tail), neck]]);
+  }
+
+  /**
+   * Mina: núcleo e anel. Em voo é cinza e inerte; parada e ARMADA, pisca
+   * em vermelho (o anel pulsa junto).
+   */
+  drawMine(x: number, y: number, armed: boolean, tt: number): void {
+    const on = armed && Math.floor(tt / MINE_BLINK) % 2 === 0;
+    const ringR = armed ? MINE_RING * (on ? 1 : 0.7) : MINE_RING * 0.55;
+    const core = circlePts(x, y, MINE_CORE, 8).map((p) => toScene(p.x, p.y));
     const ring = circlePts(x, y, ringR, 16).map((p) => toScene(p.x, p.y));
-    this.grenadePool.next([core, ring]);
+    (on ? this.mineArmedPool : this.minePool).next([core, ring]);
+  }
+
+  /**
+   * Traço do laser travado, da nave ao alvo, sumindo em `t` ∈ [0, 1]: o
+   * traço afina para a ponta e o anel de impacto se fecha.
+   */
+  drawLaser(fx: number, fy: number, tx: number, ty: number, t: number): void {
+    const u = Math.min(1, Math.max(0, t));
+    const sx = fx + (tx - fx) * u * 0.85, sy = fy + (ty - fy) * u * 0.85;
+    const ring = circlePts(tx, ty, Math.max(4, 60 * (1 - u)), 10).map((p) => toScene(p.x, p.y));
+    this.laserPool.next([[toScene(sx, sy), toScene(tx, ty)], ring]);
+  }
+
+  /**
+   * Retícula da arma (estilo Elite): onde a arma — girada em volta do nariz
+   * pelo computador de tiro — aponta agora. Travada, fica vermelha e fecha
+   * os colchetes em volta do alvo.
+   */
+  drawAim(x: number, y: number, size: number, locked: boolean): void {
+    const ring = circlePts(x, y, size, 16).map((p) => toScene(p.x, p.y));
+    const ticks: Vector3[][] = [];
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2;
+      const c = Math.cos(a), s = Math.sin(a);
+      ticks.push([toScene(x + c * size * 0.55, y + s * size * 0.55), toScene(x + c * size * 1.45, y + s * size * 1.45)]);
+    }
+    (locked ? this.aimLockPool : this.aimPool).next([ring, ...ticks]);
+  }
+
+  /**
+   * Robôs de obra: ROBOT_COUNT losangos que saem do builder (fx, fy), vão até
+   * o lugar da turreta (tx, ty) e voltam, defasados entre si, num arco leve
+   * para não andarem em fila. Param um instante em cada ponta (carregam e
+   * montam). Puramente visual — a obra é do servidor.
+   */
+  drawBuildRobots(fx: number, fy: number, tx: number, ty: number, tt: number): void {
+    const dx = tx - fx, dy = ty - fy;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len, ny = dx / len;
+    for (let k = 0; k < ROBOT_COUNT; k++) {
+      const ph = ((tt / ROBOT_TRIP + k / ROBOT_COUNT) % 1 + 1) % 1;
+      // 0→1→0 com pausas nas pontas (carrega no builder, monta na turreta)
+      const tri = ph < 0.5 ? ph * 2 : 2 - ph * 2;
+      const u = Math.min(1, Math.max(0, (tri - 0.1) / 0.8));
+      const e = u * u * (3 - 2 * u);
+      const arc = Math.sin(e * Math.PI) * len * 0.18 * (k - (ROBOT_COUNT - 1) / 2);
+      const x = fx + dx * e + nx * arc;
+      const y = fy + dy * e + ny * arc;
+      const a = Math.atan2(dy, dx) + (ph < 0.5 ? 0 : Math.PI);
+      const c = Math.cos(a), s = Math.sin(a);
+      const p = (lx: number, ly: number) => toScene(x + c * lx - s * ly, y + s * lx + c * ly);
+      const r = ROBOT_SIZE / 2;
+      this.robotPool.next([[p(r, 0), p(0, r * 0.6), p(-r, 0), p(0, -r * 0.6), p(r, 0)]]);
+    }
+  }
+
+  /** Colchetes em volta do alvo do computador de tiro (vermelhos se travado). */
+  drawTargetBrackets(x: number, y: number, size: number, locked: boolean): void {
+    const k = size * 0.4;
+    const parts: Vector3[][] = [];
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      const cx = x + sx * size, cy = y + sy * size;
+      parts.push([toScene(cx - sx * k, cy), toScene(cx, cy), toScene(cx, cy - sy * k)]);
+    }
+    (locked ? this.bracketLockPool : this.bracketPool).next(parts);
   }
 
   // ── camadas e combate ─────────────────────────────────────────────
@@ -285,39 +390,6 @@ export class EffectsRenderer {
     this.hpBackPool.next([[toScene(x0, y), toScene(x0 + width, y)]]);
     if (f <= 0) return;
     (own ? this.hpOwnPool : this.hpEnemyPool).next([[toScene(x0, y), toScene(x0 + width * f, y)]]);
-  }
-
-  /**
-   * Explosão vetorial em (x, y), no instante `t` ∈ [0, 1] da vida dela, com
-   * raio final `radius` (mundo): um anel de choque que se expande rápido e
-   * desacelera, um clarão interno que cresce e se fecha, e EXPLOSION_SPARKS
-   * faíscas que voam para fora encurtando até sumir. `angles` são as direções
-   * das faíscas (sorteadas uma vez por explosão, para cada uma ser diferente).
-   */
-  drawExplosion(x: number, y: number, radius: number, t: number, angles: readonly number[]): void {
-    const u = Math.min(1, Math.max(0, t));
-    const out = 1 - (1 - u) * (1 - u) * (1 - u); // desacelera
-    const ring = (r: number, n: number) => {
-      const pts: Vector3[] = [];
-      for (let i = 0; i <= n; i++) {
-        const a = (i / n) * Math.PI * 2;
-        pts.push(toScene(x + Math.cos(a) * r, y + Math.sin(a) * r));
-      }
-      return pts;
-    };
-    const parts: Vector3[][] = [
-      ring(Math.max(1, radius * out), 24),
-      // clarão: cresce até 40% do raio e se fecha na segunda metade
-      ring(Math.max(1, radius * 0.4 * Math.sin(Math.PI * Math.min(1, u * 1.4))), 12),
-    ];
-    const r0 = radius * (0.15 + 0.75 * out);
-    const len = radius * 0.35 * (1 - u);
-    for (let i = 0; i < EXPLOSION_SPARKS; i++) {
-      const a = angles[i] ?? (i / EXPLOSION_SPARKS) * Math.PI * 2;
-      const c = Math.cos(a), s = Math.sin(a);
-      parts.push([toScene(x + c * r0, y + s * r0), toScene(x + c * (r0 + Math.max(0.5, len)), y + s * (r0 + Math.max(0.5, len)))]);
-    }
-    this.explosionPool.next(parts);
   }
 
   // ── zona de pouso ─────────────────────────────────────────────────
@@ -386,13 +458,11 @@ export class EffectsRenderer {
 
   destroy(): void {
     this.trails.dispose();
-    this.bulletPool.dispose();
+    for (const p of this.weaponPools()) p.dispose();
     this.attackPool.dispose();
     this.hpBackPool.dispose();
     this.hpOwnPool.dispose();
     this.hpEnemyPool.dispose();
-    this.explosionPool.dispose();
-    this.grenadePool.dispose();
     if (this.beamMesh) disposeLineBundle(this.beamMesh, this.glow);
     if (this.landZoneMesh) disposeLineBundle(this.landZoneMesh, this.glow);
     this.landZoneRoot?.dispose();

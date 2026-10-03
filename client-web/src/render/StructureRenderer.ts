@@ -33,7 +33,7 @@ import type { GreasedLineBaseMesh } from "@babylonjs/core/Meshes/GreasedLine/gre
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Vector3, Quaternion, Matrix } from "@babylonjs/core/Maths/math.vector";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { STRUCTURE_SPECS, CERES_STATION_ANNEXES_PER_LEVEL, bayLayout, bayFrameAngle } from "@ceres/shared";
+import { STRUCTURE_SPECS, CERES_STATION_ANNEXES_PER_LEVEL, bayLayout, bayFrameAngle, turretSlot } from "@ceres/shared";
 import type { StructureType, ShipKind } from "@ceres/shared";
 import { shipVerts } from "../shapes";
 import { Palette } from "./Palette";
@@ -55,6 +55,10 @@ export interface StructureRenderData {
   level?: number;
   /** raio da área em que os anexos se espalham (a plataforma de Ceres); 0 = sem anexos */
   annexArea?: number;
+  /** turretas prontas e a obra em curso (lugar −1 = nenhuma; progresso 0..1) — turrets.ts */
+  turrets?: number;
+  turretBuild?: number;
+  turretProgress?: number;
 }
 
 /** Plataforma hospedeira: root do asteroide + quadro da face. */
@@ -117,6 +121,12 @@ interface StructEntry {
   annexMeshes: Mesh[];
   annexLines: GreasedLineBaseMesh[];
   annexLevel: number;
+  /** turretas (ver rebuildTurrets): nó, malhas, assinatura e o nó da que está em obra */
+  turretNode: TransformNode | null;
+  turretMeshes: Mesh[];
+  turretLines: GreasedLineBaseMesh[];
+  turretSig: string;
+  turretBuildNode: TransformNode | null;
 }
 
 export class StructureRenderer {
@@ -166,6 +176,7 @@ export class StructureRenderer {
         entry.root.parent = attach.root;
         this.placeOnFace(entry, attach);
         entry.lastSig = "!"; // as vagas dependem da plataforma: refaz
+        entry.turretSig = "!"; // as turretas também
       }
       entry.root.setEnabled(true);
     }
@@ -175,6 +186,16 @@ export class StructureRenderer {
       entry.annexLevel = level;
       this.rebuildAnnexes(entry, level, data.annexArea ?? 0);
     }
+
+    const turrets = data.turrets ?? 0;
+    const build = data.turretBuild ?? -1;
+    const tsig = `${turrets}|${build}`;
+    if (tsig !== entry.turretSig && entry.face) {
+      entry.turretSig = tsig;
+      this.rebuildTurrets(entry, turrets, build);
+    }
+    // a turreta em obra cresce do chão conforme o progresso
+    if (entry.turretBuildNode) entry.turretBuildNode.scaling.z = Math.max(0.06, data.turretProgress ?? 0);
 
     const sig = occupants.map((k) => k ?? "").join(",");
     if (sig !== entry.lastSig) {
@@ -246,6 +267,7 @@ export class StructureRenderer {
       shipBays: data.shipBays, expandedBays: data.expandedBays,
       angle: data.angle, face: null, anchor: { x: 0, y: 0 },
       annexNode: null, annexMeshes: [], annexLines: [], annexLevel: 1,
+      turretNode: null, turretMeshes: [], turretLines: [], turretSig: "", turretBuildNode: null,
     };
   }
 
@@ -383,6 +405,53 @@ export class StructureRenderer {
     const bundle = this.makeBundle(`${entry.root.name}_baylines`, lineParts, BAY_PX);
     bundle.parent = bayNode;
     entry.bayLines.push(bundle);
+  }
+
+  // ── turretas (turrets.ts) ────────────────────────────────────────────
+
+  /**
+   * Turretas prontas (`count`) e a que está em obra (`build`, −1 = nenhuma),
+   * nos lugares de turretSlot — o mesmo quadro das vagas, então caem onde o
+   * servidor põe a origem do tiro. Cada uma: base octogonal, cabeça
+   * hexagonal e cano apontado para fora do prédio, mais um anel na cor do
+   * dono. A em obra cresce em z (upsert) e o anel dela é o do andaime.
+   */
+  private rebuildTurrets(entry: StructEntry, count: number, build: number): void {
+    for (const m of entry.turretLines) disposeLineBundle(m, this.glow);
+    for (const m of entry.turretMeshes) m.dispose(false, false);
+    entry.turretLines = [];
+    entry.turretMeshes = [];
+    entry.turretNode?.dispose();
+    entry.turretNode = null;
+    entry.turretBuildNode = null;
+    const slots: Array<{ i: number; building: boolean }> = [];
+    for (let i = 0; i < count; i++) slots.push({ i, building: false });
+    if (build >= 0) slots.push({ i: build, building: true });
+    if (slots.length === 0) return;
+
+    const node = new TransformNode(`${entry.root.name}_turrets`, this.scene);
+    node.parent = entry.root;
+    entry.turretNode = node;
+    const center = this.bayCenterLocal(entry, 0, 0, 0);
+    const accent = c3(entry.own ? Palette.structure.own : Palette.structure.other);
+    const scaffold = c3(Palette.fx.robot);
+    for (const { i, building } of slots) {
+      const s = turretSlot(entry.type, i);
+      const { u, v } = this.bayCenterLocal(entry, s.x, s.y, 0);
+      const t = new TransformNode(`${entry.root.name}_turret${i}`, this.scene);
+      t.parent = node;
+      t.position.set(u, v, 0);
+      // cano (+y local da turreta) para fora do prédio
+      t.rotation.z = Math.atan2(v - center.v, u - center.u) - Math.PI / 2;
+      const g = turretGeometry();
+      const mesh = this.makeSolid(`${t.name}_body`, g.vertices, g.normals, g.triangles, this.structMat);
+      mesh.parent = t;
+      entry.turretMeshes.push(mesh);
+      const ring = this.makeLine(`${t.name}_ring`, [ringPts(TURRET_BASE_R + 4, TURRET_BASE_H + 1, 16)], ACCENT_PX, building ? scaffold : accent, false);
+      ring.parent = t;
+      entry.turretLines.push(ring);
+      if (building) entry.turretBuildNode = t;
+    }
   }
 
   /** Placa fina: tampo + saias laterais. */
@@ -546,8 +615,84 @@ export class StructureRenderer {
     for (const m of entry.meshes) m.dispose(false, false); // materiais compartilhados
     for (const m of entry.bayMeshes) m.dispose(false, false);
     entry.bayNode?.dispose();
+    for (const m of entry.turretLines) disposeLineBundle(m, this.glow);
+    for (const m of entry.turretMeshes) m.dispose(false, false);
+    entry.turretNode?.dispose();
     entry.root.dispose();
   }
+}
+
+// ── turreta: geometria low poly (unidades de mundo, base em z = 0) ────────
+
+const TURRET_BASE_R = 36;
+const TURRET_BASE_H = 16;
+const TURRET_HEAD_R = 23;
+const TURRET_HEAD_H = 15;
+const TURRET_BARREL_L = 60;
+const TURRET_BARREL_W = 9;
+
+/** Prisma reto de `sides` lados (raio r, de z0 a z1), facetado, empilhado em verts/normals/tris. */
+function pushPrism(
+  out: { vertices: Vector3[]; normals: Vector3[]; triangles: number[] },
+  r: number, z0: number, z1: number, sides: number, rot = 0,
+): void {
+  const p = (k: number, z: number) => new Vector3(Math.cos(rot + (k / sides) * Math.PI * 2) * r, Math.sin(rot + (k / sides) * Math.PI * 2) * r, z);
+  const tri = (a: Vector3, b: Vector3, c: Vector3, n: Vector3) => {
+    const base = out.vertices.length;
+    out.vertices.push(a, b, c);
+    out.normals.push(n, n, n);
+    out.triangles.push(base, base + 1, base + 2);
+  };
+  const top = new Vector3(0, 0, z1);
+  for (let k = 0; k < sides; k++) {
+    const a0 = p(k, z0), a1 = p(k + 1, z0), b0 = p(k, z1), b1 = p(k + 1, z1);
+    const mid = (k + 0.5) / sides * Math.PI * 2 + rot;
+    const n = new Vector3(Math.cos(mid), Math.sin(mid), 0);
+    tri(a0, a1, b1, n);
+    tri(a0, b1, b0, n);
+    tri(b0, b1, top, new Vector3(0, 0, 1));
+  }
+}
+
+/** Caixa alinhada aos eixos (cantos min/max). */
+function pushBox(out: { vertices: Vector3[]; normals: Vector3[]; triangles: number[] }, min: Vector3, max: Vector3): void {
+  const q = (a: Vector3, b: Vector3, c: Vector3, d: Vector3, n: Vector3) => {
+    const base = out.vertices.length;
+    out.vertices.push(a, b, c, d);
+    out.normals.push(n, n, n, n);
+    out.triangles.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  };
+  const v = (x: number, y: number, z: number) => new Vector3(x, y, z);
+  const [x0, y0, z0, x1, y1, z1] = [min.x, min.y, min.z, max.x, max.y, max.z];
+  q(v(x0, y0, z1), v(x1, y0, z1), v(x1, y1, z1), v(x0, y1, z1), v(0, 0, 1));
+  q(v(x0, y0, z0), v(x1, y0, z0), v(x1, y0, z1), v(x0, y0, z1), v(0, -1, 0));
+  q(v(x1, y0, z0), v(x1, y1, z0), v(x1, y1, z1), v(x1, y0, z1), v(1, 0, 0));
+  q(v(x1, y1, z0), v(x0, y1, z0), v(x0, y1, z1), v(x1, y1, z1), v(0, 1, 0));
+  q(v(x0, y1, z0), v(x0, y0, z0), v(x0, y0, z1), v(x0, y1, z1), v(-1, 0, 0));
+}
+
+let turretGeo: { vertices: Vector3[]; normals: Vector3[]; triangles: number[] } | null = null;
+/** Base octogonal + cabeça hexagonal + cano em +y. Gerada uma vez. */
+function turretGeometry() {
+  if (turretGeo) return turretGeo;
+  const out = { vertices: [] as Vector3[], normals: [] as Vector3[], triangles: [] as number[] };
+  pushPrism(out, TURRET_BASE_R, 0, TURRET_BASE_H, 8, Math.PI / 8);
+  pushPrism(out, TURRET_HEAD_R, TURRET_BASE_H, TURRET_BASE_H + TURRET_HEAD_H, 6);
+  const zc = TURRET_BASE_H + TURRET_HEAD_H * 0.5;
+  pushBox(out,
+    new Vector3(-TURRET_BARREL_W / 2, TURRET_HEAD_R * 0.5, zc - TURRET_BARREL_W / 2),
+    new Vector3(TURRET_BARREL_W / 2, TURRET_HEAD_R * 0.5 + TURRET_BARREL_L, zc + TURRET_BARREL_W / 2));
+  turretGeo = out;
+  return out;
+}
+
+function ringPts(r: number, z: number, n: number): Vector3[] {
+  const out: Vector3[] = [];
+  for (let k = 0; k <= n; k++) {
+    const a = (k / n) * Math.PI * 2;
+    out.push(new Vector3(Math.cos(a) * r, Math.sin(a) * r, z));
+  }
+  return out;
 }
 
 // ── helpers geométricos das vagas ──────────────────────────────────────────

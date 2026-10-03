@@ -90,10 +90,16 @@ export const MSG_TAXI = "taxi";
  */
 export const MSG_CARGO = "cargo";
 
-/** Disparo da nave de ataque: "bullet" = perfurante, "grenade" = granada. */
-export type FireKind = "bullet" | "grenade";
-export interface FireCommand { kind: FireKind; }
+/**
+ * Disparo da nave de ataque (sem payload): dispara a arma SELECIONADA
+ * (MSG_WEAPON). A mira é do servidor — o computador de tiro (weapons.ts).
+ */
 export const MSG_FIRE = "fire";
+
+/** Seleciona a arma da nave de ataque (teclas 1, 2 e 3). */
+import type { WeaponKind } from "./weapons";
+export interface WeaponCommand { weapon: WeaponKind; }
+export const MSG_WEAPON = "weapon";
 
 /**
  * Evolui a estação de mineração de Ceres em que o builder está atracado (sem
@@ -102,16 +108,37 @@ export const MSG_FIRE = "fire";
 export const MSG_UPGRADE = "upgrade";
 
 /**
+ * Builder atracado numa estrutura própria: começa a construir uma turreta
+ * (turrets.ts), pagando com o minério do porão. Trava o builder até o fim.
+ */
+export const MSG_TURRET = "turret";
+
+/**
  * Efeito visual anunciado pelo servidor a todos os clientes — não muda o jogo,
  * só diz ONDE e O QUÊ explodiu, na posição exata do servidor (o cliente não
  * teria como saber: o projétil some do estado no mesmo tick do acerto).
- *  - "hit": perfurante acertou nave ou estrutura;
- *  - "blast": granada detonou (raio de dano GRENADE_BLAST_RADIUS);
+ *  - "hit": míssil acertou nave ou estrutura;
+ *  - "blast": mina detonou (raio de dano MINE_BLAST_RADIUS);
+ *  - "laser": disparo de laser TRAVADO — traço da nave (sx..y) ao alvo (tsx..ty);
  *  - "shipDown": nave destruída (tiro ou colisão);
  *  - "structureDown": estrutura destruída.
  */
-export type FxKind = "hit" | "blast" | "shipDown" | "structureDown";
-export interface FxEvent { kind: FxKind; sx: number; sy: number; x: number; y: number; }
+export type FxKind = "hit" | "blast" | "shipDown" | "structureDown" | "laser";
+export interface FxEvent {
+  kind: FxKind;
+  sx: number; sy: number; x: number; y: number;
+  /** ponta do traço (só "laser") */
+  tsx?: number; tsy?: number; tx?: number; ty?: number;
+  /**
+   * EM QUEM a explosão acontece — quem recebeu o dano: a nave `id`, a
+   * estrutura `id` ou a nave GUARDADA na vaga `bay` da estrutura `id` (o
+   * sorteio do dano, combat.ts splitDamage). O cliente dimensiona a explosão
+   * pelo alvo e a prende a ele (a nave atingida a leva junto).
+   */
+  on?: "ship" | "structure" | "bay";
+  id?: string;
+  bay?: number;
+}
 export const MSG_FX = "fx";
 
 /** Expande a arena para o próximo tamanho (small→medium→large). */

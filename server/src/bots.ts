@@ -14,13 +14,54 @@ import { seekInput, faceInput, type SimWorld, type ShipState } from "@ceres/sim-
  * que um jogador humano. Comportamento de scout: vagueia pelo cinturão,
  * minera oportunisticamente ao passar perto e desvia de asteroides próximos.
  */
+/**
+ * FROTA DOS BOTS: naves de ataque produzidas pelo QG dos bots em Ceres (uma a
+ * cada BOT_BUILD_INTERVAL, até BOT_FLEET_MAX — as vagas do QG). Cada uma vive
+ * num ciclo:
+ *  - "raid": voa até a estrutura de jogador mais perto, desce ao modo ataque
+ *    sobre ela e dispara os BOT_AMMO mísseis que leva;
+ *  - "return": sem munição (ou sem alvo), volta ao QG e pousa numa vaga;
+ *  - "reload": atracada, recarrega em BOT_RELOAD_TIME s e espera na vaga.
+ *
+ * ATAQUE EM ONDA: os bots prontos (atracados, recarregados) só saem em GRUPO
+ * — quando BOT_WAVE_SIZE deles estão prontos e há alvo, saem juntos, no mesmo
+ * instante. Sozinho, um bot caía nas turretas antes de o próximo existir.
+ */
 export interface BotState {
   heading: number;
   wanderTimer: number;
+  phase: "raid" | "return" | "reload";
+  /** s que faltam para terminar a recarga (fase "reload") */
+  reload: number;
+  /** próximo disparo permitido (s de partida) — o bot atira mais devagar que o jogador */
+  nextShot: number;
+  /** sentido em que circula a estação no modo ataque (como A/D do jogador) */
+  orbitDir: -1 | 1;
 }
 
+/** Dono das naves e do QG dos bots (as estruturas de jogador têm o sessionId). */
+export const BOT_OWNER = "";
+/** Frota máxima — o número de vagas do QG. */
+export const BOT_FLEET_MAX = 6;
+/** Intervalo de produção de um bot novo no QG (s). */
+export const BOT_BUILD_INTERVAL = 120;
+/** Mísseis por saída. */
+export const BOT_AMMO = 2;
+/** Recarga atracado no QG (s). */
+export const BOT_RELOAD_TIME = 30;
+/** Bots por grupo de ataque. */
+export const BOT_WAVE_SIZE = 3;
+/** Intervalo entre disparos (s). */
+export const BOT_FIRE_INTERVAL = 1.2;
+/** Erro de mira (rad) abaixo do qual o bot dispara. */
+export const BOT_AIM_TOLERANCE = 0.02;
+
+/** Bot recém-produzido: já armado, atracado, pronto para sair. */
 export function makeBotState(): BotState {
-  return { heading: Math.random() * Math.PI * 2, wanderTimer: 0 };
+  return {
+    heading: Math.random() * Math.PI * 2, wanderTimer: 0, phase: "reload", reload: 0, nextShot: 0,
+    orbitDir: Math.random() < 0.5 ? -1 : 1,
+  };
 }
 
 /** Vira para longe se a borda do asteroide está a menos disto. */

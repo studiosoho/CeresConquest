@@ -173,6 +173,12 @@ export class ShipRenderer {
     return this.scaleByKind[kind];
   }
 
+  /** Profundidade de cena (z) da malha da nave — onde a explosão nela fica. */
+  poseZ(id: string): number | null {
+    const entry = this.entries.get(id);
+    return entry ? entry.instance.root.position.z : null;
+  }
+
   /** Escala de exibição corrente DESTA nave (a da classe, se não houver uma própria). */
   displayScale(id: string, kind: ShipKind): number {
     return this.entries.get(id)?.scale ?? this.scaleByKind[kind];

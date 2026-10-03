@@ -3,7 +3,14 @@ import {
   COLLISION_DAMAGE_PER_DV,
   cargoLoadFactor,
   shipPhysics,
+  interceptAngle,
+  relVec,
+  wrapAngle,
+  MISSILE_SPEED,
+  TARGET_CONE,
   type ShipLayer,
+  type WeaponKind,
+  type WorldPos,
 } from "@ceres/shared";
 import type { ShipState } from "@ceres/sim-core";
 
@@ -77,4 +84,47 @@ export function collisionDamage(s: Readonly<ShipState>): number {
   const mass = shipPhysics(s.kind).mass * cargoLoadFactor(s.kind, s.cargoAmount);
   const dv = s.hullImpulse / mass;
   return Math.max(0, dv - COLLISION_DAMAGE_DV_THRESHOLD) * COLLISION_DAMAGE_PER_DV;
+}
+
+// ── computador de tiro (mira automática, weapons.ts) ───────────────────
+
+/** Um alvo possível do computador de tiro: nave ou estrutura inimiga. */
+export interface AimTarget {
+  id: string;
+  pos: WorldPos;
+  vx: number;
+  vy: number;
+}
+
+/**
+ * Escolhe o alvo como o Elite: o inimigo MAIS PERTO DA LINHA DO NARIZ, dentro
+ * do cone TARGET_CONE e do alcance da arma. Quem filtra nível de combate e
+ * dono é quem monta `candidates`.
+ */
+export function pickTarget(shooter: Readonly<ShipState>, candidates: readonly AimTarget[], range: number): AimTarget | null {
+  let best: AimTarget | null = null;
+  let bestOff = TARGET_CONE;
+  for (const c of candidates) {
+    const { dx, dy } = relVec(shooter, c.pos);
+    if (Math.hypot(dx, dy) > range) continue;
+    const off = Math.abs(wrapAngle(Math.atan2(dy, dx) - shooter.angle));
+    if (off <= bestOff) {
+      bestOff = off;
+      best = c;
+    }
+  }
+  return best;
+}
+
+/**
+ * Desvio (relativo ao nariz) que a arma QUER para acertar o alvo: o ponto de
+ * interceptação para o míssil (balístico, herda a velocidade da nave); o
+ * alvo direto para o laser (instantâneo).
+ */
+export function desiredOffset(shooter: Readonly<ShipState>, target: AimTarget, weapon: WeaponKind): number {
+  const { dx, dy } = relVec(shooter, target.pos);
+  const ang = weapon === "missile"
+    ? interceptAngle(dx, dy, target.vx - shooter.vx, target.vy - shooter.vy, MISSILE_SPEED)
+    : Math.atan2(dy, dx);
+  return wrapAngle(ang - shooter.angle);
 }

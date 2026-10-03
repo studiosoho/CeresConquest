@@ -3,8 +3,8 @@ import {
   THRUST_SPOOL_DOWN_RATE,
   PHYSICS_SUBSTEP,
   SIM_MAX_DT,
-  BULLET_AMMO_MAX,
-  GRENADE_AMMO_MAX,
+  MISSILE_AMMO_MAX,
+  MINE_AMMO_MAX,
   SHIP_HP_MAX,
   shipPhysics,
   cargoLoadFactor,
@@ -79,13 +79,13 @@ export interface ShipState extends WorldPos {
   cargoAmount: number;
   /** HP atual da nave (0 = destruída) */
   hp: number;
-  /** munição perfurante restante */
+  /** mini mísseis restantes (weapons.ts; recarrega atracada num QG) */
   ammo: number;
-  /** granadas restantes */
+  /** minas restantes (recarrega atracada num QG) */
   grenadeAmmo: number;
-  /** cooldown até o próximo disparo perfurante (s) */
+  /** cooldown até o próximo míssil ou disparo de laser (s) */
   fireCooldown: number;
-  /** cooldown até a próxima granada (s) */
+  /** cooldown até a próxima mina (s) */
   grenadeCooldown: number;
   /**
    * Camada de voo em que a nave ESTÁ (ver shared/layers.ts e layers.ts). Nasce
@@ -137,8 +137,8 @@ export function makeShip(pos: WorldPos, owner = "", kind: ShipKind = "builder"):
     cargoKind: "",
     cargoAmount: 0,
     hp: SHIP_HP_MAX,
-    ammo: kind === "attack" ? BULLET_AMMO_MAX : 0,
-    grenadeAmmo: kind === "attack" ? GRENADE_AMMO_MAX : 0,
+    ammo: kind === "attack" ? MISSILE_AMMO_MAX : 0,
+    grenadeAmmo: kind === "attack" ? MINE_AMMO_MAX : 0,
     fireCooldown: 0,
     grenadeCooldown: 0,
     layer: "cruise",
