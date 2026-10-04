@@ -16,6 +16,7 @@ import {
   REPAIR_RATE,
   structureMaxHp,
   SHIP_HP_MAX,
+  SHIP_DOCK_REPAIR_RATE,
   STATION_EXPANDED_BAYS,
   STATION_SHIP_BAYS,
   STATION_SPIDER_BAYS,
@@ -100,6 +101,33 @@ function docked(r: R, owner: string, kind: ShipKind, st: Structure, bay: number,
   return [id, s];
 }
 
+describe("conserto de naves no QG", () => {
+  it("a nave danificada pousada ou guardada no PRÓPRIO QG recupera o casco", () => {
+    const r = makeRoom();
+    const hq = structure(r, "p1", "hq", rocks[0]);
+    const [, a] = docked(r, "p1", "attack", hq, 0, false);
+    a.hp = 40;
+    const g = r.sim.addShip("g", hq, "p1", "transport");
+    Object.assign(g, { stored: true, hqId: hq.id, bay: 1, hp: 50 });
+    run(r, 4);
+    expect(a.hp).toBeCloseTo(40 + 4 * SHIP_DOCK_REPAIR_RATE, 0);
+    run(r, 30);
+    expect([a.hp, g.hp]).toEqual([SHIP_HP_MAX, SHIP_HP_MAX]);
+  });
+
+  it("fora do QG próprio (estação, ou QG de outro), não", () => {
+    const r = makeRoom();
+    const st = structure(r, "p1", "miningStation", rocks[0]);
+    const other = structure(r, "p2", "hq", rocks[1]);
+    const [, a] = docked(r, "p1", "attack", st, 0, false);
+    const [, b] = docked(r, "p1", "attack", other, 0, false);
+    a.hp = 40;
+    b.hp = 40;
+    run(r, 5);
+    expect([a.hp, b.hp]).toEqual([40, 40]);
+  });
+});
+
 describe("conserto [G] e mineração do builder na estação", () => {
   type RG = R & { tryAutoMine(sid: string): void; tryStationMine(sid: string): void; repairJobs: Map<string, unknown> };
 
@@ -158,22 +186,35 @@ describe("conserto [G] e mineração do builder na estação", () => {
 describe("porão do builder: refinaria e trocas com o buffer", () => {
   type RT = R & { tryTransfer(sid: string, item: "ore" | "kits" | "rations", dir: "withdraw" | "deposit"): void };
 
-  it("[E] refina 50 de minério do PORÃO em 10 kits (5:1), em 5 s; os lotes fazem fila", () => {
+  it("[E] liga o refino AUTOMÁTICO: 50 de minério viram 10 kits (5:1) a cada 5 s, lote após lote", () => {
     const r = makeRoom();
     const st = structure(r, "p1", "miningStation", rocks[0]);
     const [, b] = docked(r, "p1", "builder", st, 0);
     Object.assign(b, { cargoKind: "ore", cargoAmount: 120 });
-    r.tryCargo("p1");
-    r.tryCargo("p1");
-    r.tryCargo("p1"); // só sobrou 20: não refina
-    expect(b.cargoAmount).toBe(120 - 2 * REFINE_ORE);
-    expect(b.kits).toBe(0);
+    r.tryCargo("p1"); // liga: o primeiro lote entra na hora
+    expect(b.cargoAmount).toBe(120 - REFINE_ORE);
     run(r, REFINE_TIME - 0.2);
     expect(b.kits).toBe(0);
     run(r, 0.4);
     expect(b.kits).toBe(REFINE_KITS);
+    expect(b.cargoAmount).toBe(120 - 2 * REFINE_ORE); // o segundo entrou sozinho
     run(r, REFINE_TIME);
     expect(b.kits).toBe(2 * REFINE_KITS);
+    expect(b.cargoAmount).toBe(20); // 20 não fazem um lote: espera mais minério
+    b.cargoAmount += 40; // minerou mais: o refino retoma sozinho
+    run(r, REFINE_TIME + 0.2);
+    expect(b.kits).toBe(3 * REFINE_KITS);
+  });
+
+  it("[E] de novo desliga: o lote em curso termina e nenhum outro entra", () => {
+    const r = makeRoom();
+    const st = structure(r, "p1", "miningStation", rocks[0]);
+    const [, b] = docked(r, "p1", "builder", st, 0);
+    Object.assign(b, { cargoKind: "ore", cargoAmount: 200 });
+    r.tryCargo("p1");
+    r.tryCargo("p1"); // desliga
+    run(r, 3 * REFINE_TIME);
+    expect([b.kits, b.cargoAmount]).toEqual([REFINE_KITS, 200 - REFINE_ORE]);
   });
 
   it("refina também fora da estação (ex.: pousado minerando)", () => {

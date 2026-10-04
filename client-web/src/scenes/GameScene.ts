@@ -199,6 +199,21 @@ const FP_VIEW = { left: 0.344, bottom: 0.02, width: 0.312, height: 0.27 };
  * Cena: −Z é "para cima" (em direção à câmera principal).
  */
 const FP_CRUISE_LIFT = 900;
+/**
+ * Minhoca: profundidade de viagem no vácuo — a camada do centro dos
+ * asteroides (o root de uma rocha fica em raioEnvolvente − 300; uma rocha
+ * típica de ~700 u, em ~450) — e quanto ela vai abaixo da superfície de Ceres.
+ */
+const WORM_TRAVEL_Z = 450;
+const WORM_CERES_BURROW = 360;
+/**
+ * FOV HORIZONTAL do cockpit (graus). O Babylon mede a vertical; a cada quadro
+ * ela sai deste valor e da proporção do viewport. Teste: `?fov=90` na URL.
+ */
+const FP_HFOV_DEG = (() => {
+  const v = Number(new URLSearchParams(location.search).get("fov"));
+  return v >= 30 && v <= 160 ? v : 110;
+})();
 const FP_SURFACE_DROP = 300;
 /** pitch do olho (rad, positivo = para cima) em cruzeiro e na superfície */
 const FP_CRUISE_PITCH = -0.3;
@@ -352,6 +367,8 @@ interface ServerShip extends WorldPos {
   aimLocked2: boolean;
   /** refinaria do builder: lotes na fila e progresso do atual */
   refineQueue: number;
+  /** refino automático ligado ([E]) */
+  autoRefine: boolean;
   refineProgress: number;
   /** kits de construção a bordo (builder) */
   kits: number;
@@ -489,13 +506,16 @@ export class GameScene {
   private spectLayer: "cruise" | "surface" = "cruise";
   private spectAlt = 1;
   private spectRig: TransformNode | null = null;
+  /** entrou ASSISTINDO (ainda não está em jogo): [R] inicia */
+  private prestart = false;
   /** traço 3D do laser, para o cockpit */
   private beamRenderer!: BeamRenderer;
   /** drones de ração em voo (estado do servidor) e o seu render */
   private droneRenderer!: DroneRenderer;
   private serverDrones = new Map<string, WorldPos & { owner: string; angle: number; cargo: number }>();
   /** minhocas gigantes: gomos no mundo (0 = cabeça), cabeça erguida e boca */
-  private serverWorms = new Map<string, { segs: WorldPos[]; breach: number; mouth: number }>();
+  /** minhocas: gomos, cabeça erguida, boca e a altura de cada gomo (0 fundo .. 1 cruzeiro) */
+  private serverWorms = new Map<string, { segs: WorldPos[]; breach: number; mouth: number; lift: number[] }>();
   private wormRenderer!: WormRenderer;
   /** toca aberta das minhocas (id da plataforma de Ceres, "" = nenhuma) e minas já detonadas nela */
   private wormHole = "";
@@ -782,7 +802,7 @@ export class GameScene {
     this.explosionRenderer = new ExplosionRenderer(this.bScene, this.camera, this.glow);
     this.beamRenderer = new BeamRenderer(this.bScene);
     this.droneRenderer = new DroneRenderer(this.bScene);
-    this.wormRenderer = new WormRenderer(this.bScene);
+    this.wormRenderer = new WormRenderer(this.bScene, this.camera);
     this.cockpitInterior = new CockpitInterior(this.bScene, this.fpCamera, this.glow);
     // som: sintetizado agora; o áudio só liga no primeiro gesto (autoplay)
     this.sound = new SoundEngine();
@@ -879,6 +899,7 @@ export class GameScene {
         attackTarget: s.attackTarget ?? "",
         aimOffset2: s.aimOffset2 ?? 0,
         refineQueue: s.refineQueue ?? 0,
+        autoRefine: s.autoRefine ?? false,
         kits: s.kits ?? 0,
         rations: s.rations ?? 0,
         refineProgress: s.refineProgress ?? 0,
@@ -909,6 +930,13 @@ export class GameScene {
       this.survival = me.survival ?? 0;
       this.summary = me.summary ?? "";
       if (this.eliminated && !was) this.onEliminated();
+      // entrou só assistindo: câmera livre até apertar [R]
+      if (me.spectator && !this.prestart) this.startWatching();
+      if (!me.spectator && this.prestart) {
+        this.prestart = false;
+        this.spectating = false;
+        this.hudRenderer.setSpectatorBanner(null);
+      }
       if (!this.eliminated && was) {
         this.spectating = false;
         this.hudRenderer.hideEndScreen();
@@ -993,7 +1021,8 @@ export class GameScene {
         normalizePos(p);
         segs.push(p);
       }
-      this.serverWorms.set(id, { segs, breach: w.breach ?? 0, mouth: w.mouth ?? 0 });
+      const lift = Array.from(w.lift ?? [], (v: number) => v / 255);
+      this.serverWorms.set(id, { segs, breach: w.breach ?? 0, mouth: w.mouth ?? 0, lift });
     });
     for (const id of [...this.serverWorms.keys()]) if (!seenWm.has(id)) this.serverWorms.delete(id);
 
@@ -1198,16 +1227,23 @@ export class GameScene {
   }
 
   /**
-   * z de cena da superfície do corpo (Ceres ou rocha) sob `p` — a esfera do
-   * corpo vista de cima —, ou null no vácuo. É onde a minhoca se enterra.
+   * Profundidade de cena em que a minhoca viaja em `p` e a superfície do corpo
+   * sobre ela: numa ROCHA, o centro dela (a minhoca a atravessa pelo miolo,
+   * entrando pela lateral); em Ceres, logo sob a superfície; no vácuo, a
+   * camada do centro dos asteroides (WORM_TRAVEL_Z).
    */
-  private groundZ(p: WorldPos): number | null {
+  private wormDepth(p: WorldPos): { z: number; top: number | null } {
     const body = wormBodyAt(this.worldSeed, p);
-    if (!body) return null;
-    const zc = body.id === "ceres"
-      ? this.planetRenderer.centerZ() ?? CERES_RADIUS - ROCK_FRONT_REACH
-      : this.asteroidRenderer.centerZ(body.id) ?? body.radius * 1.07 - ROCK_FRONT_REACH;
-    return zc - Math.sqrt(Math.max(0, body.radius * body.radius - body.d * body.d));
+    if (!body) return { z: WORM_TRAVEL_Z, top: null };
+    const half = Math.sqrt(Math.max(0, body.radius * body.radius - body.d * body.d));
+    if (body.id === "ceres") {
+      // Ceres é uma esfera de 40 km: ali ela vai enterrada logo sob a superfície
+      const surface = (this.planetRenderer.centerZ() ?? CERES_RADIUS - ROCK_FRONT_REACH) - half;
+      return { z: surface + WORM_CERES_BURROW, top: surface };
+    }
+    // rocha: atravessa pelo CENTRO dela (entra e sai pela lateral)
+    const zc = this.asteroidRenderer.centerZ(body.id) ?? body.radius * 1.07 - ROCK_FRONT_REACH;
+    return { z: zc, top: zc - half };
   }
 
   /** Centro da toca aberta das minhocas (a plataforma dela), ou null. */
@@ -1234,7 +1270,8 @@ export class GameScene {
   private updateMatchHud(state: any): void {
     const mode = VICTORY_MODES.find((m) => m.id === state.victory) ?? VICTORY_MODES[1];
     const players: Array<{ sid: string; name: string; score: number; kills: number; out: boolean; bot: boolean }> = [];
-    state.players?.forEach((p: any, sid: string) => players.push({
+    // quem só assiste (ainda não entrou no jogo) não conta nem aparece no placar
+    state.players?.forEach((p: any, sid: string) => !p.spectator && players.push({
       sid, name: p.name || sid, score: p.score ?? 0, kills: p.wormKills ?? 0, out: !!p.eliminated, bot: !!p.bot,
     }));
     if (players.length === 0) return;
@@ -1336,12 +1373,28 @@ export class GameScene {
       () => this.room.send(MSG_RESTART));
   }
 
+  /**
+   * Começa ASSISTINDO (o criador da sala): sem nave, a câmera do espectador
+   * nasce sobre Ceres; [R] (MSG_RESTART) põe o jogador em jogo.
+   */
+  private startWatching(): void {
+    this.prestart = true;
+    this.spectating = true;
+    if (!this.localShip) {
+      const at = this.ceres ?? { sx: 0, sy: 0, x: 0, y: 0 };
+      this.localShip = makeShip({ sx: at.sx, sy: at.sy, x: at.x, y: at.y }, "", "builder");
+      this.setOrigin(at.sx, at.sy);
+      this.ready = true;
+    }
+    this.updateSpectatorBanner();
+  }
+
   /** Faixa do espectador com a vista e a camada atuais. */
   private updateSpectatorBanner(): void {
     const view = this.cockpitFull ? "primeira pessoa" : "de cima";
     const layer = this.spectLayer === "cruise" ? "cruzeiro" : "superfície";
     this.hudRenderer.setSpectatorBanner(
-      `ESPECTADOR · WASD/setas movem · [V] vista: ${view} · [F] camada: ${layer} · [R] recomeçar`);
+      `ESPECTADOR · WASD/setas movem · [V] vista: ${view} · [F] camada: ${layer} · ${this.prestart ? "[R] INICIAR" : "[R] recomeçar"}`);
   }
 
   /**
@@ -1475,7 +1528,7 @@ export class GameScene {
     const mineServer = this.myShipId ? this.serverShips.get(this.myShipId) : undefined;
     if (!mineServer) {
       // encerrado: o mundo segue (modo espectador, ou atrás da tela de fim)
-      if (this.eliminated && this.localShip) this.updateSpectator(dt);
+      if ((this.eliminated || this.spectating) && this.localShip) this.updateSpectator(dt);
       else if (this.myStation && this.localShip) this.updateOnFoot(dt);
       return;
     }
@@ -1968,6 +2021,7 @@ export class GameScene {
       refineProgress: s.refineProgress,
       refineTime: REFINE_TIME,
       refineOre: REFINE_ORE,
+      autoRefine: builder && s.autoRefine,
       refineKits: REFINE_KITS,
     };
   }
@@ -2152,6 +2206,8 @@ export class GameScene {
     {
       const vp = this.fpCamera.viewport;
       const aspect = (vp.width * this.engine.getRenderWidth()) / Math.max(1, vp.height * this.engine.getRenderHeight());
+      // FOV horizontal fixo → a vertical que o Babylon usa, pela proporção do viewport
+      this.fpCamera.fov = 2 * Math.atan(Math.tan((FP_HFOV_DEG * Math.PI) / 360) / Math.max(0.1, aspect));
       this.cockpitInterior.layout(this.cockpitFull, aspect, !!cockpit || this.spectating);
       if (this.cockpitFull) {
         this.cockpitInterior.updateRadar(this.radarBlips(!cockpit && this.spectating ? this.spectHeading : ownAngle), tt);
@@ -2216,6 +2272,8 @@ export class GameScene {
         kind: view.kind, tint: view.tint, visible: true,
         scale: pres.scale,
         z: this.dockedZ(server, pres.dock),
+        // no cockpit, a nave em cruzeiro fica na altura do olho em cruzeiro
+        fpLift: FP_CRUISE_LIFT * pres.altitude,
       });
       this.effectsRenderer.drawJet(view.rx, view.ry, view.angle, Math.hypot(server.vx, server.vy), tt,
         id, view.kind, this.shipRenderer.displayScale(id, view.kind));
@@ -2298,9 +2356,16 @@ export class GameScene {
     for (const [id, w] of this.serverWorms) {
       this.wormRenderer.update(id, {
         pts: w.segs.map((s) => this.toRender(s)),
-        ground: w.segs.map((s) => this.groundZ(s)),
+        ...(() => {
+          const d = w.segs.map((s) => this.wormDepth(s));
+          return { depth: d.map((x) => x.z), top: d.map((x) => x.top) };
+        })(),
         breach: w.breach,
         mouth: w.mouth,
+        // atrás das naves de ataque ela sobe à camada de cruzeiro (no cockpit, como as naves)
+        lift: w.lift,
+        cruiseZ: SHIP_LAYER_Z,
+        fpLift: FP_CRUISE_LIFT,
       });
     }
     this.wormRenderer.retain(new Set(this.serverWorms.keys()));
@@ -2552,7 +2617,9 @@ export class GameScene {
       cargoHint = `  ·  Hold: ${ore} ore · ${hold} kits · ${food} food — ${ore + hold + food}/${BUILDER_HOLD_TOTAL} (max ${BUILDER_ITEM_CAP} each)`;
       const queue = mineAuth?.refineQueue ?? 0;
       if (queue > 0) cargoHint += `  ·  ⚙ refining ${Math.floor((mineAuth?.refineProgress ?? 0) * 100)}% (${queue} batch${queue > 1 ? "es" : ""})`;
-      if (ore >= REFINE_ORE && mineAuth && holdRoom(mineAuth, "kits") >= (queue + 1) * REFINE_KITS) cargoHint += `  » [E] refine ${REFINE_ORE} ore → ${REFINE_KITS} kits`;
+      // [E] liga/desliga o refino automático (lote após lote, enquanto há minério)
+      if (mineAuth?.autoRefine) cargoHint += `  ·  ⚙ auto refine ON — [E] off`;
+      else if (ore >= REFINE_ORE) cargoHint += `  » [E] auto refine (${REFINE_ORE} ore → ${REFINE_KITS} kits)`;
       const job = [...this.serverStructures.values()].find((st) => !!this.myShipId && st.turretBuilder === this.myShipId);
       if (job) {
         cargoHint += `  ·  ⚙ Building turret ${Math.floor(job.turretProgress * 100)}% — locked here ([C] switch / call a taxi)`;
@@ -2621,6 +2688,7 @@ export class GameScene {
     const ctxData: HudContextData = {
       ore,
       kits: mineAuth?.kits ?? 0,
+      autoRefine: mineAuth?.autoRefine ?? false,
       zoom,
       isFlying: this.isFlying,
       inLandZone: this.inLandZone,

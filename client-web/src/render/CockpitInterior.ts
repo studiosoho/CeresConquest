@@ -68,6 +68,8 @@ export interface CargoDashboard {
   /** minério e kits de um lote (legenda) */
   refineOre: number;
   refineKits: number;
+  /** refino automático ligado ([E]) */
+  autoRefine: boolean;
 }
 
 /** Um contato no radar: posição relativa (u) — frente e direita da nave — e o que é. */
@@ -704,10 +706,10 @@ function drawRefinery(
   ctx.textAlign = "right";
   if (running) {
     ctx.fillStyle = Math.floor(now * 2) % 2 ? "#7dff9e" : "#3f9a58";
-    ctx.fillText("● RUN", x + w, y + h * 0.06);
+    ctx.fillText(d.autoRefine ? "● AUTO" : "● RUN", x + w, y + h * 0.06);
   } else {
     ctx.fillStyle = UI_DIM;
-    ctx.fillText(has ? "IDLE" : "—", x + w, y + h * 0.06);
+    ctx.fillText(!has ? "—" : d.autoRefine ? "AUTO" : "OFF", x + w, y + h * 0.06);
   }
   if (!has) {
     ctx.textAlign = "center";
@@ -799,7 +801,7 @@ function drawRefinery(
   } else {
     ctx.font = font(0.045);
     ctx.fillStyle = UI_DIM;
-    ctx.fillText(`[E] ${d.refineOre} ore → ${d.refineKits} kits`, x + w / 2, py + ph + h * 0.06);
+    ctx.fillText(d.autoRefine ? `waiting ${d.refineOre} ore · [E] off` : `[E] auto: ${d.refineOre} ore → ${d.refineKits} kits`, x + w / 2, py + ph + h * 0.06);
   }
 
   // lotes aguardando: um monte de minério por lote

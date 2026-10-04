@@ -28,6 +28,8 @@ export const SHIP_PRODUCTION: Record<ProducibleKind, ShipProductionSpec> = {
 // ── Carga (nave de transporte) ────────────────────────────────────────
 /** Tipo de carga no porão ("" = vazio). */
 export type CargoKind = "" | "ore" | "rations" | "kits";
+/** Rota automática do transporte: tempo de CARGA e de DESCARGA, pousado numa vaga (s). */
+export const TRANSPORT_HANDLING_TIME = 15;
 /** Capacidade do porão da nave de transporte (minério OU rações). */
 export const TRANSPORT_CARGO_CAP = 500;
 
@@ -285,6 +287,8 @@ export const SPIDER_MINE_TIME = 5;
 
 /** Distância máxima até a própria estrutura para ancorar. */
 export const DOCK_RANGE = 500;
+/** conserto da nave pousada ou guardada no PRÓPRIO QG (HP/s) */
+export const SHIP_DOCK_REPAIR_RATE = 5;
 /** duração da animação de pouso (numa vaga ou num asteroide), em s */
 export const LAND_DURATION = 1.5;
 

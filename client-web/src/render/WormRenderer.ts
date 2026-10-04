@@ -5,13 +5,21 @@
  * BOCA DE TRÊS PÉTALAS que se abrem mostrando a goela incandescente e o anel
  * de dentes.
  *
- * ALTURA. A minhoca viaja ENTERRADA nos corpos e SALTA no vácuo entre eles.
- * Cada gomo recebe o "chão" de onde está (z de cena da superfície do corpo
- * sob ele, ou null no vácuo): enterrado, fica abaixo da superfície (a rocha
- * o esconde); no vácuo, sobe JUMP_H acima do plano das naves. A altura é
- * SUAVIZADA ao longo da corrente — é isso que desenha o arco do salto e o
- * corpo emergindo pela borda da rocha. Perto da presa a cabeça se ergue do
- * chão (`breach`) e a boca abre (`mouth`).
+ * PROFUNDIDADE. A minhoca viaja na camada Z do CENTRO dos asteroides: entra
+ * na rocha pela LATERAL e a atravessa pelo miolo (a rocha a esconde); no
+ * vácuo segue nessa mesma profundidade (WORM_TRAVEL_Z). Em Ceres (esfera de
+ * 40 km) ela vai enterrada logo abaixo da superfície. Cada gomo recebe a
+ * profundidade de onde está (`depth`) e a superfície da rocha sobre ele
+ * (`top`); a profundidade é SUAVIZADA ao longo da corrente — a entrada e a
+ * saída pela lateral viram rampas. Perto da presa a cabeça sobe à
+ * superfície (`breach`) e a boca abre (`mouth`).
+ *
+ * CRUZEIRO. Atrás das naves de ataque ela sobe do fundo até a camada de
+ * cruzeiro (`lift` por gomo, 0..1, vindo do servidor — o corpo refaz a
+ * rampa diagonal da cabeça). Na vista de cima, a camada das naves; no
+ * COCKPIT, como as naves em cruzeiro, sobe mais `fpLift` — fica na linha
+ * do horizonte de quem voa em cruzeiro (ajuste por câmera, como no
+ * ShipRenderer).
  *
  * Os gomos de todas as minhocas são thin instances de um único mesh; a
  * cabeça é um conjunto de meshes por minhoca.
@@ -22,6 +30,8 @@
  */
 
 import type { Scene } from "@babylonjs/core/scene";
+import type { Camera } from "@babylonjs/core/Cameras/camera";
+import type { Observer } from "@babylonjs/core/Misc/observable";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
@@ -30,12 +40,7 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import { WORM_HOLE_RADIUS, WORM_HOLE_SEAL_MINES, WORM_SPACING, wormRadiusAt } from "@ceres/shared";
-import { SHIP_LAYER_Z } from "./layers";
 
-/** quanto o corpo no vácuo sobe acima do plano das naves (u de cena) */
-const JUMP_H = 350;
-/** profundidade do gomo enterrado, em raios dele */
-const BURROW_DEPTH = 1.7;
 /** comprimento de cada gomo em relação ao espaçamento (sobrepõe os vizinhos) */
 const SEG_LENGTH = 1.3;
 /** passadas da suavização da altura ao longo da corrente */
@@ -49,11 +54,18 @@ const SAND_LIGHT = new Color3(0.82, 0.68, 0.48);
 export interface WormView {
   /** posição de render (jogo) de cada gomo, 0 = cabeça */
   pts: ReadonlyArray<{ x: number; y: number }>;
-  /** z de cena da superfície sob cada gomo, ou null no vácuo */
-  ground: ReadonlyArray<number | null>;
+  /** z de cena onde cada gomo viaja (centro da rocha, sob a superfície de Ceres ou a camada do vácuo) */
+  depth: ReadonlyArray<number>;
+  /** z de cena da superfície do corpo sobre cada gomo (null no vácuo) — para onde a cabeça sobe */
+  top: ReadonlyArray<number | null>;
   /** 0..1 — cabeça erguida do chão; boca aberta */
   breach: number;
   mouth: number;
+  /** altura de cada gomo: 0 = fundo (`depth`) .. 1 = camada de cruzeiro (`cruiseZ`) */
+  lift: ReadonlyArray<number>;
+  cruiseZ: number;
+  /** no cockpit, quanto o gomo em cruzeiro sobe a mais (× `lift`) */
+  fpLift: number;
 }
 
 interface Head {
@@ -129,13 +141,23 @@ export class WormRenderer {
   private heads = new Map<string, Head>();
   private views = new Map<string, WormView>();
   private matrices = new Float32Array(0);
+  /** por gomo desenhado: o z da vista de cima e quanto sobe a mais no cockpit */
+  private baseZ = new Float32Array(0);
+  private fpOff = new Float32Array(0);
+  /** cabeças: o z da vista de cima e o a mais do cockpit */
+  private headZ = new Map<string, { z: number; off: number }>();
+  private mainCamera: Camera;
+  private observer: Observer<Camera> | null;
   private hole: { root: TransformNode; rubble: Mesh[] } | null = null;
   private pitGlowMat: StandardMaterial;
   /** poço e entulho: sem o emissivo do corpo — o fundo tem que ler escuro */
   private pitMat: StandardMaterial;
 
-  constructor(scene: Scene) {
+  /** `mainCamera` = a vista de cima; nas outras (cockpit) o cruzeiro sobe `fpLift` */
+  constructor(scene: Scene, mainCamera: Camera) {
     this.scene = scene;
+    this.mainCamera = mainCamera;
+    this.observer = scene.onBeforeCameraRenderObservable.add((cam) => this.applyCamera(cam));
     this.bodyMat = new StandardMaterial("wormBody", scene);
     this.bodyMat.diffuseColor = Color3.White(); // a cor vem dos vértices
     this.bodyMat.specularColor = Color3.Black();
@@ -188,6 +210,7 @@ export class WormRenderer {
       this.heads.delete(id);
     }
     for (const id of [...this.views.keys()]) if (!alive.has(id)) this.views.delete(id);
+    for (const id of [...this.headZ.keys()]) if (!alive.has(id)) this.headZ.delete(id);
     this.draw();
   }
 
@@ -196,6 +219,8 @@ export class WormRenderer {
     for (const v of this.views.values()) count += Math.max(0, v.pts.length - 1);
     if (this.matrices.length !== count * 16) {
       this.matrices = new Float32Array(count * 16);
+      this.baseZ = new Float32Array(count);
+      this.fpOff = new Float32Array(count);
       this.seg.thinInstanceSetBuffer("matrix", this.matrices, 16, false);
     }
     let k = 0;
@@ -203,10 +228,13 @@ export class WormRenderer {
       const p = this.scenePoints(v);
       for (let i = 1; i < p.length; i++) {
         const r = wormRadiusAt(i);
+        this.baseZ[k] = p[i].z;
+        this.fpOff[k] = v.fpLift * (v.lift[i] ?? 0);
         this.writeMatrix(k++, p[i], this.tangent(p, i), WORM_SPACING * SEG_LENGTH, r);
       }
       const head = this.heads.get(id);
       if (head && p.length > 1) this.placeHead(head, p[0], this.tangent(p, 0), wormRadiusAt(0), v.mouth);
+      this.headZ.set(id, { z: p[0].z, off: v.fpLift * (v.lift[0] ?? 0) });
     }
     this.seg.setEnabled(count > 0);
     if (count > 0) this.seg.thinInstanceBufferUpdated("matrix");
@@ -215,18 +243,39 @@ export class WormRenderer {
   /** Pontos de cena dos gomos, com a altura suavizada (ver ALTURA no topo). */
   private scenePoints(v: WormView): Vector3[] {
     const n = v.pts.length;
-    let h = v.ground.map((gz, i) => (gz === null ? JUMP_H : -BURROW_DEPTH * wormRadiusAt(i)));
+    let z = v.depth.slice();
     for (let pass = 0; pass < SMOOTH_PASSES; pass++) {
-      const s = h.slice();
-      for (let i = 1; i + 1 < n; i++) s[i] = 0.25 * h[i - 1] + 0.5 * h[i] + 0.25 * h[i + 1];
-      h = s;
+      const s = z.slice();
+      for (let i = 1; i + 1 < n; i++) s[i] = 0.25 * z[i - 1] + 0.5 * z[i] + 0.25 * z[i + 1];
+      z = s;
     }
-    // perto da presa, a cabeça (e o pescoço) se ergue do chão
+    // perto da presa, a cabeça (e o pescoço) sobe à superfície da rocha
     for (let i = 0; i < Math.min(3, n); i++) {
-      const up = 1.3 * wormRadiusAt(i);
-      h[i] += (Math.max(h[i], up) - h[i]) * v.breach * (1 - i / 3);
+      const up = (v.top[i] ?? z[i]) - 1.3 * wormRadiusAt(i);
+      z[i] += (Math.min(z[i], up) - z[i]) * v.breach * (1 - i / 3);
     }
-    return v.pts.map((p, i) => new Vector3(p.x, -p.y, (v.ground[i] ?? SHIP_LAYER_Z) - h[i]));
+    // subindo ao cruzeiro: do fundo à camada das naves, gomo a gomo (a rampa)
+    for (let i = 0; i < n; i++) z[i] += (v.cruiseZ - z[i]) * (v.lift[i] ?? 0);
+    return v.pts.map((p, i) => new Vector3(p.x, -p.y, z[i]));
+  }
+
+  /**
+   * Por passe de câmera: na vista de cima o z de cena; no cockpit, quem está
+   * no cruzeiro sobe `fpOff` a mais (só reescreve quando há altura).
+   */
+  private applyCamera(cam: Camera): void {
+    const main = cam === this.mainCamera;
+    let any = false;
+    for (let k = 0; k < this.fpOff.length; k++) {
+      if (this.fpOff[k] === 0) continue;
+      any = true;
+      this.matrices[k * 16 + 14] = this.baseZ[k] - (main ? 0 : this.fpOff[k]);
+    }
+    if (any) this.seg.thinInstanceBufferUpdated("matrix");
+    for (const [id, h] of this.headZ) {
+      const head = this.heads.get(id);
+      if (head && h.off !== 0) head.root.position.z = h.z - (main ? 0 : h.off);
+    }
   }
 
   /** Direção do corpo no gomo `i` (para a frente, rumo à cabeça). */
@@ -436,6 +485,8 @@ export class WormRenderer {
   }
 
   dispose(): void {
+    if (this.observer) this.scene.onBeforeCameraRenderObservable.remove(this.observer);
+    this.observer = null;
     this.hole?.root.dispose();
     this.pitGlowMat.dispose();
     this.pitMat.dispose();

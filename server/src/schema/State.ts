@@ -65,6 +65,8 @@ export class ShipSchema extends Schema {
   @type("uint8") refineQueue = 0;
   /** kits de construção a bordo (builder) — o porão de minério é cargoKind/cargoAmount */
   @type("uint16") kits = 0;
+  /** refino automático do builder ligado ([E]) */
+  @type("boolean") autoRefine = false;
   /** rações a bordo (builder) */
   @type("uint16") rations = 0;
   @type("float32") refineProgress = 0;
@@ -129,6 +131,8 @@ export class PlayerSchema extends Schema {
   @type("uint16") wormKills = 0;
   /** jogador-bot (servidor) */
   @type("boolean") bot = false;
+  /** ainda só ASSISTINDO (entrou como espectador): [R] o põe em jogo */
+  @type("boolean") spectator = false;
 }
 
 export class StructureSchema extends Schema {
@@ -197,6 +201,8 @@ export class WormSchema extends Schema {
   @type("float32") mouth = 0;
   /** gomos 1.. como pares (dx, dy) a partir da cabeça */
   @type(["float32"]) segs = new ArraySchema<number>();
+  /** altura de cada gomo (0 = cabeça): 0 = fundo (centro das rochas) .. 255 = camada de cruzeiro */
+  @type(["uint8"]) lift = new ArraySchema<number>();
 }
 
 export class MatchState extends Schema {
