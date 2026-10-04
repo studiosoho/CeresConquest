@@ -24,6 +24,10 @@ import {
   LAYER_TRANSITION_TIME,
   stationUpgradeCost,
   WORM_HP,
+  WORM_CHASE_TIME,
+  WORM_CLIMB_RATE,
+  WORM_DECIDE_FRACTION,
+  WORM_DECIDE_MIN,
   WORM_SEGMENTS,
   WORM_SPACING,
   asteroidClassOf,
@@ -36,6 +40,7 @@ import {
 } from "@ceres/shared";
 import { sectorAsteroids, setLayer, wormBodyAt, type Asteroid, type ShipState, type SimWorld, type Structure } from "@ceres/sim-core";
 import { MatchRoom } from "../src/rooms/MatchRoom";
+import { BOT_AMMO } from "../src/bots";
 import type { Worm } from "../src/worms";
 
 // Minhocas gigantes (shared/worms.ts): ninho em Ceres, caça, mordida,
@@ -56,6 +61,8 @@ function makeRoom(bots = 0) {
   const room = new MatchRoom();
   (room as unknown as { listing: object }).listing = { metadata: {}, save: async () => {} };
   room.onCreate({ worldSeed: SEED, bots, maxPlayers: 4 });
+  // sem investida crítica (a destruição total tem teste próprio): o cerco fica previsível
+  (room as unknown as { wormCritChance: number }).wormCritChance = 0;
   rooms.push(room);
   return room as unknown as {
     sim: SimWorld;
@@ -331,21 +338,55 @@ describe("caça", () => {
     expect(!r.sim.ships.has("hang") || hang.hp < SHIP_HP_MAX).toBe(true);
   });
 
+  it("investida CRÍTICA (1 em 10): vai no centro e a estrutura é destruída inteira", () => {
+    const r = makeRoom();
+    (r as unknown as { wormCritChance: number }).wormCritChance = 1;
+    const st = station(r, "p1", rocks[0]);
+    st.hp = 1e9;
+    const [, w] = wormAt(r, vacuum());
+    w.retarget = 0;
+    let t = 0;
+    while (r.sim.structures.has(st.id) && t < 40) { r.tick(DT); t += DT; }
+    expect(r.sim.structures.has(st.id)).toBe(false);
+  });
+
+  it("investida normal passa RASPANDO ao lado: a cabeça não cruza o centro da estrutura", () => {
+    const r = makeRoom();
+    const st = station(r, "p1", rocks[0]);
+    st.hp = 1e9;
+    const [, w] = wormAt(r, vacuum());
+    w.retarget = 0;
+    let closest = Infinity;
+    let hits = 0;
+    let last = st.hp;
+    for (let t = 0; t < 30 && hits < 2; t += DT) {
+      r.tick(DT);
+      closest = Math.min(closest, dist(w, st));
+      if (st.hp < last) { hits++; last = st.hp; }
+    }
+    expect(hits).toBeGreaterThan(0);
+    expect(closest).toBeGreaterThan(STRUCTURE_SPECS.miningStation.radius); // raspou ao lado
+  });
+
   it("o cerco dura WORM_SIEGE_TIME; depois ela parte para outra presa", () => {
     const r = makeRoom();
     const st1 = station(r, "p1", rocks[0]);
     const st2 = station(r, "p1", rocks[3]);
     st1.hp = 1e9;
+    st2.hp = 1e9;
     const [, w] = wormAt(r, vacuum());
     w.retarget = 0;
-    run(r, 1);
-    expect(w.target).toBe(st1.id);
     let t = 0;
     while (w.siege < 0 && t < 30) { r.tick(DT); t += DT; } // chegou: o cerco começa
     expect(t).toBeLessThan(30);
-    run(r, WORM_SIEGE_TIME + 0.5);
-    expect(w.besieged.has(st1.id)).toBe(true);
-    expect(w.target).toBe(st2.id);
+    const first = w.target;
+    const other = first === st1.id ? st2.id : st1.id;
+    expect([st1.id, st2.id]).toContain(first);
+    run(r, WORM_SIEGE_TIME - 1);
+    expect(w.target).toBe(first); // cercando, não troca
+    run(r, 1.5);
+    expect(w.besieged.has(first)).toBe(true);
+    expect(w.target).toBe(other);
   });
 
   it("quem a fere vira o alvo: o atacante mais perto (nave ou turreta)", () => {
@@ -367,13 +408,16 @@ describe("caça", () => {
     expect(w.target).toBe(dist(w, turretSt) < dist(w, atk) ? turretSt.id : "atk");
   });
 
-  it("a cabeça engole a nave inteira", () => {
+  it("a cabeça engole a nave inteira — no fundo, a do nível das estruturas", () => {
     const r = makeRoom();
     const head = vacuum();
     wormAt(r, head);
-    r.sim.addShip("prey", at(head, 120), "p1", "transport");
+    const prey = r.sim.addShip("prey", at(head, 120), "p1", "transport");
+    setLayer(prey, "surface");
+    const high = r.sim.addShip("high", at(head, 150, 40), "p1", "transport"); // em cruzeiro: passa por cima
     r.tick(DT);
     expect(r.sim.ships.has("prey")).toBe(false);
+    expect(r.sim.ships.has("high")).toBe(true);
   });
 
   it("o corpo exposto fere quem bate nele (com intervalo)", () => {
@@ -382,6 +426,7 @@ describe("caça", () => {
     const [, w] = wormAt(r, head);
     w.target = "x"; // inexistente: reavalia — a nave é a única presa
     const s: ShipState = r.sim.addShip("hit", at(head, -10 * WORM_SPACING, 60), "p1", "transport");
+    setLayer(s, "surface");
     r.tick(DT);
     expect(s.hp).toBe(SHIP_HP_MAX - WORM_BODY_DAMAGE);
     r.tick(DT);
@@ -488,9 +533,153 @@ describe("bots contra a minhoca", () => {
     Object.assign(bot, at(head, 12_000, 1500), { vx: 0, vy: 0, anchored: false, hqId: "", bay: -1 });
     setLayer(bot, "cruise");
     r.bots.get(id)!.phase = "raid";
-    let t = 0;
-    while (w.hp >= WORM_HP && t < 40) { r.tick(DT); t += DT; }
-    expect(w.hp).toBeLessThan(WORM_HP);
+    // atirou nela (mirando a minhoca): o acerto depende da trajetória dela
+    let aimedWorm = false;
+    for (let t = 0; t < 40 && bot.ammo === BOT_AMMO; t += DT) {
+      r.tick(DT);
+      if ((r as unknown as { weapons: Map<string, { target: string }> }).weapons.get(id)?.target.startsWith("worm:")) aimedWorm = true;
+    }
+    expect(aimedWorm).toBe(true);
+    expect(bot.ammo).toBeLessThan(BOT_AMMO);
     expect(r.attackTargets.has(id)).toBe(false); // não desceu sobre a estação
+  });
+});
+
+/** Põe a minhoca toda no CRUZEIRO, perseguindo `target`. */
+function lifted(w: Worm, target: string): void {
+  Object.assign(w, { high: true, alt: 1, chase: WORM_CHASE_TIME, target, retarget: 1 });
+  w.lift.fill(1);
+}
+
+describe("camadas: fundo e cruzeiro", () => {
+  it("no cruzeiro a cabeça engole e o corpo fere as naves em cruzeiro — não as do fundo", () => {
+    const r = makeRoom();
+    const head = vacuum();
+    const [, w] = wormAt(r, head);
+    const low = r.sim.addShip("low", at(head, 140, -40), "p1", "transport");
+    setLayer(low, "surface");
+    r.sim.addShip("prey", at(head, 120), "p2", "attack");
+    const side: ShipState = r.sim.addShip("side", at(head, -10 * WORM_SPACING, 60), "p2", "attack");
+    lifted(w, "prey");
+    r.tick(DT);
+    expect(r.sim.ships.has("prey")).toBe(false);
+    expect(r.sim.ships.has("low")).toBe(true);
+    expect(side.hp).toBe(SHIP_HP_MAX - WORM_BODY_DAMAGE);
+  });
+
+  it("no CENTRO da rocha decide: deixa a estação e sobe na diagonal atrás das naves de ataque", () => {
+    const r = makeRoom();
+    (r as unknown as { wormChaseChance: number }).wormChaseChance = 1;
+    const rock = rocks[0];
+    const st = station(r, "p1", rock);
+    st.hp = 1e9;
+    const [, w] = wormAt(r, vacuum());
+    w.retarget = 0;
+    r.sim.addShip("atk", at(rock, 3000, 3000), "p2", "attack");
+    let t = 0;
+    while (!w.high && t < 30) { r.tick(DT); t += DT; }
+    expect(w.high).toBe(true);
+    expect(w.target).toBe("atk");
+    // decidiu perto do CENTRO da rocha em que estava (a da estação ou uma do caminho)
+    const body = wormBodyAt(SEED, w)!;
+    expect(w.decided).toBe(body.id);
+    expect(body.d).toBeLessThan(Math.max(WORM_DECIDE_MIN, body.radius * WORM_DECIDE_FRACTION) + 200);
+    // sobe aos poucos, andando: a rampa é diagonal e o corpo vem atrás
+    run(r, 0.5 / WORM_CLIMB_RATE);
+    expect(w.alt).toBeGreaterThan(0.4);
+    expect(w.alt).toBeLessThan(0.6);
+    expect(w.lift[0]).toBeGreaterThan(w.lift[WORM_SEGMENTS - 1]);
+    run(r, 0.6 / WORM_CLIMB_RATE);
+    expect(w.alt).toBe(1);
+    expect(r.state.worms.size).toBe(1);
+    // persegue no cruzeiro até engolir
+    t = 0;
+    while (r.sim.ships.has("atk") && t < 15) { r.tick(DT); t += DT; }
+    expect(r.sim.ships.has("atk")).toBe(false);
+  });
+
+  it("sem sorte na decisão, segue para a estação e ignora as naves em cruzeiro", () => {
+    const r = makeRoom();
+    (r as unknown as { wormChaseChance: number }).wormChaseChance = 0;
+    const rock = rocks[0];
+    const st = station(r, "p1", rock);
+    st.hp = 1e9;
+    const [, w] = wormAt(r, vacuum());
+    w.retarget = 0;
+    r.sim.addShip("atk", at(rock, 3000, 3000), "p2", "attack");
+    let high = false;
+    for (let t = 0; t < 20; t += DT) {
+      r.tick(DT);
+      high ||= w.high;
+    }
+    expect(high).toBe(false);
+    expect(w.target).toBe(st.id);
+    expect(st.hp).toBeLessThan(1e9);
+    expect(r.sim.ships.has("atk")).toBe(true);
+  });
+
+  it("rocha vazia: com naves de ataque por perto, sobe sempre", () => {
+    const r = makeRoom();
+    (r as unknown as { wormChaseChance: number }).wormChaseChance = 0;
+    const rock = rocks[1];
+    const [, w] = wormAt(r, rock);
+    w.roam = WORM_ROAM_TIME;
+    r.sim.addShip("atk", at(rock, 5000), "p2", "attack");
+    r.tick(DT);
+    expect(w.high).toBe(true);
+    expect(w.target).toBe("atk");
+  });
+
+  it("ferida por uma nave em cruzeiro no vácuo: sobe na hora atrás dela", () => {
+    const r = makeRoom();
+    const head = vacuum();
+    const [id, w] = wormAt(r, head);
+    r.sim.addShip("atk", at(head, 6000), "p2", "attack");
+    r.damageWorm(id, 10, undefined, "atk");
+    r.tick(DT);
+    expect(w.target).toBe("atk");
+    expect(w.high).toBe(true);
+  });
+
+  it("acabada a perseguição, MERGULHA de volta ao fundo", () => {
+    const r = makeRoom();
+    const head = vacuum();
+    const [, w] = wormAt(r, head);
+    r.sim.addShip("atk", at(head, 20000), "p2", "attack");
+    lifted(w, "atk");
+    run(r, 1);
+    expect(w.high).toBe(true);
+    w.chase = 0.01;
+    r.tick(DT);
+    expect(w.high).toBe(false);
+    expect(w.target).not.toBe("atk");
+    run(r, 1.05 / WORM_CLIMB_RATE);
+    expect(w.alt).toBe(0);
+    run(r, 6); // o corpo refaz a descida da cabeça
+    expect(Math.max(...w.lift)).toBeLessThan(0.5);
+  });
+
+  it("a presa pousa (desce ao nível das estruturas): ela mergulha e segue atrás", () => {
+    const r = makeRoom();
+    const head = vacuum();
+    const [, w] = wormAt(r, head);
+    const atk = r.sim.addShip("atk", at(head, 20000), "p2", "attack");
+    lifted(w, "atk");
+    r.tick(DT);
+    setLayer(atk, "surface");
+    r.tick(DT);
+    expect(w.high).toBe(false);
+    expect(w.target).toBe("atk");
+  });
+
+  it("o espelho leva a altura de cada gomo", () => {
+    const r = makeRoom();
+    const [id, w] = wormAt(r, vacuum());
+    r.sim.addShip("atk", at(w, 20000), "p2", "attack");
+    lifted(w, "atk");
+    r.tick(DT);
+    const ws = r.state.worms.get(id) as { lift: number[] };
+    expect(ws.lift.length).toBe(WORM_SEGMENTS);
+    expect(ws.lift[0]).toBe(255);
   });
 });

@@ -40,6 +40,12 @@
  * principal ortográfica vê a nave inflada; a de cockpit vê as outras naves
  * no tamanho REAL — uma nave a 300 u não pode ocupar metade do retrovisor.
  * O GlowLayer renderiza dentro do passe da principal, com a escala dela.
+ *
+ * ALTURA POR CÂMERA, pelo mesmo caminho: na principal (ortográfica, de
+ * cima) o Z é só ordem de desenho e toda nave fica na camada de voo; no
+ * COCKPIT, a nave em cruzeiro sobe `fpLift` — a mesma altura do olho do
+ * cockpit em cruzeiro —, senão as naves em cruzeiro apareciam abaixo do
+ * horizonte, na altura das coisas da superfície.
  */
 
 import type { ShipKind } from "@ceres/shared";
@@ -75,6 +81,12 @@ export interface ShipRenderData {
    * aparecia flutuando sobre a vaga.
    */
   z?: number;
+  /**
+   * Quanto a malha SOBE (u de cena, em direção à câmera de cima) só no passe
+   * da câmera de cockpit — a nave em cruzeiro, na altura do olho em cruzeiro.
+   * Ausente = 0.
+   */
+  fpLift?: number;
 }
 
 interface MeshEntry {
@@ -85,6 +97,9 @@ interface MeshEntry {
   scale: number | undefined;
   /** profundidade padrão (camada de voo; a nave própria fica um pouco à frente) */
   baseZ: number;
+  /** profundidade atual na principal e a subida no cockpit (ver ShipRenderData.fpLift) */
+  z: number;
+  fpLift: number;
 }
 
 /**
@@ -139,7 +154,7 @@ export class ShipRenderer {
     const instance = this.factory.createShip(data.kind, data.tint);
     // camada de voo: à frente do pior avanço de uma rocha em balanço
     instance.setDepthBias(SHIP_LAYER_Z);
-    const entry: MeshEntry = { instance, kind: data.kind, visible: true, scale: undefined, baseZ: SHIP_LAYER_Z };
+    const entry: MeshEntry = { instance, kind: data.kind, visible: true, scale: undefined, baseZ: SHIP_LAYER_Z, z: SHIP_LAYER_Z, fpLift: 0 };
     this.entries.set(id, entry);
     // troca de classe recria a malha — o destaque de nave própria persiste
     if (id === this.topId) this.applyTop(entry);
@@ -230,6 +245,9 @@ export class ShipRenderer {
    * fixo da classe; a de cockpit, no tamanho de mundo.
    */
   private applyScreenScale(cam: Camera): void {
+    // altura: na principal a camada de voo; no cockpit, a nave em cruzeiro sobe
+    const main = cam === this.camera;
+    for (const e of this.entries.values()) e.instance.root.position.z = main ? e.z : e.z - e.fpLift;
     if (cam === this.camera) {
       if (ShipAB.version !== this.abVersion) {
         this.abVersion = ShipAB.version;
@@ -247,7 +265,9 @@ export class ShipRenderer {
     instance.root.position.x = p.x;
     instance.root.position.y = p.y;
     instance.root.rotation.z = toSceneAngle(data.angle);
-    instance.root.position.z = data.z ?? entry.baseZ;
+    entry.z = data.z ?? entry.baseZ;
+    entry.fpLift = data.fpLift ?? 0;
+    instance.root.position.z = entry.z;
     instance.setTint(data.tint);
     entry.scale = data.scale;
     if (entry.visible !== data.visible) {

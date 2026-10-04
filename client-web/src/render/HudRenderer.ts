@@ -38,6 +38,8 @@ export interface HudContextData {
   /** porão da nave ativa: minério e kits */
   ore: number;
   kits: number;
+  /** refino automático do builder ligado ([E]) */
+  autoRefine: boolean;
   zoom: number;
   isFlying: boolean;
   inLandZone: boolean;
@@ -545,7 +547,7 @@ export class HudRenderer {
   private buildLandedText(ship: HudShipData, ctx: HudContextData): string {
     const miningOn = ship.anchored;
     return (
-      `⬡ Landed${miningOn ? "  ·  ⛏ MINING" : ""}  ·  hold ${ctx.ore} ore${ship.kind === "builder" ? ` · ${ctx.kits} kits  [E] refine ${REFINE_ORE} ore → ${REFINE_KITS} kits` : ""}\n` +
+      `⬡ Landed${miningOn ? "  ·  ⛏ MINING" : ""}  ·  hold ${ctx.ore} ore${ship.kind === "builder" ? ` · ${ctx.kits} kits  [E] auto refine ${ctx.autoRefine ? "ON" : "OFF"} (${REFINE_ORE} ore → ${REFINE_KITS} kits)` : ""}\n` +
       (miningOn
         ? "[SPACE] stop mining\n[F] take off — stop mining before"
         : "[SPACE] start mining\n" +

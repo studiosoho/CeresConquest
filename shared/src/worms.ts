@@ -12,11 +12,25 @@
  * Passado WORM_ROAM_TIME, volta para a toca, fica lá WORM_DEN_TIME e sobe
  * para uma nova ronda — enquanto a toca estiver aberta.
  *
- * ATAQUE: numa estrutura ela faz INVESTIDAS — vai nela, toca (WORM_RAM_DAMAGE,
- * sorteado entre o prédio e as naves do hangar), passa direto, afasta-se até
+ * ATAQUE: numa estrutura ela faz INVESTIDAS — entra pela lateral da rocha,
+ * mergulha rumo à estrutura e passa RASPANDO ao lado dela (WORM_RAM_DAMAGE,
+ * sorteado entre o prédio e as naves do hangar), afasta-se até
  * WORM_RAM_RETREAT, dá a volta e investe de novo; por WORM_SIEGE_TIME — depois
- * procura outra presa. Nave ela engole inteira. Quem a fere (turreta ou nave)
+ * procura outra presa. Cada investida tem WORM_CRIT_CHANCE de ser CRÍTICA: em
+ * vez de raspar, ela vai no CENTRO da estrutura, que é destruída inteira. Nave ela engole inteira. Quem a fere (turreta ou nave)
  * vira o alvo: ela se volta contra o atacante mais perto.
+ *
+ * DUAS CAMADAS. Ela navega no FUNDO (a camada Z do centro dos asteroides:
+ * por dentro das rochas e, entre elas, nessa mesma profundidade) e ali só
+ * alcança o que está no nível das estruturas (estruturas, naves pousadas,
+ * atracadas, na superfície ou em modo ataque). Chegando perto do CENTRO de
+ * uma rocha ela DECIDE: segue para a estação ou sai na DIAGONAL, subindo até
+ * a camada de CRUZEIRO, atrás das naves de ataque que voam ali perto
+ * (WORM_CHASE_RANGE; com estação em jogo, WORM_CHASE_CHANCE — certeza se uma
+ * delas a feriu). No cruzeiro ela persegue as naves em cruzeiro por até
+ * WORM_CHASE_TIME e depois MERGULHA de novo para o fundo. Subir e descer
+ * levam 1/WORM_CLIMB_RATE s — andando, a rampa é diagonal; o corpo refaz
+ * a rampa da cabeça. No cruzeiro o corpo todo fica exposto.
  *
  * TAPAR A TOCA: naves de ataque entram no modo ataque sobre o buraco ([F]),
  * lançam minas nele (elas param dentro do buraco) e detonam as minas com
@@ -51,6 +65,19 @@ export const WORM_TURN_RATE = 1.3;
 export const WORM_HP = 1500;
 /** dano de cada investida que toca a estrutura (sorteado entre o prédio e o hangar) */
 export const WORM_RAM_DAMAGE = 120;
+/** chance de uma investida ser crítica (vai no centro e destrói a estrutura inteira) */
+export const WORM_CRIT_CHANCE = 0.1;
+/** decisão no centro da rocha: naves de ataque em cruzeiro a até esta distância da cabeça a atraem (u) */
+export const WORM_CHASE_RANGE = 12000;
+/** com uma estação em jogo, a chance de trocá-la pelas naves de ataque (vingança: sempre) */
+export const WORM_CHASE_CHANCE = 0.5;
+/** tempo máximo de perseguição no cruzeiro antes de mergulhar de volta (s) */
+export const WORM_CHASE_TIME = 20;
+/** subida/descida entre o fundo e o cruzeiro, em fração da altura por s */
+export const WORM_CLIMB_RATE = 0.5;
+/** a cabeça decide perto do centro da rocha: a até esta fração do raio dela (mínimo WORM_DECIDE_MIN) */
+export const WORM_DECIDE_FRACTION = 0.5;
+export const WORM_DECIDE_MIN = 1000;
 /** depois do toque, ela se afasta até esta distância além do corpo do prédio e dá a volta (u) */
 export const WORM_RAM_RETREAT = 3000;
 /** quanto tempo ela fica circulando uma estrutura antes de procurar outra presa (s) */

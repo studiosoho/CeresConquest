@@ -34,6 +34,8 @@ import {
   CERES_STATION_MAX_LEVEL,
   CERES_STATION_SPIDER_BAYS_PER_LEVEL,
   structureMaxHp,
+  TRANSPORT_HANDLING_TIME,
+  SHIP_DOCK_REPAIR_RATE,
   LAND_DURATION,
   WORM_HEAD_RADIUS,
   DEFAULT_TIME_LIMIT,
@@ -43,6 +45,13 @@ import {
   isTimedMode,
   type VictoryMode,
   WORM_RAM_DAMAGE,
+  WORM_CRIT_CHANCE,
+  WORM_CHASE_CHANCE,
+  WORM_CHASE_RANGE,
+  WORM_CHASE_TIME,
+  WORM_CLIMB_RATE,
+  WORM_DECIDE_FRACTION,
+  WORM_DECIDE_MIN,
   WORM_RAM_RETREAT,
   WORM_QUAKE_BREACH_TIME,
   WORM_QUAKE_DANGER_TIME,
@@ -175,7 +184,7 @@ import {
 } from "@ceres/sim-core";
 import { MatchState, ShipSchema, StructureSchema, PlayerSchema, ProjectileSchema, DroneSchema, WormSchema } from "../schema/State";
 import { makeWorm, moveWorm, type Worm } from "../worms";
-import { PlayerBot, type PlayerBotHost } from "../playerBot";
+import { AttackWing, PlayerBot, type PlayerBotHost } from "../playerBot";
 import {
   canFire,
   collisionDamage,
@@ -248,7 +257,9 @@ interface Freighter {
   /** onde carrega (estação de mineração ou base inicial) e para onde leva */
   pickup: string;
   dest: string;
-  leg: "load" | "out" | "back";
+  leg: "load" | "out" | "unload" | "back";
+  /** s de carga/descarga já feitos na ponta atual (TRANSPORT_HANDLING_TIME) */
+  timer: number;
 }
 
 /** Prefixo dos alvos de mira que são drones (o resto são naves e estruturas). */
@@ -303,6 +314,8 @@ export interface MatchOptions {
   /** modo de vitória (shared/match.ts) e o tempo-limite em minutos (modos com tempo) */
   victory?: VictoryMode;
   timeLimit?: number;
+  /** quem entra só ASSISTINDO (o criador da sala): começa a jogar com [R] */
+  spectate?: boolean;
 }
 
 /** Sanitiza um texto livre vindo do cliente (nome/título) para exibição. */
@@ -373,12 +386,18 @@ export class MatchRoom extends Room<MatchState> {
   /** timer por centro de distribuição (structId → segundos até próximo drone) */
   /** refinaria de bordo de cada builder: lotes na fila e tempo do lote atual */
   private refine = new Map<string, { queue: number; t: number }>();
+  /** builders com o refino AUTOMÁTICO ligado ([E] liga e desliga) */
+  private autoRefine = new Set<string>();
   /** minério escavado pela broca de cada estação desde o último ciclo de rações */
   private drillCycle = new Map<string, number>();
   /** consertos em andamento: estrutura → builder que conserta e o HP já pago em kits */
   private repairJobs = new Map<string, { shipId: string; credit: number; claim?: string }>();
   /** minhocas gigantes vivas (shared/worms.ts) */
   private worms = new Map<string, Worm>();
+  /** chance de uma investida da minhoca ser crítica (WORM_CRIT_CHANCE; os testes a fixam) */
+  private wormCritChance = WORM_CRIT_CHANCE;
+  /** chance de, no centro da rocha, trocar a estação pelas naves de ataque no cruzeiro (testes fixam) */
+  private wormChaseChance = WORM_CHASE_CHANCE;
   private wormSeq = 0;
   /** TOCA aberta do ninho de Ceres (null = ninho dormindo ou toca tapada) e s até a próxima minhoca */
   private hole: { padId: string; pos: WorldPos; radius: number; seal: number } | null = null;
@@ -401,8 +420,15 @@ export class MatchRoom extends Room<MatchState> {
   private testSpeed = 1;
   /** jogadores-bot da sala (playerBot.ts) */
   private playerBots: PlayerBot[] = [];
+  /** as alas de ataque dos jogadores-bot: as naves de ataque deles agem sozinhas */
+  private attackWings: AttackWing[] = [];
   /** naves de ataque de jogador-bot em incursão: estado de pilotagem, alvo, prazo e o QG de volta */
-  private raiders = new Map<string, { bot: BotState; target: string; until: number; home: string; kind: "raid" | "worm" | "seal" }>();
+  private raiders = new Map<string, {
+    bot: BotState; target: string; until: number; home: string;
+    kind: "raid" | "worm" | "seal" | "defend" | "hunt";
+    /** defesa: a estrutura própria sobre a qual desce para pegar quem a ataca */
+    site?: string;
+  }>();
   /** naves de mineração do jogador-bot a caminho de virar aranha: nave → estação */
   private ferries = new Map<string, string>();
 
@@ -448,6 +474,7 @@ export class MatchRoom extends Room<MatchState> {
       this.addPlayer(sid, `Bot ${i + 1}`);
       this.state.players.get(sid)!.bot = true;
       this.playerBots.push(new PlayerBot(sid, this.botHost()));
+      this.attackWings.push(new AttackWing(sid, this.botHost()));
     }
 
     this.onMessage(MSG_INPUT, (client: Client, input: ShipInput) => {
@@ -544,9 +571,20 @@ export class MatchRoom extends Room<MatchState> {
   }
 
   onJoin(client: Client, options: MatchOptions = {}) {
-    this.addPlayer(client.sessionId, sanitizeLabel(options.name, "Piloto", 20));
+    const name = sanitizeLabel(options.name, "Piloto", 20);
+    if (options.spectate) this.addSpectator(client.sessionId, name);
+    else this.addPlayer(client.sessionId, name);
     // atualiza a contagem de jogadores exibida no lobby
     void updateLobby(this);
+  }
+
+  /** Entra só ASSISTINDO: sem nave nem base até apertar [R] (restartPlayer). */
+  private addSpectator(sessionId: string, name: string): void {
+    const p = new PlayerSchema();
+    p.name = name;
+    p.spectator = true;
+    this.state.players.set(sessionId, p);
+    console.log(`[room] ${name} (${sessionId}) entrou assistindo`);
   }
 
   /** Um jogador entra (humano no onJoin, ou jogador-bot): builder com kits e a base inicial. */
@@ -1300,6 +1338,20 @@ export class MatchRoom extends Room<MatchState> {
     console.log(`[room] ${sessionId} recuperou a ruína ${st.id} (${st.type})`);
   }
 
+  /**
+   * CONSERTO NO QG: a nave pousada numa vaga ou guardada no hangar do PRÓPRIO
+   * QG recupera SHIP_DOCK_REPAIR_RATE HP/s até o casco cheio. (Os bots da
+   * frota de Ceres têm o conserto deles, no ciclo de recarga.)
+   */
+  private stepDockRepair(dt: number): void {
+    for (const [id, ship] of this.sim.ships) {
+      if (ship.hp >= SHIP_HP_MAX || this.bots.has(id) || !(ship.stored || ship.anchored)) continue;
+      const host = this.sim.structures.get(ship.hqId);
+      if (host?.type !== "hq" || host.owner !== ship.owner) continue;
+      ship.hp = Math.min(SHIP_HP_MAX, ship.hp + SHIP_DOCK_REPAIR_RATE * dt);
+    }
+  }
+
   /** O builder `shipId` está construindo uma turreta (e por isso travado na vaga)? */
   private buildingTurret(shipId: string): boolean {
     for (const job of this.turretJobs.values()) if (job.shipId === shipId) return true;
@@ -1314,13 +1366,22 @@ export class MatchRoom extends Room<MatchState> {
    */
   private loadBuilderOre(sessionId: string, ship: ShipState): void {
     const shipId = this.activeShip.get(sessionId);
-    if (!shipId || ship.cargoKind !== "ore" || ship.cargoAmount < REFINE_ORE) return;
+    if (!shipId) return;
+    if (this.autoRefine.delete(shipId)) return; // desliga (o lote em curso termina)
+    this.autoRefine.add(shipId);
+    this.queueRefine(shipId, ship);
+  }
+
+  /** Põe um lote de REFINE_ORE do porão na refinaria, se há minério e espaço para os kits. */
+  private queueRefine(shipId: string, ship: ShipState): boolean {
+    if (ship.cargoKind !== "ore" || ship.cargoAmount < REFINE_ORE) return false;
     const job = this.refine.get(shipId) ?? { queue: 0, t: 0 };
-    if (holdRoom(ship, "kits") < (job.queue + 1) * REFINE_KITS) return;
+    if (holdRoom(ship, "kits") < (job.queue + 1) * REFINE_KITS) return false;
     ship.cargoAmount -= REFINE_ORE;
     if (ship.cargoAmount <= 0) { ship.cargoKind = ""; ship.cargoAmount = 0; }
     job.queue++;
     this.refine.set(shipId, job);
+    return true;
   }
 
   /** [E] na nave de mineração atracada: descarrega o porão no buffer da estrutura. */
@@ -1388,6 +1449,15 @@ export class MatchRoom extends Room<MatchState> {
 
   /** Refinarias de bordo: cada lote vira REFINE_KITS kits após REFINE_TIME s. */
   private stepRefine(dt: number): void {
+    // AUTOMÁTICO: terminado um lote, o próximo entra sozinho (se há minério e espaço)
+    for (const id of [...this.autoRefine]) {
+      const ship = this.sim.ships.get(id);
+      if (!ship || ship.kind !== "builder") {
+        this.autoRefine.delete(id);
+        continue;
+      }
+      if ((this.refine.get(id)?.queue ?? 0) === 0) this.queueRefine(id, ship);
+    }
     for (const [id, job] of [...this.refine]) {
       const ship = this.sim.ships.get(id);
       if (!ship) {
@@ -2616,7 +2686,7 @@ export class MatchRoom extends Room<MatchState> {
     else if (st.type === "initialBase") { mode = "rations"; dest = nearestOf("rationCenter"); }
     else return;
     if (!dest) return;
-    this.freighters.set(shipId, { mode, pickup: st.id, dest: dest.id, leg: "load" });
+    this.freighters.set(shipId, { mode, pickup: st.id, dest: dest.id, leg: "load", timer: 0 });
     // o piloto desembarca: próxima nave do hangar daqui, ou a pé
     this.activeShip.delete(sessionId);
     const here = [...this.sim.ships]
@@ -2628,13 +2698,15 @@ export class MatchRoom extends Room<MatchState> {
   }
 
   /**
-   * Um passo das rotas: atracado no ponto de coleta, carrega o que houver
-   * (até TRANSPORT_CARGO_CAP) e decola; no destino, descarrega e volta;
-   * de volta, atraca numa vaga livre e recomeça. Destino perdido: volta e
-   * PARA no ponto de coleta. Ponto de coleta perdido: a rota acaba ali.
-   * Voa pelo corredor do táxi (sem colisão, 2×).
+   * Um passo das rotas. Cada ponta é um POUSO numa vaga: no ponto de coleta,
+   * pousado, carrega em TRANSPORT_HANDLING_TIME e decola; no destino, pousa,
+   * descarrega no mesmo tempo e decola de volta; no ponto de coleta, pousa e
+   * recomeça. Sem vaga livre, espera pairando. Destino perdido: volta e PARA
+   * no ponto de coleta (a carga volta ao estoque). Ponto de coleta perdido: a
+   * rota acaba ali. Entre as pontas, voa pelo corredor do táxi (sem colisão, 2×).
    */
-  private stepFreighters(): void {
+  private stepFreighters(dt: number): void {
+    const idle: ShipInput = { thrust: false, turn: 0, mine: false };
     for (const [id, f] of [...this.freighters]) {
       const ship = this.sim.ships.get(id);
       const pickup = this.sim.structures.get(f.pickup);
@@ -2645,14 +2717,37 @@ export class MatchRoom extends Room<MatchState> {
       }
       const dest = this.sim.structures.get(f.dest);
       const destOk = !!dest && dest.owner === ship.owner;
+      // pousando numa vaga: espera a animação
+      if (ship.landingPhase === "landing") {
+        this.sim.setInput(id, idle);
+        continue;
+      }
       if (f.leg === "load") {
+        if (!ship.anchored) {
+          f.leg = "back";
+          ship.taxiTo = pickup.id;
+          continue;
+        }
+        // carga que não chegou (destino perdido) volta ao estoque
+        if (ship.cargoAmount > 0) {
+          if (f.mode === "ore") pickup.oreStore += ship.cargoAmount;
+          else pickup.rationStore = Math.min(RATION_STORE_CAP, pickup.rationStore + ship.cargoAmount);
+          ship.cargoKind = "";
+          ship.cargoAmount = 0;
+        }
         if (!destOk) {
           this.freighters.delete(id); // para aqui, atracado
           continue;
         }
         const avail = Math.floor(f.mode === "ore" ? pickup.oreStore : pickup.rationStore);
-        if (avail < 1 || !ship.anchored) continue; // espera carga
-        const amount = Math.min(TRANSPORT_CARGO_CAP, avail);
+        if (avail < 1) {
+          f.timer = 0; // espera haver carga
+          continue;
+        }
+        f.timer += dt;
+        if (f.timer < TRANSPORT_HANDLING_TIME) continue;
+        f.timer = 0;
+        const amount = Math.min(TRANSPORT_CARGO_CAP, Math.floor(f.mode === "ore" ? pickup.oreStore : pickup.rationStore));
         if (f.mode === "ore") pickup.oreStore -= amount;
         else pickup.rationStore -= amount;
         ship.cargoKind = f.mode;
@@ -2672,36 +2767,47 @@ export class MatchRoom extends Room<MatchState> {
           this.sim.setInput(id, computeTaxiInput(ship, dest!));
           continue;
         }
+        // chegou: pousa numa vaga livre do destino (sem vaga, espera pairando)
+        ship.taxiTo = "";
+        if (!this.landAtBay(ship, dest!)) {
+          this.sim.setInput(id, idle);
+          continue;
+        }
+        f.leg = "unload";
+        f.timer = 0;
+        continue;
+      }
+      if (f.leg === "unload") {
+        if (!destOk || !ship.anchored) {
+          if (ship.anchored) this.liftOff(ship);
+          f.leg = "back";
+          ship.taxiTo = pickup.id;
+          continue;
+        }
+        f.timer += dt;
+        if (f.timer < TRANSPORT_HANDLING_TIME) continue;
+        f.timer = 0;
         if (f.mode === "ore") dest!.oreStore = Math.min(STRUCTURE_ORE_CAP, dest!.oreStore + ship.cargoAmount);
         else dest!.rationStore = Math.min(RATION_STORE_CAP, dest!.rationStore + ship.cargoAmount);
         ship.cargoKind = "";
         ship.cargoAmount = 0;
-        f.leg = "back";
+        this.liftOff(ship);
         ship.taxiTo = pickup.id;
+        f.leg = "back";
         continue;
       }
-      // volta ao ponto de coleta
+      // "back": volta ao ponto de coleta e pousa numa vaga dele
       if (dist(ship, pickup) > DOCK_RANGE) {
         this.sim.setInput(id, computeTaxiInput(ship, pickup));
         continue;
       }
-      const bay = this.firstFreeShipBay(pickup, ship.kind);
-      if (bay < 0) {
-        this.sim.setInput(id, { thrust: false, turn: 0, mine: false }); // espera vaga
+      ship.taxiTo = "";
+      if (!this.landAtBay(ship, pickup)) {
+        this.sim.setInput(id, idle);
         continue;
       }
-      ship.taxiTo = "";
-      ship.bay = bay;
-      this.dockAtBay(ship, pickup);
-      // carga que não chegou (destino perdido) volta ao estoque
-      if (ship.cargoAmount > 0) {
-        if (f.mode === "ore") pickup.oreStore += ship.cargoAmount;
-        else pickup.rationStore = Math.min(RATION_STORE_CAP, pickup.rationStore + ship.cargoAmount);
-        ship.cargoKind = "";
-        ship.cargoAmount = 0;
-      }
       f.leg = "load";
-      if (!destOk) this.freighters.delete(id);
+      f.timer = 0;
     }
   }
 
@@ -2720,6 +2826,7 @@ export class MatchRoom extends Room<MatchState> {
       anchor: (sid) => this.tryToggleAnchor(sid),
       landAction: (sid, action) => this.tryLandAction(sid, action),
       refine: (sid) => this.tryCargo(sid),
+      isAutoRefining: (shipId) => this.autoRefine.has(shipId),
       transfer: (sid, item, dir) => this.tryTransfer(sid, item, dir),
       produce: (sid, kind) => this.tryProduce(sid, kind),
       turret: (sid) => this.tryBuildTurret(sid),
@@ -2746,12 +2853,14 @@ export class MatchRoom extends Room<MatchState> {
       quakeStation: () => this.quake?.stationId ?? "",
       wormsOut: () => [...this.worms.values()].filter((w) => w.den < 0).length,
       wormDistance: (p) => Math.min(Infinity, ...[...this.worms.values()].filter((w) => w.den < 0).map((w) => dist(w, p))),
-      launchMission: (sid, shipIds, kind, seconds) => this.launchMission(sid, shipIds, kind, seconds),
+      launchMission: (sid, shipIds, kind, seconds, target, site) => this.launchMission(sid, shipIds, kind, seconds, target, site),
+      threats: (sid) => this.threatsTo(sid),
+      nearestEnemyShip: (sid, from) => this.nearestEnemyShip(sid, from),
       mission: (shipId) => this.raiders.get(shipId)?.kind ?? null,
       wormKills: (sid) => this.state.players.get(sid)?.wormKills ?? 0,
       waitingAt: (sid) => this.waitingAt.get(sid) ?? "",
       board: (sid) => this.trySwap(sid),
-      isHuman: (owner) => this.state.players.has(owner) && !this.playerBots.some((b) => b.sid === owner),
+      isPlayer: (owner) => this.state.players.has(owner),
       log: (msg) => console.log(`[pbot] ${msg}`),
     };
   }
@@ -2767,14 +2876,14 @@ export class MatchRoom extends Room<MatchState> {
     const dest = this.sim.structures.get(destId);
     if (!ship || ship.kind !== "transport" || !pickup || !dest || this.freighters.has(shipId)) return false;
     if (ship.anchored && !ship.stored && ship.hqId === pickupId) {
-      this.freighters.set(shipId, { mode, pickup: pickupId, dest: destId, leg: "load" });
+      this.freighters.set(shipId, { mode, pickup: pickupId, dest: destId, leg: "load", timer: 0 });
       return true;
     }
     const host = this.sim.structures.get(ship.hqId);
     if (ship.stored && host) this.deployFromHangar(ship, host);
     if (ship.anchored) this.liftOff(ship);
     ship.taxiTo = pickupId;
-    this.freighters.set(shipId, { mode, pickup: pickupId, dest: destId, leg: "back" });
+    this.freighters.set(shipId, { mode, pickup: pickupId, dest: destId, leg: "back", timer: 0 });
     return true;
   }
 
@@ -2822,7 +2931,7 @@ export class MatchRoom extends Room<MatchState> {
    * minhoca que está fora da toca ("worm") ou tapar a toca ("seal": minas no
    * buraco e um míssil nelas). Voltam ao QG ao fim (stepRaiders).
    */
-  private launchMission(ownerSid: string, shipIds: string[], kind: "worm" | "seal", seconds: number): void {
+  private launchMission(ownerSid: string, shipIds: string[], kind: "worm" | "seal" | "defend" | "hunt", seconds: number, target = "", site = ""): void {
     for (const id of shipIds) {
       const ship = this.sim.ships.get(id);
       if (!ship || ship.owner !== ownerSid || ship.kind !== "attack" || this.raiders.has(id)) continue;
@@ -2832,8 +2941,73 @@ export class MatchRoom extends Room<MatchState> {
       this.liftOff(ship);
       const bot = makeBotState();
       bot.phase = "raid";
-      this.raiders.set(id, { bot, target: "", until: this.elapsed + seconds, home: home.id, kind });
+      this.raiders.set(id, { bot, target, until: this.elapsed + seconds, home: home.id, kind, site });
     }
+  }
+
+  /**
+   * COMBATE NAVE × NAVE (missões "defend" e "hunt"): só se acerta quem está no
+   * mesmo nível de combate. Inimigo no nível das estações (em modo ataque
+   * sobre uma estrutura nossa): desce à superfície sobre ela — a rocha da
+   * estrutura própria é atravessável — e o caça ali; no cruzeiro, caça no
+   * cruzeiro. Chega a ~1,5 km, encara e dispara com a mira assentada. null =
+   * acabou (alvo destruído ou guardado, sem munição, sem tempo).
+   */
+  private dogfightInput(id: string, ship: ShipState, r: { bot: BotState; target: string; until: number; site?: string }): ShipInput | null {
+    const idle: ShipInput = { thrust: false, turn: 0, mine: false };
+    const enemy = this.sim.ships.get(r.target);
+    if (!enemy || enemy.stored || this.elapsed >= r.until || ship.ammo <= 0) return null;
+    const { dx, dy } = relVec(ship, enemy);
+    const facing = Math.atan2(dy, dx);
+    if (ship.layerTo) return faceInput(ship, facing);
+    const mine = levelOfLayer(ship.layer);
+    const want = hittableLevel(enemy) ?? mine; // em transição: espera no nível atual
+    if (want !== mine) {
+      if (want === "cruise") {
+        this.leaveAttack(id, ship);
+        return idle;
+      }
+      const site = this.sim.structures.get(r.site ?? "");
+      if (!site || site.owner !== ship.owner) return null;
+      if (dist(ship, site) <= DOCK_RANGE) {
+        beginLayerChange(ship, "surface");
+        return idle;
+      }
+      return seekInput(ship, site, { arriveRadius: DOCK_RANGE * 0.5 });
+    }
+    if (Math.hypot(dx, dy) > 2200) return seekInput(ship, enemy, { arriveRadius: 1500 });
+    const w = this.weaponOf(id);
+    w.weapon = "missile";
+    if (w.target === r.target && this.elapsed >= r.bot.nextShot && ship.fireCooldown <= 0) {
+      const err = Math.abs(desiredOffset(ship, { id: w.target, pos: enemy, vx: enemy.vx, vy: enemy.vy }, "missile") - w.offset);
+      if (err < BOT_AIM_TOLERANCE * 3) {
+        this.fireShip(id);
+        r.bot.nextShot = this.elapsed + BOT_FIRE_INTERVAL;
+      }
+    }
+    return faceInput(ship, facing);
+  }
+
+  /** Naves inimigas atacando estruturas de `sid` (em modo ataque sobre elas). */
+  private threatsTo(sid: string): Array<{ shipId: string; structId: string }> {
+    const out: Array<{ shipId: string; structId: string }> = [];
+    for (const [shipId, at] of this.attackTargets) {
+      const s = this.sim.ships.get(shipId);
+      if (!s || s.owner === sid || this.sim.structures.get(at.structId)?.owner !== sid) continue;
+      out.push({ shipId, structId: at.structId });
+    }
+    return out;
+  }
+
+  /** Nave inimiga de `sid` em voo no cruzeiro mais perto de `from` (de jogador ou da frota de Ceres). */
+  private nearestEnemyShip(sid: string, from: WorldPos): { id: string; dist: number } | null {
+    let best: { id: string; dist: number } | null = null;
+    for (const [id, s] of this.sim.ships) {
+      if (s.owner === sid || s.kind === "pod" || hittableLevel(s) !== "cruise") continue;
+      const d = dist(from, s);
+      if (!best || d < best.dist) best = { id, dist: d };
+    }
+    return best;
   }
 
   /**
@@ -2930,6 +3104,12 @@ export class MatchRoom extends Room<MatchState> {
         }
       } else if (r.bot.phase === "raid" && r.kind === "seal") {
         const input = this.sealInput(id, ship, r);
+        if (input) {
+          this.sim.setInput(id, input);
+          continue;
+        }
+      } else if (r.bot.phase === "raid" && (r.kind === "defend" || r.kind === "hunt")) {
+        const input = this.dogfightInput(id, ship, r);
         if (input) {
           this.sim.setInput(id, input);
           continue;
@@ -3152,6 +3332,11 @@ export class MatchRoom extends Room<MatchState> {
       ws.sx = w.sx; ws.sy = w.sy; ws.x = w.x; ws.y = w.y;
       ws.angle = w.angle; ws.hp = w.hp;
       ws.breach = w.breach; ws.mouth = w.mouth;
+      for (let i = 0; i < w.lift.length; i++) {
+        const v = Math.round(Math.max(0, Math.min(1, w.lift[i])) * 255);
+        if (ws.lift.length <= i) ws.lift.push(v);
+        else if (ws.lift[i] !== v) ws.lift[i] = v;
+      }
       for (let i = 1; i < w.segs.length; i++) {
         const { dx, dy } = relVec(w, w.segs[i]);
         const k = (i - 1) * 2;
@@ -3259,12 +3444,31 @@ export class MatchRoom extends Room<MatchState> {
     return !s.stored && s.kind !== "pod";
   }
 
-  /** O alvo `id` da minhoca (nave ou estrutura), com o raio do corpo dele, ou null se sumiu. */
-  private wormTarget(id: string): { pos: WorldPos; radius: number; struct?: Structure } | null {
+  /**
+   * Em que camada a minhoca alcança a nave: "surface" (o FUNDO — pousada,
+   * atracada, aranha, na superfície ou em modo ataque) ou "cruise"; null se
+   * ela não a come (guardada, pod). Em transição, vale a camada de destino.
+   */
+  private wormShipLevel(s: ShipState): CombatLevel | null {
+    if (!this.wormEdible(s)) return null;
+    if (s.anchored || s.autoMining || s.landingPhase === "landed") return "surface";
+    return levelOfLayer(s.layerTo || s.layer || "cruise");
+  }
+
+  /** Camada que a minhoca alcança com a altura `alt` (0 = fundo .. 1 = cruzeiro). */
+  private wormLevelAt(alt: number): CombatLevel {
+    return alt >= 0.5 ? "cruise" : "surface";
+  }
+
+  /** O alvo `id` da minhoca (nave ou estrutura), com o raio do corpo e a camada dele, ou null se sumiu. */
+  private wormTarget(id: string): { pos: WorldPos; radius: number; level: CombatLevel; struct?: Structure } | null {
     const s = this.sim.ships.get(id);
-    if (s) return this.wormEdible(s) ? { pos: s, radius: SHIP_RADIUS } : null;
+    if (s) {
+      const level = this.wormShipLevel(s);
+      return level ? { pos: s, radius: SHIP_RADIUS, level } : null;
+    }
     const st = this.sim.structures.get(id);
-    if (st && st.owner !== RUIN_OWNER) return { pos: st, radius: STRUCTURE_SPECS[st.type].radius, struct: st };
+    if (st && st.owner !== RUIN_OWNER) return { pos: st, radius: STRUCTURE_SPECS[st.type].radius, level: "surface", struct: st };
     return null;
   }
 
@@ -3285,11 +3489,15 @@ export class MatchRoom extends Room<MatchState> {
     }
     if (best) return best;
     bd = WORM_SENSE_RANGE;
+    // no CRUZEIRO ela só persegue o que voa ali; no FUNDO, o que está no nível
+    // das estruturas (as naves em cruzeiro ela só caça subindo — wormDecide)
+    const level = w.high ? "cruise" : "surface";
     for (const [id, s] of this.sim.ships) {
-      if (!this.wormEdible(s)) continue;
+      if (this.wormShipLevel(s) !== level) continue;
       const d = dist(w, s);
       if (d < bd) { bd = d; best = id; }
     }
+    if (w.high) return best;
     for (const [id, st] of this.sim.structures) {
       if (st.owner === RUIN_OWNER || w.besieged.has(id)) continue;
       const d = dist(w, st);
@@ -3329,11 +3537,37 @@ export class MatchRoom extends Room<MatchState> {
       if (next !== w.target) {
         w.siege = -1;
         w.pass = "in";
+        w.rolled = false;
       }
       w.target = next;
       w.retarget = 1;
     }
-    const tp = this.wormTarget(w.target);
+    let tp = this.wormTarget(w.target);
+    // CAMADA — perto do CENTRO de uma rocha, no fundo, ela DECIDE: segue para
+    // a estação ou sai na diagonal, subindo ao cruzeiro, atrás das naves de
+    // ataque (uma decisão por passagem pela rocha)
+    const body = wormBodyAt(seed, w);
+    if (body?.id !== w.decided) w.decided = "";
+    if (!w.high && w.roam > 0 && body && body.id !== "ceres" && !w.decided
+        && body.d <= Math.max(WORM_DECIDE_MIN, body.radius * WORM_DECIDE_FRACTION)) {
+      w.decided = body.id;
+      this.wormDecide(id, w, tp);
+      tp = this.wormTarget(w.target);
+    }
+    if (w.high) {
+      // no CRUZEIRO: persegue por WORM_CHASE_TIME; acabado o tempo, ou sem presa
+      // que voe ali, MERGULHA de volta ao fundo (a presa que pousou ela segue lá)
+      w.chase -= dt;
+      if (w.chase <= 0 || w.roam <= 0) {
+        w.high = false;
+        w.target = "";
+        w.retarget = 0;
+        tp = null;
+      } else if (!tp || tp.level !== "cruise") {
+        w.high = false;
+      }
+    }
+    w.alt += Math.max(-WORM_CLIMB_RATE * dt, Math.min(WORM_CLIMB_RATE * dt, (w.high ? 1 : 0) - w.alt));
     let near = false;
     if (tp) {
       // caçando: a excursão em curso perde o sentido
@@ -3342,19 +3576,43 @@ export class MatchRoom extends Room<MatchState> {
       w.away = false;
     }
     if (tp?.struct) {
-      // INVESTIDAS: vai na estrutura, TOCA nela (dano sorteado entre o prédio
-      // e o hangar), passa direto e se afasta; a WORM_RAM_RETREAT dá a volta e
-      // investe de novo — enquanto durar o cerco
+      // INVESTIDAS: entra pela lateral da rocha e mergulha rumo à estrutura,
+      // passando RASPANDO ao lado dela (dano sorteado entre o prédio e o
+      // hangar); afasta-se, a WORM_RAM_RETREAT dá a volta e investe de novo —
+      // enquanto durar o cerco. Investida CRÍTICA (WORM_CRIT_CHANCE): vai no
+      // centro e a estrutura é destruída inteira.
       const st = tp.struct;
       const d = dist(w, st);
       near = d < tp.radius + 1500;
       if (w.pass === "out") {
         moveWorm(w, null, WORM_SPEED, dt); // segue reto, afastando-se
-        if (d >= tp.radius + WORM_RAM_RETREAT) w.pass = "in";
+        if (d >= tp.radius + WORM_RAM_RETREAT) {
+          w.pass = "in";
+          w.rolled = false;
+        }
       } else {
-        moveWorm(w, st, WORM_SPEED, dt);
-        if (dist(w, st) <= tp.radius + WORM_HEAD_RADIUS) {
-          this.damageStructure(st, WORM_RAM_DAMAGE, true);
+        if (!w.rolled) {
+          w.rolled = true;
+          w.crit = this.combatRng() < this.wormCritChance;
+          w.side = this.combatRng() < 0.5 ? 1 : -1;
+        }
+        // o alvo da cabeça: o centro (crítica) ou um ponto AO LADO, de lado a lado
+        let aim: WorldPos = st;
+        if (!w.crit && d > 1) {
+          const { dx, dy } = relVec(w, st);
+          const off = (tp.radius + WORM_HEAD_RADIUS * 0.8) * w.side;
+          aim = { sx: st.sx, sy: st.sy, x: st.x - (dy / d) * off, y: st.y + (dx / d) * off };
+          normalizePos(aim);
+        }
+        moveWorm(w, aim, WORM_SPEED, dt);
+        const reach = tp.radius + WORM_HEAD_RADIUS + (w.crit ? 0 : 80);
+        if (dist(w, st) <= reach) {
+          if (w.crit) {
+            console.log(`[room] minhoca ${id}: investida CRÍTICA — ${st.type} ${st.id} destruída`);
+            this.destroyStructure(st.id);
+          } else {
+            this.damageStructure(st, WORM_RAM_DAMAGE, true);
+          }
           w.pass = "out";
         }
       }
@@ -3371,13 +3629,20 @@ export class MatchRoom extends Room<MatchState> {
         }
       }
     } else if (tp) {
-      // NAVE: persegue e engole — desacelera perto dela e quando ela está para trás
-      const { dx, dy } = relVec(w, tp.pos);
+      // NAVE: persegue e engole — desacelera perto dela e quando ela está para trás.
+      // Nave em CRUZEIRO com ela no fundo (vingança): sobe pelo centro da rocha
+      // em que está — ou já, fora de rocha
+      let goal = tp.pos;
+      if (tp.level === "cruise" && !w.high) {
+        if (body && body.id !== "ceres" && w.decided !== body.id) goal = body.center;
+        else this.wormClimb(w, w.target);
+      }
+      const { dx, dy } = relVec(w, goal);
       const d = Math.hypot(dx, dy);
       near = d < WORM_MOUTH_RADIUS + tp.radius + 1500;
       const ahead = Math.cos(Math.atan2(dy, dx) - w.angle);
       const speed = WORM_SPEED * Math.min(1, Math.max(0.25, d / 3000)) * (0.4 + 0.6 * Math.max(0, ahead));
-      moveWorm(w, tp.pos, speed, dt);
+      moveWorm(w, goal, speed, dt);
     } else if (w.roam <= 0) {
       // fim da ronda: volta para a toca (pelo caminho da excursão, se estava
       // fora) e entra para descansar; tapada a toca, enterra-se em Ceres
@@ -3417,29 +3682,74 @@ export class MatchRoom extends Room<MatchState> {
     }
     const k = 1 - Math.exp(-4 * dt);
     w.mouth += ((near ? 1 : 0) - w.mouth) * k;
-    w.breach += ((near ? 1 : 0) - w.breach) * k;
+    // a cabeça só se ergue do chão no fundo; no cruzeiro o corpo todo está à vista
+    w.breach += ((near && !w.high ? 1 : 0) - w.breach) * k;
     for (let i = 0; i < w.segs.length; i++) {
-      w.exposed[i] = (i <= 2 && w.breach > 0.5) || !wormBodyAt(seed, w.segs[i]);
+      w.exposed[i] = w.lift[i] >= 0.5 || (i <= 2 && w.breach > 0.5) || !wormBodyAt(seed, w.segs[i]);
     }
 
-    // a CABEÇA engole inteira a nave que alcança
+    // a CABEÇA engole inteira a nave que alcança — na camada em que ela está
+    const headLevel = this.wormLevelAt(w.alt);
     for (const [sid, s] of [...this.sim.ships]) {
-      if (!this.wormEdible(s) || dist(w, s) > WORM_MOUTH_RADIUS + SHIP_RADIUS) continue;
+      if (this.wormShipLevel(s) !== headLevel || dist(w, s) > WORM_MOUTH_RADIUS + SHIP_RADIUS) continue;
       this.fx("shipDown", s);
       console.log(`[room] minhoca ${id} engoliu ${s.kind} ${sid} de ${s.owner || "bots"}`);
       this.destroyShip(sid);
     }
-    // o CORPO exposto fere quem bate nele
+    // o CORPO exposto fere quem bate nele (o gomo na camada da nave)
     for (const [sid, s] of [...this.sim.ships]) {
-      if (!this.wormEdible(s) || this.wormBodyHits.has(sid)) continue;
+      const level = this.wormShipLevel(s);
+      if (!level || this.wormBodyHits.has(sid)) continue;
       if (dist(w, s) > w.segs.length * WORM_SPACING + WORM_MOUTH_RADIUS) continue;
       for (let i = 1; i < w.segs.length; i++) {
-        if (!w.exposed[i] || dist(w.segs[i], s) > wormRadiusAt(i) + SHIP_RADIUS) continue;
+        if (!w.exposed[i] || this.wormLevelAt(w.lift[i]) !== level) continue;
+        if (dist(w.segs[i], s) > wormRadiusAt(i) + SHIP_RADIUS) continue;
         this.wormBodyHits.set(sid, WORM_BODY_COOLDOWN);
         this.damageShip([sid, s], WORM_BODY_DAMAGE, true);
         break;
       }
     }
+  }
+
+  /**
+   * A DECISÃO no centro da rocha: naves de ataque voando em cruzeiro ali perto
+   * (WORM_CHASE_RANGE) a fazem subir na diagonal atrás delas — sem presa no
+   * fundo, sempre; com uma estação (ou nave pousada) em jogo, WORM_CHASE_CHANCE;
+   * se uma delas a feriu há pouco, sempre. Senão segue para a estação.
+   */
+  private wormDecide(id: string, w: Worm, tp: { struct?: Structure } | null): void {
+    let best = "";
+    let bd = WORM_CHASE_RANGE;
+    let revenge = false;
+    for (const [sid, s] of this.sim.ships) {
+      if (this.wormShipLevel(s) !== "cruise") continue;
+      const at = w.attackers.get(sid);
+      const avenge = at !== undefined && this.elapsed - at <= WORM_REVENGE_MEMORY;
+      if (s.kind !== "attack" && !avenge) continue;
+      const d = dist(w, s);
+      if (d > WORM_CHASE_RANGE) continue;
+      // quem a feriu passa à frente das outras
+      if ((avenge && !revenge) || (avenge === revenge && d < bd)) {
+        best = sid;
+        bd = d;
+        revenge = avenge;
+      }
+    }
+    if (!best) return;
+    if (tp && !revenge && this.combatRng() >= this.wormChaseChance) return;
+    console.log(`[room] minhoca ${id} sobe ao cruzeiro atrás de ${best}${tp?.struct ? ` (deixa ${tp.struct.id})` : ""}`);
+    this.wormClimb(w, best);
+  }
+
+  /** Sobe ao CRUZEIRO perseguindo a nave `target` (por WORM_CHASE_TIME). */
+  private wormClimb(w: Worm, target: string): void {
+    w.high = true;
+    w.chase = WORM_CHASE_TIME;
+    w.target = target;
+    w.retarget = 1;
+    w.siege = -1;
+    w.pass = "in";
+    w.rolled = false;
   }
 
   /**
@@ -3488,6 +3798,8 @@ export class MatchRoom extends Room<MatchState> {
     Object.assign(w, { sx: at.sx, sy: at.sy, x: at.x, y: at.y, angle: this.combatRng() * Math.PI * 2 });
     for (const s of w.segs) Object.assign(s, { sx: at.sx, sy: at.sy, x: at.x, y: at.y });
     Object.assign(w, { den: -1, roam: WORM_ROAM_TIME, target: "", retarget: 0, siege: -1, route: [], back: [], away: false });
+    Object.assign(w, { high: false, alt: 0, chase: 0, decided: "" });
+    w.lift.fill(0);
     w.besieged.clear();
     w.attackers.clear();
   }
@@ -3583,7 +3895,7 @@ export class MatchRoom extends Room<MatchState> {
     const st = this.state;
     st.clock = this.elapsed;
     if (st.finished) return;
-    const players = [...st.players.entries()];
+    const players = [...st.players.entries()].filter(([, p]) => !p.spectator);
     if (players.length === 0) return;
     if (st.timeLimit > 0 && this.elapsed >= st.timeLimit) {
       const rank = players.sort(([, a], [, b]) =>
@@ -3662,7 +3974,7 @@ export class MatchRoom extends Room<MatchState> {
    */
   private checkEliminations(): void {
     for (const [sid, p] of this.state.players) {
-      if (p.eliminated) continue;
+      if (p.eliminated || p.spectator) continue;
       const hasHq = [...this.sim.structures.values()].some((st) => st.owner === sid && st.type === "hq");
       const hasBuilder = [...this.sim.ships.values()].some((s) => s.owner === sid && s.kind === "builder");
       if (!hasHq && !hasBuilder) this.eliminatePlayer(sid);
@@ -3765,6 +4077,11 @@ export class MatchRoom extends Room<MatchState> {
   /** Jogador encerrado recomeça: builder e base inicial novos num lugar aleatório. */
   private restartPlayer(sessionId: string): void {
     const p = this.state.players.get(sessionId);
+    // quem só assistia entra no jogo agora
+    if (p?.spectator) {
+      this.addPlayer(sessionId, p.name);
+      return;
+    }
     if (!p?.eliminated) return;
     p.eliminated = false;
     p.survival = 0;
@@ -3915,7 +4232,7 @@ export class MatchRoom extends Room<MatchState> {
       }
     }
     // transportes em entrega automática
-    this.stepFreighters();
+    this.stepFreighters(dt);
     // escape pods: voam sozinhos até a estrutura própria mais próxima
     for (const [id, ship] of [...this.sim.ships]) if (ship.kind === "pod") this.stepPod(id, ship);
     // IA do táxi → voa até o destino; ao chegar, estaciona na 1ª vaga livre
@@ -4037,12 +4354,14 @@ export class MatchRoom extends Room<MatchState> {
     // drones de ração e refinarias de bordo
     this.stepMatch();
     for (const pb of this.playerBots) pb.step(dt);
+    for (const wing of this.attackWings) wing.step();
     this.stepRaiders();
     this.stepFerries();
     this.stepDrones(dt);
     this.stepWorms(dt);
     this.stepRefine(dt);
     this.stepRepair(dt);
+    this.stepDockRepair(dt);
     this.applyAttackMode();
     this.sim.tick(dt);
     // DANO DE COLISÃO: o impulso que o solver acumulou neste tick vira dano
@@ -4096,6 +4415,7 @@ export class MatchRoom extends Room<MatchState> {
       const rf = this.refine.get(id);
       s.refineQueue = rf?.queue ?? 0;
       s.kits = ship.kits;
+      s.autoRefine = this.autoRefine.has(id);
       s.rations = ship.rations;
       s.refineProgress = rf ? Math.min(1, rf.t / REFINE_TIME) : 0;
       const at = this.attackTargets.get(id);

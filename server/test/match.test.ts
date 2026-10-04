@@ -22,7 +22,7 @@ function makeRoom(victory: VictoryMode, timeLimit = 1) {
     sim: SimWorld;
     state: {
       victory: string; timeLimit: number; finished: boolean; winner: string;
-      players: Map<string, { score: number; wormKills: number; eliminated: boolean }>;
+      players: Map<string, { score: number; wormKills: number; eliminated: boolean; spectator: boolean }>;
     };
     activeShip: Map<string, string>;
     tick(dt: number): void;
@@ -31,6 +31,8 @@ function makeRoom(victory: VictoryMode, timeLimit = 1) {
     spawnWorm(): string;
     damageWorm(id: string, damage: number, at?: unknown, attacker?: string): void;
     eliminatePlayer(sid: string): void;
+    addSpectator(sid: string, name: string): void;
+    restartPlayer(sid: string): void;
   };
 }
 type R = ReturnType<typeof makeRoom>;
@@ -76,6 +78,22 @@ describe("modos de vitória", () => {
     r.state.players.get("p2")!.score = 9999;
     run(r, 61);
     expect(r.state.winner).toBe("p1");
+  });
+
+  it("quem entra ASSISTINDO não joga nem conta na partida; [R] o põe em jogo", () => {
+    const r = makeRoom("lastStand");
+    r.addSpectator("w", "W"); // o onJoin com { spectate: true }
+    r.addPlayer("p2", "Dois");
+    const w = r.state.players.get("w")!;
+    expect(w.spectator).toBe(true);
+    expect(r.activeShip.has("w")).toBe(false);
+    run(r, 2);
+    expect([w.eliminated, r.state.finished]).toEqual([false, false]); // não é eliminado, e "sozinho" o p2 não vence
+    r.restartPlayer("w"); // [R]
+    const w2 = r.state.players.get("w")!;
+    expect(w2.spectator).toBe(false);
+    expect(builder(r, "w").kind).toBe("builder");
+    expect([...r.sim.structures.values()].some((s) => s.owner === "w" && s.type === "initialBase")).toBe(true);
   });
 
   it("último de pé: sem tempo; vence quem sobra", () => {

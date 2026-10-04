@@ -44,11 +44,16 @@ import { seekInput, sectorAsteroids, type ShipState, type SimWorld, type Structu
  *     ninho acorda; ele não volta a ela (os alertas mandam evacuar);
  *  9. no mais, junta kits na estação.
  *
- * A frota (sem trocar de nave): transportes nas rotas automáticas, a nave de
- * mineração vira aranha da estação; as naves de ataque fazem INCURSÕES na
- * estrutura humana mais perto, CAÇAM a minhoca que está fora da toca e, depois
- * de matar uma (ou de a toca estar aberta há PLAYER_BOT_SEAL_AFTER), TAPAM a
- * toca com minas e míssil.
+ * O jogador-bot PILOTA UMA NAVE SÓ — o builder. Da frota ele dá as ordens
+ * que um jogador dá uma vez e o jogo automatiza (transporte na rota, nave de
+ * mineração virando aranha). As naves de ATAQUE agem sozinhas, numa ALA
+ * (AttackWing). A prioridade é DEFENDER: naves inimigas atacando uma
+ * estrutura dele são caçadas primeiro. Depois a minhoca (caçar a que está
+ * fora da toca; tapar a toca depois de matar uma, ou de ela estar aberta há
+ * PLAYER_BOT_SEAL_AFTER). Em segundo plano, atacam o vizinho mais próximo: a
+ * estrutura inimiga mais perto (INCURSÃO) ou, se estiver mais perto, a nave
+ * inimiga em voo (CAÇA) — de qualquer outro jogador, humano ou jogador-bot,
+ * ou da frota de Ceres: os jogadores-bot se enfrentam.
  */
 
 /** naves de ataque por incursão, e quantas o bot mantém */
@@ -87,8 +92,9 @@ export interface PlayerBotHost {
   anchor(sid: string): void;
   /** ações pousado: "mine" (liga/desliga), "buildmine", "buildhq", "buildration", "stationmine" */
   landAction(sid: string, action: string): void;
-  /** [E] refina um lote no builder */
+  /** [E] liga/desliga o refino automático do builder, e se ele está ligado */
   refine(sid: string): void;
+  isAutoRefining(shipId: string): boolean;
   /** [O]/[P]/[K]/[L]/[J] trocas com o buffer da estrutura atracada */
   transfer(sid: string, item: "ore" | "kits" | "rations", dir: "withdraw" | "deposit"): void;
   /** [3]–[6] fabrica uma nave no QG */
@@ -115,8 +121,16 @@ export interface PlayerBotHost {
   isBusyMiner(shipId: string): boolean;
   /** lança as naves de ataque contra `targetId` por `seconds` s; elas voltam ao QG depois */
   launchRaid(sid: string, shipIds: string[], targetId: string, seconds: number): void;
-  /** missão de caça à minhoca ("worm") ou de tapar a toca ("seal") */
-  launchMission(sid: string, shipIds: string[], kind: "worm" | "seal", seconds: number): void;
+  /**
+   * Missão das naves de ataque: caçar a minhoca ("worm"), tapar a toca
+   * ("seal"), DEFENDER uma estrutura ("defend": `target` = nave inimiga,
+   * `site` = a estrutura atacada) ou caçar uma nave inimiga no cruzeiro ("hunt").
+   */
+  launchMission(sid: string, shipIds: string[], kind: "worm" | "seal" | "defend" | "hunt", seconds: number, target?: string, site?: string): void;
+  /** naves inimigas atacando estruturas do jogador (modo ataque sobre elas) */
+  threats(sid: string): Array<{ shipId: string; structId: string }>;
+  /** nave inimiga em voo no cruzeiro mais perto de `from` */
+  nearestEnemyShip(sid: string, from: WorldPos): { id: string; dist: number } | null;
   /** missão em curso da nave de ataque ("raid", "worm", "seal") ou null */
   mission(shipId: string): string | null;
   isRaiding(shipId: string): boolean;
@@ -133,8 +147,8 @@ export interface PlayerBotHost {
   /** estrutura em que o piloto espera a pé ("" = está numa nave) e [C] embarcar numa nave do hangar dela */
   waitingAt(sid: string): string;
   board(sid: string): void;
-  /** o dono `owner` é um jogador humano (alvo das incursões)? */
-  isHuman(owner: string): boolean;
+  /** o dono `owner` é um jogador (humano ou bot) da sala? — os outros são alvo das incursões */
+  isPlayer(owner: string): boolean;
   log(msg: string): void;
 }
 
@@ -145,9 +159,6 @@ export class PlayerBot {
   private goal = "";
   /** rocha/plataforma escolhida para a próxima obra (fica até a obra sair) */
   private siteId = "";
-  private nextRaidAt = 0;
-  /** quando a toca abriu (s de partida; −1 = fechada) */
-  private holeSince = -1;
 
   constructor(sid: string, host: PlayerBotHost) {
     this.sid = sid;
@@ -315,9 +326,11 @@ export class PlayerBot {
     this.act(() => this.host.transfer(this.sid, "ore", "deposit"), "minério no QG");
   }
 
+  /** O refino automático ([E]) fica ligado: cada lote entra sozinho quando há minério. */
   private refineIfAble(ship: ShipState): void {
+    const id = this.host.active(this.sid)?.id;
     const ore = ship.cargoKind === "ore" ? ship.cargoAmount : 0;
-    if (ore >= REFINE_ORE) this.act(() => this.host.refine(this.sid));
+    if (id && ore >= REFINE_ORE && !this.host.isAutoRefining(id)) this.act(() => this.host.refine(this.sid), "refino automático");
   }
 
   // ── navegação do builder (só pelas ações do jogador) ────────────────
@@ -423,7 +436,11 @@ export class PlayerBot {
 
   // ── a frota ─────────────────────────────────────────────────────────
 
-  /** Transportes nas rotas, aranhas, incursões, caça à minhoca e a toca. */
+  /**
+   * Ordens de logística (o que o jogador faz uma vez e o jogo automatiza):
+   * transportes nas rotas e naves de mineração virando aranhas. As naves de
+   * ATAQUE não são dele — agem sozinhas (AttackWing).
+   */
   private manageFleet(): void {
     const own = this.own();
     const station = own.find((s) => s.type === "miningStation" && !onCeres(s));
@@ -431,7 +448,6 @@ export class PlayerBot {
     const base = own.find((s) => s.type === "initialBase");
     const center = own.find((s) => s.type === "rationCenter");
     const fleet = this.fleet();
-    const now = this.host.elapsed();
 
     // transportes livres → rota de minério (estação → QG), depois a de rações (base → central)
     for (const [id] of fleet.filter(([fid, s]) => s.kind === "transport" && !this.host.freighterMode(fid))) {
@@ -447,55 +463,6 @@ export class PlayerBot {
         if (this.host.sendSpider(id, station.id)) this.host.log(`${this.sid}: nave de mineração ${id} vai virar aranha`);
       }
     }
-
-    if (!hq) return;
-    // minhoca rondando o QG: decolar dali é ser engolido — as naves esperam no hangar
-    if (this.host.wormDistance(hq) < PLAYER_BOT_WORM_CLEARANCE) return;
-    const ready = fleet.filter(([id, s]) =>
-      s.kind === "attack" && !this.host.isRaiding(id) && s.hqId === hq.id && (s.stored || s.anchored) && s.ammo > 0);
-
-    // a TOCA: tapa depois de matar uma minhoca, ou se ela está aberta há muito
-    const hole = this.host.hole();
-    if (!hole) this.holeSince = -1;
-    else if (this.holeSince < 0) this.holeSince = now;
-    const sealing = fleet.some(([id]) => this.host.mission(id) === "seal");
-    // só com a minhoca dentro da toca (descansando): fora, ela engole quem chega
-    if (hole && !sealing && this.host.wormsOut() === 0 && (this.host.wormKills(this.sid) > 0 || now - this.holeSince >= PLAYER_BOT_SEAL_AFTER)) {
-      const sealer = ready.find(([, s]) => s.grenadeAmmo >= WORM_HOLE_SEAL_MINES - hole.seal && s.ammo >= 2);
-      if (sealer) {
-        this.host.launchMission(this.sid, [sealer[0]], "seal", 120);
-        this.host.log(`${this.sid}: ${sealer[0]} vai tapar a toca`);
-        return;
-      }
-    }
-    // a MINHOCA fora da toca: as naves prontas vão caçá-la
-    if (this.host.wormsOut() > 0 && ready.length >= 2 && !fleet.some(([id]) => this.host.mission(id) === "worm")) {
-      const ids = ready.slice(0, PLAYER_BOT_RAID_SIZE).map(([id]) => id);
-      this.host.launchMission(this.sid, ids, "worm", 60);
-      this.host.log(`${this.sid}: ${ids.length} naves caçando a minhoca`);
-      return;
-    }
-
-    // incursão: com naves de ataque prontas (recarregadas, no QG) e alvo humano
-    if (now < this.nextRaidAt || ready.length < PLAYER_BOT_RAID_SIZE) return;
-    const target = this.humanTarget(hq);
-    if (!target) return;
-    this.nextRaidAt = now + PLAYER_BOT_RAID_COOLDOWN;
-    const ids = ready.slice(0, PLAYER_BOT_RAID_SIZE).map(([id]) => id);
-    this.host.launchRaid(this.sid, ids, target.id, PLAYER_BOT_RAID_TIME);
-    this.host.log(`${this.sid}: incursão de ${ids.length} naves contra ${target.type} ${target.id} (${target.owner})`);
-  }
-
-  /** Estrutura de jogador humano mais perto do QG. */
-  private humanTarget(from: WorldPos): Structure | null {
-    let best: Structure | null = null;
-    let bd = Infinity;
-    for (const st of this.host.sim.structures.values()) {
-      if (st.owner === this.sid || st.owner === RUIN_OWNER || !this.host.isHuman(st.owner)) continue;
-      const d = dist(from, st);
-      if (d < bd) { bd = d; best = st; }
-    }
-    return best;
   }
 
   /**
@@ -542,6 +509,100 @@ export class PlayerBot {
 
   private idle(): void {
     this.host.input(this.sid, NEUTRAL);
+  }
+}
+
+/**
+ * ALA DE ATAQUE de um jogador-bot: as naves de ataque dele agem SOZINHAS —
+ * ninguém as pilota. A sala chama step() a cada passo; prontas no QG
+ * (recarregadas), elas decidem a missão, nesta ordem: DEFENDER uma estrutura
+ * atacada, tapar a toca, caçar a minhoca e, em segundo plano, atacar o
+ * vizinho mais próximo (estrutura ou nave inimiga, o que estiver mais perto).
+ */
+export class AttackWing {
+  readonly sid: string;
+  private host: PlayerBotHost;
+  private nextRaidAt = 0;
+  /** quando a toca abriu (s de partida; −1 = fechada) */
+  private holeSince = -1;
+
+  constructor(sid: string, host: PlayerBotHost) {
+    this.sid = sid;
+    this.host = host;
+  }
+
+  step(): void {
+    const hq = [...this.host.sim.structures.values()].find((s) => s.owner === this.sid && s.type === "hq");
+    const fleet = [...this.host.sim.ships].filter(([, s]) => s.owner === this.sid);
+    const now = this.host.elapsed();
+    if (!hq) return;
+    // minhoca rondando o QG: decolar dali é ser engolido — as naves esperam no hangar
+    if (this.host.wormDistance(hq) < PLAYER_BOT_WORM_CLEARANCE) return;
+    const ready = fleet.filter(([id, s]) =>
+      s.kind === "attack" && !this.host.isRaiding(id) && s.hqId === hq.id && (s.stored || s.anchored) && s.ammo > 0);
+
+    // 1. DEFESA: inimigos atacando uma estrutura nossa — o mais perto do QG primeiro
+    const threats = this.host.threats(this.sid)
+      .map((t) => ({ ...t, d: dist(hq, this.host.sim.ships.get(t.shipId)!) }))
+      .sort((a, b) => a.d - b.d);
+    if (threats.length > 0 && ready.length > 0 && !fleet.some(([id]) => this.host.mission(id) === "defend")) {
+      const t = threats[0];
+      const ids = ready.slice(0, PLAYER_BOT_RAID_SIZE).map(([id]) => id);
+      this.host.launchMission(this.sid, ids, "defend", 60, t.shipId, t.structId);
+      this.host.log(`${this.sid}: ${ids.length} naves defendendo ${t.structId} de ${t.shipId}`);
+      return;
+    }
+
+    // a TOCA: tapa depois de matar uma minhoca, ou se ela está aberta há muito
+    const hole = this.host.hole();
+    if (!hole) this.holeSince = -1;
+    else if (this.holeSince < 0) this.holeSince = now;
+    const sealing = fleet.some(([id]) => this.host.mission(id) === "seal");
+    // só com a minhoca dentro da toca (descansando): fora, ela engole quem chega
+    if (hole && !sealing && this.host.wormsOut() === 0 && (this.host.wormKills(this.sid) > 0 || now - this.holeSince >= PLAYER_BOT_SEAL_AFTER)) {
+      const sealer = ready.find(([, s]) => s.grenadeAmmo >= WORM_HOLE_SEAL_MINES - hole.seal && s.ammo >= 2);
+      if (sealer) {
+        this.host.launchMission(this.sid, [sealer[0]], "seal", 120);
+        this.host.log(`${this.sid}: ${sealer[0]} vai tapar a toca`);
+        return;
+      }
+    }
+    // a MINHOCA fora da toca: as naves prontas vão caçá-la
+    if (this.host.wormsOut() > 0 && ready.length >= 2 && !fleet.some(([id]) => this.host.mission(id) === "worm")) {
+      const ids = ready.slice(0, PLAYER_BOT_RAID_SIZE).map(([id]) => id);
+      this.host.launchMission(this.sid, ids, "worm", 60);
+      this.host.log(`${this.sid}: ${ids.length} naves caçando a minhoca`);
+      return;
+    }
+
+    // 2º plano — o vizinho mais próximo: a estrutura inimiga (INCURSÃO) ou,
+    // se estiver mais perto, a nave inimiga em voo (CAÇA)
+    if (now < this.nextRaidAt || ready.length < PLAYER_BOT_RAID_SIZE) return;
+    const target = this.enemyTarget(hq);
+    const ship = this.host.nearestEnemyShip(this.sid, hq);
+    const ids = ready.slice(0, PLAYER_BOT_RAID_SIZE).map(([id]) => id);
+    if (ship && (!target || ship.dist < dist(hq, target))) {
+      this.nextRaidAt = now + PLAYER_BOT_RAID_COOLDOWN;
+      this.host.launchMission(this.sid, ids, "hunt", PLAYER_BOT_RAID_TIME, ship.id);
+      this.host.log(`${this.sid}: ${ids.length} naves caçando a nave inimiga ${ship.id}`);
+      return;
+    }
+    if (!target) return;
+    this.nextRaidAt = now + PLAYER_BOT_RAID_COOLDOWN;
+    this.host.launchRaid(this.sid, ids, target.id, PLAYER_BOT_RAID_TIME);
+    this.host.log(`${this.sid}: incursão de ${ids.length} naves contra ${target.type} ${target.id} (${target.owner})`);
+  }
+
+  /** Estrutura de OUTRO jogador (humano ou jogador-bot) mais perto do QG. */
+  private enemyTarget(from: WorldPos): Structure | null {
+    let best: Structure | null = null;
+    let bd = Infinity;
+    for (const st of this.host.sim.structures.values()) {
+      if (st.owner === this.sid || st.owner === RUIN_OWNER || !this.host.isPlayer(st.owner)) continue;
+      const d = dist(from, st);
+      if (d < bd) { bd = d; best = st; }
+    }
+    return best;
   }
 }
 

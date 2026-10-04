@@ -29,6 +29,22 @@ export interface Worm extends WorldPos {
   bite: number;
   /** investida: indo para a estrutura ("in") ou se afastando dela depois do toque ("out") */
   pass: "in" | "out";
+  /** a investida em curso: sorteada (`rolled`), crítica (vai no centro) e o lado por onde raspa (±1) */
+  rolled: boolean;
+  crit: boolean;
+  side: 1 | -1;
+  /**
+   * CAMADA (shared/worms.ts, DUAS CAMADAS): quer o cruzeiro (`high`) ou o
+   * fundo; a altura da cabeça (`alt`, 0 = fundo .. 1 = cruzeiro) anda até lá
+   * a WORM_CLIMB_RATE e cada gomo herda a dela pelo caminho (`lift`).
+   */
+  high: boolean;
+  alt: number;
+  lift: number[];
+  /** s que ainda restam de perseguição no cruzeiro */
+  chase: number;
+  /** a rocha onde ela já decidiu (perto do centro) nesta passagem ("" = nenhuma) */
+  decided: string;
   /** 0..1 — cabeça erguida para fora do chão (perto da presa) */
   breach: number;
   /** 0..1 — boca aberta */
@@ -59,7 +75,8 @@ export function makeWorm(at: WorldPos, angle: number): Worm {
     ...p, angle, hp: WORM_HP,
     segs: Array.from({ length: WORM_SEGMENTS }, () => ({ ...p })),
     exposed: new Array<boolean>(WORM_SEGMENTS).fill(false),
-    target: "", retarget: 0, bite: 0, pass: "in", breach: 0, mouth: 0,
+    target: "", retarget: 0, bite: 0, pass: "in", rolled: false, crit: false, side: 1, breach: 0, mouth: 0,
+    high: false, alt: 0, lift: new Array<number>(WORM_SEGMENTS).fill(0), chase: 0, decided: "",
     roam: WORM_ROAM_TIME, route: [], back: [], away: false, den: -1,
     siege: -1, besieged: new Set(), attackers: new Map(),
   };
@@ -68,7 +85,8 @@ export function makeWorm(at: WorldPos, angle: number): Worm {
 /**
  * Vira a cabeça para `goal` (no giro máximo), avança `speed`·dt e puxa a
  * corrente: cada gomo fica a WORM_SPACING do anterior — o corpo refaz o
- * caminho da cabeça, como um trem.
+ * caminho da cabeça, como um trem — e a altura também: cada gomo puxado
+ * herda, na mesma proporção, a altura do da frente.
  */
 export function moveWorm(w: Worm, goal: WorldPos | null, speed: number, dt: number): void {
   if (goal) {
@@ -83,6 +101,7 @@ export function moveWorm(w: Worm, goal: WorldPos | null, speed: number, dt: numb
   normalizePos(w);
   const segs = w.segs;
   Object.assign(segs[0], { sx: w.sx, sy: w.sy, x: w.x, y: w.y });
+  w.lift[0] = w.alt;
   for (let i = 1; i < segs.length; i++) {
     const { dx, dy } = relVec(segs[i], segs[i - 1]);
     const d = Math.hypot(dx, dy);
@@ -90,6 +109,7 @@ export function moveWorm(w: Worm, goal: WorldPos | null, speed: number, dt: numb
     const k = (d - WORM_SPACING) / d;
     segs[i].x += dx * k;
     segs[i].y += dy * k;
+    w.lift[i] += (w.lift[i - 1] - w.lift[i]) * k;
     normalizePos(segs[i]);
   }
 }

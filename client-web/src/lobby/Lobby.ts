@@ -137,7 +137,8 @@ export class Lobby {
   /** create: sempre uma sala nova, com as opções escolhidas na janela de configuração. */
   private createRoom(opts: RoomSetup): void {
     const name = this.playerName();
-    void this.enter(name, () => this.client.create(MATCH_NAME, { name, ...opts }));
+    // quem cria a sala entra ASSISTINDO e começa a jogar com [R]
+    void this.enter(name, () => this.client.create(MATCH_NAME, { name, ...opts, spectate: true }));
   }
 
   /** Janela de "Criar sala": a partida inteira é configurada aqui. */

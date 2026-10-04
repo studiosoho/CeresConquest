@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  TRANSPORT_HANDLING_TIME,
   STRUCTURE_SPECS,
   DRONE_BASE_CARGO,
   DRILL_BASE_RATE,
@@ -228,12 +229,22 @@ describe("transporte automático ([G])", () => {
     expect(r.freighters.has(tId)).toBe(true);
     expect(r.activeShip.has("p1")).toBe(false);
     expect(r.waitingAt.get("p1")).toBe(st.id);
-    r.tick(DT);
+    // CARGA: 15 s pousado na vaga da estação
+    run(r, TRANSPORT_HANDLING_TIME - 0.5);
+    expect([t.cargoAmount, t.anchored]).toEqual([0, true]);
+    run(r, 1);
     expect([t.cargoKind, t.cargoAmount]).toEqual(["ore", 500]);
     expect(st.oreStore).toBe(400);
-    // primeira entrega credita a carteira; volta e carrega o resto
-    expect(until(r, () => base.oreStore >= 500, 120)).toBeLessThan(120);
-    expect(until(r, () => t.cargoAmount === 400, 120)).toBeLessThan(120);
+    // POUSA numa vaga da base e só então descarrega, em 15 s
+    expect(until(r, () => t.anchored && t.hqId === base.id, 120)).toBeLessThan(120);
+    expect(base.oreStore).toBe(0);
+    run(r, TRANSPORT_HANDLING_TIME - 0.5);
+    expect(base.oreStore).toBe(0);
+    run(r, 1);
+    expect([base.oreStore, t.cargoAmount]).toEqual([500, 0]);
+    // volta, pousa na estação, carrega o resto e entrega
+    expect(until(r, () => t.anchored && t.hqId === st.id, 120)).toBeLessThan(120);
+    expect(until(r, () => t.cargoAmount === 400, 60)).toBeLessThan(60);
     expect(until(r, () => base.oreStore >= 900, 120)).toBeLessThan(120);
   });
 
